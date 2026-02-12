@@ -1,8 +1,0 @@
-{
-  "enabled": true,
-  "qc_enabled": true,
-  "q_min": 0.0,
-  "jump_max_px": 50.0,
-  "drift_enabled": true,
-  "drift_window_s": 1.0
-}
