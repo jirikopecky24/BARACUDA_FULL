@@ -4,10 +4,10 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
-from PyQt6.QtGui import QImage, QColor, QPainter, QPen
+from PyQt6.QtGui import QImage, QColor, QPainter, QPen, QFont
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,10 @@ class RunManager:
             "input_path": str(input_path),
             "config": config,
         }
-        (run_dir / "run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        (run_dir / "run.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         return RunResult(run_id=run_id, run_dir=run_dir)
 
     def save_after_png(self, run_dir: Path, arr: np.ndarray) -> Path:
@@ -52,29 +55,89 @@ class RunManager:
         frame_rgb: np.ndarray,
         x: float,
         y: float,
-        roi: tuple[int, int, int, int] | None = None,
-        name: str = "preview_tracking.png",
+        *,
+        roi: Optional[tuple[int, int, int, int]] = None,
+        name: str = "overlay.png",
+        # Optional annotation payload:
+        frame_index: Optional[int] = None,
+        quality: Optional[float] = None,
+        peak: Optional[float] = None,
+        method: Optional[str] = None,
+        draw_roi: bool = False,
     ) -> Path:
-        """RGB frame + ROI rectangle + red crosshair at (x,y)."""
+        """RGB frame with:
+        - red crosshair at (x,y)
+        - subpixel circle at (x,y)
+        - annotation text (frame,x,y,q,peak,method)
+        - optional ROI rectangle (debug context)
+        """
         out = Path(run_dir) / name
         img = self._to_qimage_rgb(frame_rgb)
 
         painter = QPainter(img)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        # ROI rectangle (gold)
-        if roi is not None:
+        # ROI rectangle (gold) – only when requested
+        if draw_roi and roi is not None:
             rx, ry, rw, rh = roi
-            pen = QPen(QColor(255, 215, 0, 200), 2)
+            pen = QPen(QColor(255, 215, 0, 220), 2)
             painter.setPen(pen)
             painter.drawRect(rx, ry, rw, rh)
 
-        # Red crosshair
-        pen = QPen(QColor(255, 0, 0, 220), 2)
+        # Crosshair + subpixel circle
+        cx, cy = float(x), float(y)
+
+        # crosshair lines (red)
+        pen = QPen(QColor(255, 0, 0, 230), 2)
         painter.setPen(pen)
-        cx, cy = int(round(x)), int(round(y))
-        painter.drawLine(cx - 10, cy, cx + 10, cy)
-        painter.drawLine(cx, cy - 10, cx, cy + 10)
+        L = 10.0
+        painter.drawLine(int(round(cx - L)), int(round(cy)), int(round(cx + L)), int(round(cy)))
+        painter.drawLine(int(round(cx)), int(round(cy - L)), int(round(cx)), int(round(cy + L)))
+
+        # subpixel circle (thin)
+        pen2 = QPen(QColor(255, 0, 0, 230), 1)
+        painter.setPen(pen2)
+        r = 3.0
+        painter.drawEllipse(cx - r, cy - r, 2 * r, 2 * r)
+
+        # Annotation text (top-left, with dark background box)
+        lines: list[str] = []
+        if frame_index is not None:
+            lines.append(f"frame: {frame_index}")
+        lines.append(f"x_px: {cx:.3f}")
+        lines.append(f"y_px: {cy:.3f}")
+        if quality is not None:
+            lines.append(f"q: {quality:.6f}")
+        if peak is not None:
+            lines.append(f"peak: {peak:.6f}")
+        if method is not None:
+            lines.append(f"method: {method}")
+
+        if lines:
+            font = QFont()
+            font.setPointSize(9)
+            painter.setFont(font)
+
+            # background
+            pad = 6
+            x0, y0 = 8, 8
+            line_h = 14
+            max_w = 0
+            for s in lines:
+                max_w = max(max_w, len(s))
+            # rough width estimate; fine metrics aren't crucial here
+            box_w = 8 * max_w + pad * 2
+            box_h = line_h * len(lines) + pad * 2
+
+            painter.setPen(QPen(QColor(0, 0, 0, 0), 0))
+            painter.setBrush(QColor(0, 0, 0, 140))
+            painter.drawRoundedRect(x0, y0, box_w, box_h, 6, 6)
+
+            painter.setPen(QPen(QColor(255, 255, 255, 235), 1))
+            ty = y0 + pad + 10
+            for s in lines:
+                painter.drawText(x0 + pad, ty, s)
+                ty += line_h
 
         painter.end()
         img.save(str(out))
