@@ -1,0 +1,36 @@
+{
+  "device_id": "optical_tweezers",
+  "preview_roi_rect": [
+    31,
+    23,
+    48,
+    50
+  ],
+  "preview_frame_index": 0,
+  "results": [
+    {
+      "path": "C:\\School\\Water_2um_drag.avi",
+      "ok": true,
+      "status": "OK",
+      "message": "OT preview tracking OK",
+      "details": {
+        "frame_count": 56113,
+        "fps": 485.201,
+        "width": 96,
+        "height": 100,
+        "preview_frame_index": 0,
+        "x_px": 49.15194270152321,
+        "y_px": 55.70782290152184,
+        "quality": 0.15220279825873947,
+        "peak": 1.1180340051651,
+        "method": "RADIAL_SYMMETRY",
+        "roi": [
+          31,
+          23,
+          48,
+          50
+        ]
+      }
+    }
+  ]
+}

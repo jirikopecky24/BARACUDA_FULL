@@ -1,0 +1,60 @@
+{
+  "device_id": "optical_tweezers",
+  "preview_roi_rect": [
+    32,
+    25,
+    48,
+    50
+  ],
+  "preview_frame_index": 0,
+  "results": [
+    {
+      "path": "C:\\School\\Water_2um_drag.avi",
+      "ok": true,
+      "status": "OK",
+      "message": "OT preview tracking OK",
+      "details": {
+        "frame_count": 56113,
+        "fps": 485.201,
+        "width": 96,
+        "height": 100,
+        "preview_frame_index": 0,
+        "x_px": 48.86455950964613,
+        "y_px": 55.65735519452963,
+        "quality": 0.13408039200587843,
+        "peak": 1.1180340051651,
+        "method": "RADIAL_SYMMETRY",
+        "roi": [
+          32,
+          25,
+          48,
+          50
+        ]
+      }
+    },
+    {
+      "path": "C:\\School\\water_2um_brown.avi",
+      "ok": true,
+      "status": "OK",
+      "message": "OT preview tracking OK",
+      "details": {
+        "frame_count": 50871,
+        "fps": 485.201,
+        "width": 96,
+        "height": 100,
+        "preview_frame_index": 0,
+        "x_px": 49.107958502033256,
+        "y_px": 55.87249315062641,
+        "quality": 0.15356947919860942,
+        "peak": 0.5,
+        "method": "RADIAL_SYMMETRY",
+        "roi": [
+          32,
+          25,
+          48,
+          50
+        ]
+      }
+    }
+  ]
+}

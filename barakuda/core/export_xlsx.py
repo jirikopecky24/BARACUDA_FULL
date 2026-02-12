@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+"""XLSX export for run trajectories.
+
+Goals:
+- Human-friendly sheet with freeze header + filter.
+- Metadata sheet with structured metadata + raw header lines from trajectory.csv.
+- Never be the reason a run fails (caller should catch exceptions).
+
+This exporter is tolerant to extra columns (e.g. OT-3.1 adds lost/drift columns).
+"""
+
+from pathlib import Path
+from typing import Any
+
+from barakuda.core.trajectory_csv_io import read_trajectory_csv
+
+
+def export_trajectory_xlsx(
+    run_dir: Path,
+    trajectory_csv_path: Path,
+    extra_metadata: dict[str, Any] | None = None,
+    output_name: str = "trajectory.xlsx",
+) -> Path:
+    """Create run_dir/output_name with sheets Trajectory + Metadata.
+
+    Requires openpyxl.
+    """
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils import get_column_letter
+    except Exception as e:
+        raise RuntimeError("openpyxl is required for XLSX export. Install it via pip/conda.") from e
+
+    run_dir = Path(run_dir)
+    trajectory_csv_path = Path(trajectory_csv_path)
+    out_path = run_dir / output_name
+
+    table = read_trajectory_csv(trajectory_csv_path)
+    header = list(table.header)
+
+    wb = Workbook()
+
+    # --- Sheet: Trajectory ---
+    ws = wb.active
+    ws.title = "Trajectory"
+
+    ws.append(header)
+    for r in table.rows:
+        ws.append([r.get(col, "") for col in header])
+
+    # Usability
+    ws.freeze_panes = "A2"
+    if header:
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(header))}1"
+
+    # Column widths (simple heuristic)
+    for i, col in enumerate(header, start=1):
+        # Use column name length and sample a few rows
+        max_len = len(str(col))
+        for rr in table.rows[:200]:
+            v = rr.get(col, "")
+            if v is None:
+                continue
+            max_len = max(max_len, len(str(v)))
+        # Clamp to readable range
+        ws.column_dimensions[get_column_letter(i)].width = float(max(10, min(28, max_len + 2)))
+
+    # --- Sheet: Metadata ---
+    ws2 = wb.create_sheet("Metadata")
+    ws2.append(["Key", "Value"])
+
+    if extra_metadata:
+        for k in sorted(extra_metadata.keys()):
+            v = extra_metadata[k]
+            ws2.append([str(k), "" if v is None else str(v)])
+
+    if table.meta_lines:
+        ws2.append([])
+        ws2.append(["trajectory.csv header lines", ""])
+        for line in table.meta_lines:
+            ws2.append([line, ""])
+
+    ws2.freeze_panes = "A2"
+    ws2.column_dimensions["A"].width = 34
+    ws2.column_dimensions["B"].width = 90
+
+    wb.save(out_path)
+    return out_path
