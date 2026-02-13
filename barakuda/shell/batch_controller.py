@@ -77,6 +77,41 @@ class BatchController:
         if not file_paths:
             return []
 
+        # Deterministic sampling: robust gate without randomness.
+        SAMPLE_COUNT = 7
+        PASS_MIN_RATIO = 1.0  # Hard gate by default (require all sampled frames to pass)
+
+        def _sample_indices(frame_count: int, preferred: int, n: int) -> list[int]:
+            if frame_count <= 0:
+                return [0]
+            preferred = int(max(0, min(int(preferred), frame_count - 1)))
+
+            anchors = [0, preferred, frame_count // 2, frame_count - 1]
+
+            # Evenly spaced points across the range (deterministic)
+            if n > len(anchors):
+                k = n - len(anchors)
+                if frame_count > 1 and k > 0:
+                    for i in range(1, k + 1):
+                        idx = int(round(i * (frame_count - 1) / (k + 1)))
+                        anchors.append(idx)
+
+            # Unique + sorted, then cap to n
+            uniq = sorted(set(int(x) for x in anchors))
+            if len(uniq) > n:
+                # Keep preferred + ends if possible, then fill deterministically
+                keep: list[int] = []
+                for x in [0, preferred, frame_count - 1]:
+                    if x in uniq and x not in keep:
+                        keep.append(x)
+                for x in uniq:
+                    if x not in keep:
+                        keep.append(x)
+                    if len(keep) >= n:
+                        break
+                uniq = keep[:n]
+            return uniq
+
         ts = time.strftime("%Y%m%d-%H%M%S")
         self._preview_dir = self.run_manager.runs_folder / f"PREVIEW-{ts}"
         self._preview_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +129,7 @@ class BatchController:
                     results.append(PreviewResult(str(p), False, "FAIL", "Not a video file", {}))
                     continue
 
+            # --- read metadata ---
             try:
                 vr = VideoReader(p)
                 meta = vr.meta
@@ -107,39 +143,63 @@ class BatchController:
                     "fps": fps,
                     "width": w,
                     "height": h,
+                    "sample_count": int(SAMPLE_COUNT),
+                    "pass_min_ratio": float(PASS_MIN_RATIO),
                 }
 
-                frame_idx = int(preview_frame_index)
-                if frame_count > 0:
-                    frame_idx = max(0, min(frame_idx, frame_count - 1))
-                else:
-                    frame_idx = 0
+                frame_indices = _sample_indices(frame_count, int(preview_frame_index), int(SAMPLE_COUNT))
+                details["preview_frame_indices"] = list(frame_indices)
 
-                frame = None
-                if device_id == "optical_tweezers":
-                    frame = vr.get_frame(frame_idx)
-                vr.close()
             except Exception as e:
-                results.append(PreviewResult(str(p), False, "FAIL", f"Cannot read video: {e}", {}))
+                results.append(PreviewResult(str(p), False, "FAIL", f"Cannot read video metadata: {e}", {}))
                 continue
 
-            if device_id == "optical_tweezers":
-                if preview_roi_rect is None:
-                    results.append(PreviewResult(str(p), False, "FAIL", "ROI not set (required for OT preview)", details))
-                    continue
-                if frame is None:
-                    results.append(PreviewResult(str(p), False, "FAIL", "Cannot read preview frame", details))
-                    continue
-
+            if device_id != "optical_tweezers":
                 try:
-                    params = device_panel.get_tracking_params()
-                    method_str = str(params.get("method", "RADIAL_SYMMETRY"))
-                    try:
-                        method = TrackingMethod(method_str)
-                    except Exception:
-                        method = TrackingMethod.RADIAL_SYMMETRY
+                    vr.close()
+                except Exception:
+                    pass
+                results.append(PreviewResult(str(p), True, "OK", "Preview metadata OK", details))
+                QApplication.processEvents()
+                continue
 
-                    roi_obj = Roi(*preview_roi_rect)
+            # --- OT-specific gate ---
+            if preview_roi_rect is None:
+                try:
+                    vr.close()
+                except Exception:
+                    pass
+                results.append(PreviewResult(str(p), False, "FAIL", "ROI not set (required for OT preview)", details))
+                QApplication.processEvents()
+                continue
+
+            # Fetch tracking params once (deterministic)
+            try:
+                params = device_panel.get_tracking_params()
+                method_str = str(params.get("method", "RADIAL_SYMMETRY"))
+                try:
+                    method = TrackingMethod(method_str)
+                except Exception:
+                    method = TrackingMethod.RADIAL_SYMMETRY
+
+                roi_obj = Roi(*preview_roi_rect)
+            except Exception as e:
+                try:
+                    vr.close()
+                except Exception:
+                    pass
+                results.append(PreviewResult(str(p), False, "FAIL", f"Cannot read tracking params: {e}", details))
+                QApplication.processEvents()
+                continue
+
+            samples: list[Dict[str, Any]] = []
+            pass_count = 0
+            fail_messages: list[str] = []
+
+            # Loop sampled frames
+            for fi in frame_indices:
+                try:
+                    frame = vr.get_frame(int(fi))
                     det = track_particle(
                         frame,
                         roi_obj,
@@ -154,25 +214,70 @@ class BatchController:
                         annulus_profile_smooth=int(params.get("annulus_profile_smooth", 3)),
                     )
 
-                    details.update({
-                        "preview_frame_index": frame_idx,
+                    # Minimal, physically safe gate: finite outputs
+                    finite = (
+                        (det.quality == det.quality) and
+                        (det.peak == det.peak) and
+                        (det.x_px == det.x_px) and
+                        (det.y_px == det.y_px)
+                    )
+                    if finite:
+                        pass_count += 1
+                        ok = True
+                        msg = "OK"
+                    else:
+                        ok = False
+                        msg = "NaN in detection"
+
+                    samples.append({
+                        "frame_index": int(fi),
+                        "ok": bool(ok),
+                        "message": msg,
                         "x_px": float(det.x_px),
                         "y_px": float(det.y_px),
                         "quality": float(det.quality),
                         "peak": float(det.peak),
-                        "method": method.value,
-                        "roi": list(preview_roi_rect),
                     })
-
-                    ok = (det.quality == det.quality) and (det.peak == det.peak)
-                    status = "OK" if ok else "FAIL"
-                    msg = "OT preview tracking OK" if ok else "OT preview tracking produced NaN"
-                    results.append(PreviewResult(str(p), ok, status, msg, details))
+                    if not ok:
+                        fail_messages.append(f"frame {fi}: {msg}")
 
                 except Exception as e:
-                    results.append(PreviewResult(str(p), False, "FAIL", f"OT preview tracking error: {e}", details))
+                    samples.append({
+                        "frame_index": int(fi),
+                        "ok": False,
+                        "message": f"error: {e}",
+                    })
+                    fail_messages.append(f"frame {fi}: error: {e}")
+
+                QApplication.processEvents()
+
+            try:
+                vr.close()
+            except Exception:
+                pass
+
+            n = max(1, len(frame_indices))
+            ratio = float(pass_count) / float(n)
+            ok_overall = ratio >= float(PASS_MIN_RATIO)
+
+            details.update({
+                "method": method.value,
+                "roi": list(preview_roi_rect),
+                "pass_count": int(pass_count),
+                "sample_n": int(n),
+                "pass_ratio": float(ratio),
+                "samples": samples,
+            })
+
+            if ok_overall:
+                results.append(PreviewResult(str(p), True, "OK", f"OT gate PASS ({pass_count}/{n})", details))
             else:
-                results.append(PreviewResult(str(p), True, "OK", "Preview metadata OK", details))
+                msg = f"OT gate FAIL ({pass_count}/{n})"
+                if fail_messages:
+                    msg += " — " + "; ".join(fail_messages[:3])
+                    if len(fail_messages) > 3:
+                        msg += f" (+{len(fail_messages)-3} more)"
+                results.append(PreviewResult(str(p), False, "FAIL", msg, details))
 
             QApplication.processEvents()
 
@@ -180,6 +285,8 @@ class BatchController:
             "device_id": device_id,
             "preview_roi_rect": list(preview_roi_rect) if preview_roi_rect else None,
             "preview_frame_index": int(preview_frame_index),
+            "sample_count": int(SAMPLE_COUNT),
+            "pass_min_ratio": float(PASS_MIN_RATIO),
             "results": [
                 {
                     "path": r.path,
@@ -201,7 +308,7 @@ class BatchController:
         self._last_preview_results = results
 
         # Build gate_results for shell icon updates
-        self.gate_results: dict[Path, tuple[bool, str]] = {}
+        self.gate_results = {}
         for r in results:
             self.gate_results[Path(r.path)] = (r.ok, r.message)
 
