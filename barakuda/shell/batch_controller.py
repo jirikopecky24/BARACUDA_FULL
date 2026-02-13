@@ -688,21 +688,44 @@ class BatchController:
                         self._log(f"WARN: postprocess failed ({file_path.name}): {e!r}")
 
                 try:
+                    _msd = run_dir / f"{stem}_msd.csv"
+                    _psd_x = run_dir / f"{stem}_psd_x.csv"
+                    _psd_y = run_dir / f"{stem}_psd_y.csv"
+
+                    # --- _results.xlsx (4 sheets) ---
                     export_ot_results_xlsx(
                         output_dir=run_dir,
                         base_name=stem,
                         trajectory_csv_path=traj_path,
-                        msd_csv_path=(run_dir / f"{stem}_msd.csv"),
-                        psd_x_csv_path=(run_dir / f"{stem}_psd_x.csv"),
-                        psd_y_csv_path=(run_dir / f"{stem}_psd_y.csv"),
+                        msd_csv_path=_msd,
+                        psd_x_csv_path=_psd_x,
+                        psd_y_csv_path=_psd_y,
                     )
-                    # Clean up intermediate CSVs — data is now in _results.xlsx sheets
-                    for _csv in ("_msd.csv", "_psd_x.csv", "_psd_y.csv"):
-                        _p = run_dir / f"{stem}{_csv}"
-                        if _p.exists():
-                            _p.unlink()
+
+                    # --- _results.csv (all data in one file, sections separated by headers) ---
+                    results_csv = run_dir / f"{stem}_results.csv"
+                    with results_csv.open("w", encoding="utf-8", newline="") as out:
+                        for section, src in [
+                            ("Trajectory", traj_path),
+                            ("MSD", _msd),
+                            ("PSD_X", _psd_x),
+                            ("PSD_Y", _psd_y),
+                        ]:
+                            if src.exists():
+                                out.write(f"# [{section}]\n")
+                                txt = src.read_text(encoding="utf-8")
+                                # skip existing comment lines for trajectory
+                                for line in txt.splitlines():
+                                    if not line.startswith("#"):
+                                        out.write(line + "\n")
+                                out.write("\n")
+
+                    # Clean up intermediate CSVs — data is in _results.xlsx + _results.csv
+                    for _tmp in (traj_path, _msd, _psd_x, _psd_y):
+                        if _tmp.exists():
+                            _tmp.unlink()
                 except Exception as e:
-                    self._log(f"WARN: excel export skipped ({file_path.name}): {e!r}")
+                    self._log(f"WARN: results export failed ({file_path.name}): {e!r}")
 
                 dataset_set_status_fn(file_path, "done")
                 self._log(f"OK: {file_path.name} -> {result.run_id}")
