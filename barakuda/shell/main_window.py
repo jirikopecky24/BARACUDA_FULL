@@ -6,7 +6,7 @@ from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QSplitter, QLabel, QComboBox,
-    QSizePolicy, QPushButton
+    QSizePolicy, QPushButton, QToolButton, QHBoxLayout
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -44,36 +44,72 @@ class ShellMainWindow(QMainWindow):
         header = QWidget()
         h_layout = QVBoxLayout(header)
         h_layout.setContentsMargins(8, 8, 8, 0)
+        h_layout.setSpacing(6)
 
-        top_row = QWidget()
-        top_layout = QVBoxLayout(top_row)
-        top_layout.setContentsMargins(0, 0, 0, 0)
+        # Compact top bar (always visible)
+        topbar = QWidget()
+        topbar_l = QHBoxLayout(topbar)
+        topbar_l.setContentsMargins(0, 0, 0, 0)
+        topbar_l.setSpacing(8)
 
         title = QLabel("BARAKUDA Analysis Suite")
-        title.setStyleSheet("font-size: 16px; font-weight: 700;")
-        subtitle = QLabel("Audit-first • Deterministic • Batch-ready")
-        subtitle.setStyleSheet("color: #666;")
+        title.setStyleSheet("font-size: 14px; font-weight: 700;")
+
+        self.btn_toggle_controls = QToolButton()
+        self.btn_toggle_controls.setCheckable(True)
+        self.btn_toggle_controls.setChecked(False)
+        self.btn_toggle_controls.setText("▸ Controls")
+
+        def _sync_controls_text(checked: bool) -> None:
+            self.btn_toggle_controls.setText("▾ Controls" if checked else "▸ Controls")
+
+        self.btn_toggle_controls.toggled.connect(_sync_controls_text)
+
+        topbar_l.addWidget(title)
+        topbar_l.addStretch(1)
+        topbar_l.addWidget(self.btn_toggle_controls)
+
+        # Controls panel (collapsible)
+        self.controls = QWidget()
+        c = QHBoxLayout(self.controls)
+        c.setContentsMargins(0, 0, 0, 0)
+        c.setSpacing(8)
 
         self.device_combo = QComboBox()
         for d in self._devices:
             self.device_combo.addItem(d.display_name, d.device_id)
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
 
-        self.btn_preview_gate = QPushButton("Preview Gate (mandatory)")
+        self.method_combo = QComboBox()
+        self.method_combo.setVisible(False)
+
+        self.btn_preview_gate = QPushButton("Preview Gate")
         self.btn_run_batch = QPushButton("Run Batch")
         self.btn_run_batch.setEnabled(False)
+
+        # Keep controls compact
+        for w in [self.device_combo, self.method_combo, self.btn_preview_gate, self.btn_run_batch]:
+            try:
+                w.setFixedHeight(26)
+            except Exception:
+                pass
 
         self.btn_preview_gate.clicked.connect(self._on_preview_gate)
         self.btn_run_batch.clicked.connect(self._on_run_batch)
 
-        top_layout.addWidget(title)
-        top_layout.addWidget(subtitle)
-        top_layout.addWidget(QLabel("Device / Modality:"))
-        top_layout.addWidget(self.device_combo)
-        top_layout.addWidget(self.btn_preview_gate)
-        top_layout.addWidget(self.btn_run_batch)
+        c.addWidget(QLabel("Device:"))
+        c.addWidget(self.device_combo, 1)
+        c.addWidget(QLabel("Method:"))
+        c.addWidget(self.method_combo, 0)
+        c.addWidget(self.btn_preview_gate, 0)
+        c.addWidget(self.btn_run_batch, 0)
+        c.addStretch(1)
 
-        h_layout.addWidget(top_row)
+        self.controls.setVisible(False)
+        self.btn_toggle_controls.toggled.connect(self.controls.setVisible)
+
+        h_layout.addWidget(topbar)
+        h_layout.addWidget(self.controls)
         header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.main_split = QSplitter(Qt.Orientation.Horizontal)
@@ -114,6 +150,15 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Preview: video loaded." if is_video_file(path) else "Preview: file loaded.")
         except Exception as e:
             self.log_panel.log(f"Preview ERROR: {e!r}")
+
+        # Auto-set OT end-frame to last frame of the loaded video (frame_count - 1).
+        if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
+            try:
+                fc = self.preview.get_video_frame_count()
+                if fc is not None and fc > 0 and hasattr(self._device_panel, "set_end_frame"):
+                    self._device_panel.set_end_frame(int(fc - 1))  # type: ignore[attr-defined]
+            except Exception as e:
+                self.log_panel.log(f"WARN: end-frame autoload failed: {e!r}")
 
         self.batch.reset_gate()
         self.btn_run_batch.setEnabled(False)
@@ -180,6 +225,37 @@ class ShellMainWindow(QMainWindow):
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
         self.log_panel.log(f"Device selected: {spec.display_name}")
+
+        # Top-bar method selector (device-specific)
+        if self._active_device_id == "optical_tweezers":
+            self.method_combo.blockSignals(True)
+            try:
+                self.method_combo.clear()
+                self.method_combo.addItem("RADIAL_SYMMETRY", "RADIAL_SYMMETRY")
+                self.method_combo.addItem("INTENSITY_PEAK", "INTENSITY_PEAK")
+                self.method_combo.setCurrentIndex(0)
+                self.method_combo.setVisible(True)
+
+                # push into device panel (so batch reads it from get_tracking_params)
+                if hasattr(self._device_panel, "set_tracking_method"):
+                    self._device_panel.set_tracking_method("RADIAL_SYMMETRY")  # type: ignore[attr-defined]
+
+                def _on_method_changed(_idx: int) -> None:
+                    mid = str(self.method_combo.currentData())
+                    if hasattr(self._device_panel, "set_tracking_method"):
+                        self._device_panel.set_tracking_method(mid)  # type: ignore[attr-defined]
+
+                # avoid duplicate connections
+                try:
+                    self.method_combo.currentIndexChanged.disconnect()
+                except Exception:
+                    pass
+                self.method_combo.currentIndexChanged.connect(_on_method_changed)
+
+            finally:
+                self.method_combo.blockSignals(False)
+        else:
+            self.method_combo.setVisible(False)
 
     # ---------------- OT helpers ----------------
 

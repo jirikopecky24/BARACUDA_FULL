@@ -3,7 +3,8 @@ from __future__ import annotations
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
-    QGroupBox, QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox
+    QGroupBox, QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
+    QToolButton, QHBoxLayout
 )
 
 
@@ -179,11 +180,39 @@ class PipelinePanel(QWidget):
         post_form.addRow("", self._drift_enabled)
         post_form.addRow("Drift window (s)", self._drift_window_s)
 
+        def _collapsible(title_text: str, inner: QWidget, expanded: bool) -> QWidget:
+            wrap = QWidget()
+            v = QVBoxLayout(wrap)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(4)
+
+            btn = QToolButton()
+            btn.setCheckable(True)
+            btn.setChecked(bool(expanded))
+
+            def _sync_text(checked: bool) -> None:
+                btn.setText(("▾ " if checked else "▸ ") + title_text)
+
+            _sync_text(bool(expanded))
+            inner.setVisible(bool(expanded))
+
+            def _on_toggle(checked: bool) -> None:
+                inner.setVisible(bool(checked))
+                _sync_text(bool(checked))
+
+            btn.toggled.connect(_on_toggle)
+
+            v.addWidget(btn)
+            v.addWidget(inner)
+            return wrap
+
+        self._tracking_method = "RADIAL_SYMMETRY"
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(title)
-        layout.addWidget(params_box)
-        layout.addWidget(post_box)
+        layout.addWidget(_collapsible("Params", params_box, expanded=True))
+        layout.addWidget(_collapsible("Postprocess (OT-3.1)", post_box, expanded=False))
         layout.addWidget(self.btn_measure)
         layout.addWidget(self.btn_track_range)
         layout.addWidget(self.btn_run_selected)
@@ -200,7 +229,7 @@ class PipelinePanel(QWidget):
         r_in = float(self._annulus_r_inner.value())
         r_out = float(self._annulus_r_outer.value())
         return {
-            "method": "RADIAL_SYMMETRY",
+            "method": str(self._tracking_method),
             "adaptive_roi": bool(self._adaptive_roi.isChecked()),
             "invert": bool(self._invert.isChecked()),
             "blur_sigma": float(self._blur_sigma.value()),
@@ -248,3 +277,9 @@ class PipelinePanel(QWidget):
             self._um_per_px.setValue(float(value))
         except Exception:
             pass
+
+    def set_end_frame(self, end_frame: int) -> None:
+        self._end_frame.setValue(int(end_frame))
+
+    def set_tracking_method(self, method: str) -> None:
+        self._tracking_method = str(method)
