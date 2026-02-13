@@ -88,3 +88,107 @@ def export_trajectory_xlsx(
 
     wb.save(out_path)
     return out_path
+
+
+def export_ot_results_xlsx(
+    output_dir: Path,
+    base_name: str,
+    trajectory_csv_path: Path,
+    msd_csv_path: Path | None = None,
+    psd_x_csv_path: Path | None = None,
+    psd_y_csv_path: Path | None = None,
+    psd_fit_json_path: Path | None = None,
+    postprocess_json_path: Path | None = None,
+) -> Path:
+    """
+    Create/update <base_name>_trajectory.xlsx and add OT physics sheets.
+
+    Keeps CSV as canonical scientific output. XLSX is a human-friendly bundle.
+    Units must be encoded in column names in CSV (variant 1).
+    """
+
+    import csv
+    import json as _json
+
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        # If openpyxl missing, do nothing (caller should catch if needed)
+        return Path(output_dir) / f"{base_name}_trajectory.xlsx"
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: ensure the trajectory workbook exists (Trajectory + Metadata)
+    out_path = export_trajectory_xlsx(
+        run_dir=output_dir,
+        trajectory_csv_path=trajectory_csv_path,
+        extra_metadata=None,
+        output_name=f"{base_name}_trajectory.xlsx",
+    )
+
+    wb = load_workbook(out_path)
+
+    def _drop_sheet(title: str) -> None:
+        if title in wb.sheetnames:
+            ws = wb[title]
+            wb.remove(ws)
+
+    def _write_csv_sheet(title: str, csv_path: Path) -> None:
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            return
+        _drop_sheet(title)
+        ws = wb.create_sheet(title)
+
+        with csv_path.open("r", encoding="utf-8", newline="") as f:
+            r = csv.reader(f)
+            rows = list(r)
+        if not rows:
+            return
+
+        for rr in rows:
+            ws.append(rr)
+
+        # freeze header + filter
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+    def _write_json_sheet(title: str, json_path: Path) -> None:
+        json_path = Path(json_path)
+        if not json_path.exists():
+            return
+        _drop_sheet(title)
+        ws = wb.create_sheet(title)
+
+        try:
+            payload = _json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {"error": "cannot parse json", "path": str(json_path)}
+
+        # dump as key/value (1st level)
+        ws.append(["key", "value"])
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+        if isinstance(payload, dict):
+            for k, v in payload.items():
+                ws.append([str(k), _json.dumps(v, ensure_ascii=False) if not isinstance(v, (str, int, float, bool)) else v])
+        else:
+            ws.append(["payload", _json.dumps(payload, ensure_ascii=False)])
+
+    # Add sheets (only if files exist)
+    if msd_csv_path is not None:
+        _write_csv_sheet("msd", msd_csv_path)
+    if psd_x_csv_path is not None:
+        _write_csv_sheet("psd_x", psd_x_csv_path)
+    if psd_y_csv_path is not None:
+        _write_csv_sheet("psd_y", psd_y_csv_path)
+    if psd_fit_json_path is not None:
+        _write_json_sheet("psd_fit", psd_fit_json_path)
+    if postprocess_json_path is not None:
+        _write_json_sheet("postprocess_summary", postprocess_json_path)
+
+    # Keep original "Trajectory" and "Metadata" sheets created by export_trajectory_xlsx
+    wb.save(out_path)
+    return out_path

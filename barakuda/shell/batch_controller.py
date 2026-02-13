@@ -14,7 +14,7 @@ from barakuda.core.video_reader import VideoReader
 from barakuda.core.video_io import is_video_file
 from barakuda.core.run_manager import RunManager
 from barakuda.core.calibration_store import load_dataset_scale
-from barakuda.core.export_xlsx import export_trajectory_xlsx
+from barakuda.core.export_xlsx import export_trajectory_xlsx, export_ot_results_xlsx
 from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams
 
 from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
@@ -688,11 +688,15 @@ class BatchController:
                         self._log(f"WARN: postprocess failed ({file_path.name}): {e!r}")
 
                 try:
-                    export_trajectory_xlsx(
-                        run_dir=run_dir,
+                    export_ot_results_xlsx(
+                        output_dir=run_dir,
+                        base_name=stem,
                         trajectory_csv_path=traj_path,
-                        extra_metadata={"source_file": str(file_path.name)},
-                        output_name=f"{stem}_trajectory.xlsx",
+                        msd_csv_path=(run_dir / f"{stem}_msd.csv"),
+                        psd_x_csv_path=(run_dir / f"{stem}_psd_x.csv"),
+                        psd_y_csv_path=(run_dir / f"{stem}_psd_y.csv"),
+                        psd_fit_json_path=(run_dir / f"{stem}_psd_fit.json"),
+                        postprocess_json_path=(run_dir / f"{stem}_postprocess.json"),
                     )
                 except Exception as e:
                     self._log(f"WARN: excel export skipped ({file_path.name}): {e!r}")

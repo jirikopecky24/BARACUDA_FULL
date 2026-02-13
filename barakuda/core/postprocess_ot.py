@@ -263,12 +263,61 @@ def postprocess_trajectory_csv_inplace(
     }
     fit_path.write_text(json.dumps(fit_payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    # QC plot (single PNG): PSD (x+y+fits) + MSD
+    qc_png = out_dir / f"{base}_qc.png"
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure(figsize=(10, 8))
+
+        # PSD panel
+        ax1 = fig.add_subplot(2, 1, 1)
+        ax1.loglog(f_x[1:], pxx[1:], label="PSD X")
+        ax1.loglog(f_y[1:], pyy[1:], label="PSD Y")
+
+        # plot fits (only if fit succeeded)
+        if "fc_hz" in fit_x and "fc_hz" in fit_y:
+            fx = np.asarray(f_x, dtype=np.float64)
+
+            def _lorentz_curve(f: np.ndarray, A: float, fc: float, B: float) -> np.ndarray:
+                return (A / (fc * fc + f * f)) + B
+
+            px_fit = _lorentz_curve(fx, float(fit_x["A"]), float(fit_x["fc_hz"]), float(fit_x["B"]))
+            py_fit = _lorentz_curve(fx, float(fit_y["A"]), float(fit_y["fc_hz"]), float(fit_y["B"]))
+
+            ax1.loglog(fx[1:], px_fit[1:], linestyle="--", label=f"Fit X (fc={fit_x['fc_hz']:.2f} Hz)")
+            ax1.loglog(fx[1:], py_fit[1:], linestyle="--", label=f"Fit Y (fc={fit_y['fc_hz']:.2f} Hz)")
+
+        ax1.set_xlabel("f [Hz]")
+        ax1.set_ylabel("PSD [px^2/Hz]")
+        ax1.set_title("PSD + Lorentzian fit")
+        ax1.legend()
+
+        # MSD panel
+        ax2 = fig.add_subplot(2, 1, 2)
+        ax2.loglog(msd["tau_s"], msd["msd_r"], label="MSD r (px^2)")
+        ax2.set_xlabel("tau [s]")
+        ax2.set_ylabel("MSD [px^2]")
+        ax2.set_title("MSD")
+        ax2.legend()
+
+        fig.tight_layout()
+        fig.savefig(qc_png, dpi=160)
+        plt.close(fig)
+
+    except Exception:
+        # plotting must never fail the run
+        pass
+
     summary["physics"] = {
         "range_frames": {"start_frame": int(sF), "end_frame": int(eF)},
         "msd_csv": msd_path.name,
         "psd_x_csv": psd_x_path.name,
         "psd_y_csv": psd_y_path.name,
         "psd_fit_json": fit_path.name,
+        "qc_png": qc_png.name,
         "lorentz_fit": {"x": fit_x, "y": fit_y},
     }
 
