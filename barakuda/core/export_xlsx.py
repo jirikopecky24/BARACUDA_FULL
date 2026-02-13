@@ -164,5 +164,58 @@ def export_ot_results_xlsx(
     _add_csv_sheet("PSD_X", psd_x_csv_path)
     _add_csv_sheet("PSD_Y", psd_y_csv_path)
 
+    # Optional: DRAG + COMPARE sheets (two-video comparison outputs)
+    drag_json = output_dir / f"{base_name}_drag.json"
+    compare_csv = output_dir / f"{base_name}_compare.csv"
+
+    if drag_json.exists():
+        ws = wb.create_sheet("DRAG")
+        import json as _json
+        payload = _json.loads(drag_json.read_text(encoding="utf-8"))
+        # simple key-value dump
+        row = 1
+        def _emit(prefix: str, obj: Any):
+            nonlocal row
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    _emit(f"{prefix}{k}.", v)
+            else:
+                ws.cell(row=row, column=1, value=prefix[:-1] if prefix.endswith(".") else prefix)
+                ws.cell(row=row, column=2, value=str(obj))
+                row += 1
+        _emit("", payload)
+
+    if compare_csv.exists():
+        ws = wb.create_sheet("COMPARE")
+        import csv as _csv
+        with compare_csv.open("r", encoding="utf-8", newline="") as f:
+            r = _csv.reader(f)
+            rows = list(r)
+        for i, rr in enumerate(rows, start=1):
+            for j, vv in enumerate(rr, start=1):
+                ws.cell(row=i, column=j, value=vv)
+
+    # Optional: CALIBRATION + HIST sheets
+    cal_csv = output_dir / f"{base_name}_calibration.csv"
+    if cal_csv.exists():
+        ws = wb.create_sheet("CALIBRATION")
+        import csv as _csv
+        with cal_csv.open("r", encoding="utf-8", newline="") as f:
+            rows = list(_csv.reader(f))
+        for i, rr in enumerate(rows, start=1):
+            for j, vv in enumerate(rr, start=1):
+                ws.cell(row=i, column=j, value=vv)
+
+    for tag in ("x", "y", "r"):
+        hp = output_dir / f"{base_name}_hist_{tag}.csv"
+        if hp.exists():
+            ws = wb.create_sheet(f"HIST_{tag.upper()}")
+            import csv as _csv
+            with hp.open("r", encoding="utf-8", newline="") as f:
+                rows = list(_csv.reader(f))
+            for i, rr in enumerate(rows, start=1):
+                for j, vv in enumerate(rr, start=1):
+                    ws.cell(row=i, column=j, value=vv)
+
     wb.save(out_path)
     return out_path

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import math
 
 
 @dataclass(frozen=True)
@@ -190,3 +191,215 @@ def fit_lorentzian_psd(
         "fmin_hz": float(fmin_hz),
         "fmax_hz": float(fmax_hz),
     }
+
+# ---------------- Calibration helpers (Brownian vs Dragging) ----------------
+
+@dataclass(frozen=True)
+class DragParams:
+    stage_speed_um_s: float
+    axis: str = "x"               # "x" | "y"
+    viscosity_pa_s: float = 1.0e-3
+    bead_radius_um: float = 0.5   # 1 µm diameter bead -> 0.5 µm radius
+
+
+@dataclass(frozen=True)
+class DragResult:
+    drag_force_n: float
+    offset_um: float
+    kappa_n_per_m: float
+    kappa_pn_per_um: float
+    axis: str
+    stage_speed_um_s: float
+    viscosity_pa_s: float
+    bead_radius_um: float
+
+
+def stokes_gamma_n_s_per_m(viscosity_pa_s: float, bead_radius_um: float) -> float:
+    """Gamma = 6π η R  [N·s/m]"""
+    eta = float(viscosity_pa_s)
+    r_m = float(bead_radius_um) * 1e-6
+    if not np.isfinite(eta) or eta <= 0:
+        raise ValueError("viscosity_pa_s must be > 0")
+    if not np.isfinite(r_m) or r_m <= 0:
+        raise ValueError("bead_radius_um must be > 0")
+    return float(6.0 * math.pi * eta * r_m)
+
+
+def kappa_from_fc_n_per_m(fc_hz: float, viscosity_pa_s: float, bead_radius_um: float) -> float:
+    """kappa = 2π γ fc  [N/m]"""
+    fc = float(fc_hz)
+    if not np.isfinite(fc) or fc <= 0:
+        raise ValueError("fc_hz must be > 0")
+    gamma = stokes_gamma_n_s_per_m(viscosity_pa_s, bead_radius_um)
+    return float(2.0 * math.pi * gamma * fc)
+
+
+def compute_dragging_from_offset(offset_um: float, params: DragParams) -> DragResult:
+    """Dragging stiffness from offset Δx under constant-velocity stage pulling.
+
+    F_drag = 6π η R v
+    kappa  = F_drag / Δx
+    """
+    axis = str(params.axis).lower().strip()
+    if axis not in ("x", "y"):
+        raise ValueError("DragParams.axis must be 'x' or 'y'")
+
+    v_um_s = float(params.stage_speed_um_s)
+    if not np.isfinite(v_um_s) or v_um_s <= 0:
+        raise ValueError("stage_speed_um_s must be > 0")
+
+    eta = float(params.viscosity_pa_s)
+    r_um = float(params.bead_radius_um)
+    if not np.isfinite(eta) or eta <= 0:
+        raise ValueError("viscosity_pa_s must be > 0")
+    if not np.isfinite(r_um) or r_um <= 0:
+        raise ValueError("bead_radius_um must be > 0")
+
+    off = float(offset_um)
+    if not np.isfinite(off) or abs(off) < 1e-12:
+        raise ValueError("offset_um is ~0; cannot estimate stiffness")
+
+    v_m_s = v_um_s * 1e-6
+    r_m = r_um * 1e-6
+
+    f_drag = float(6.0 * math.pi * eta * r_m * v_m_s)  # N
+    kappa = float(f_drag / (off * 1e-6))               # N/m (signed)
+    kappa_abs = float(abs(kappa))
+
+    return DragResult(
+        drag_force_n=f_drag,
+        offset_um=off,
+        kappa_n_per_m=kappa,
+        kappa_pn_per_um=float(kappa_abs * 1e6 * 1e12),  # (N/m)->(pN/µm)
+        axis=axis,
+        stage_speed_um_s=v_um_s,
+        viscosity_pa_s=eta,
+        bead_radius_um=r_um,
+    )
+
+
+# ---------------- Fundamental constants ----------------
+K_B = 1.380649e-23  # J/K
+
+
+@dataclass(frozen=True)
+class CalibrationParams:
+    temperature_c: float = 25.0
+    bead_diameter_um: float = 1.0  # default as requested
+    viscosity_pa_s_override: float = 0.0  # if >0, use as provided instead of inferred
+
+
+@dataclass(frozen=True)
+class CalibrationResult:
+    temperature_k: float
+    bead_radius_um: float
+
+    # Equipartition stiffness (per axis)
+    kappa_x_n_per_m: float
+    kappa_y_n_per_m: float
+    kappa_x_pn_per_um: float
+    kappa_y_pn_per_um: float
+    kappa_iso_ratio: float  # kx/ky
+
+    # Viscosity inferred from kappa + fc (per axis)
+    eta_x_pa_s: float
+    eta_y_pa_s: float
+    eta_mean_pa_s: float
+
+    # Diffusion from eta (mean)
+    d_m2_s: float
+
+    # Diagnostics
+    var_x_um2: float
+    var_y_um2: float
+    fc_x_hz: float
+    fc_y_hz: float
+    n_used: int
+
+
+def _to_kappa_pn_per_um(kappa_n_per_m: float) -> float:
+    # (N/m) -> (pN/µm) = N/m * (1e12 pN/N) * (1e-6 m/µm)
+    return float(abs(kappa_n_per_m) * 1e6 * 1e12)
+
+
+def compute_calibration_from_equipartition_and_fc(
+    x_um: np.ndarray,
+    y_um: np.ndarray,
+    fc_x_hz: float,
+    fc_y_hz: float,
+    params: CalibrationParams,
+) -> CalibrationResult:
+    """
+    Returns: kappa_x, kappa_y from equipartition, and inferred viscosity eta from (kappa, fc).
+    Requires:
+      - x_um, y_um already drift-corrected (or at least centered)
+      - bead diameter (for radius)
+      - temperature
+    """
+    x = np.asarray(x_um, dtype=np.float64)
+    y = np.asarray(y_um, dtype=np.float64)
+    m = np.isfinite(x) & np.isfinite(y)
+    x = x[m]
+    y = y[m]
+    if x.size < 32:
+        raise ValueError("not enough samples for calibration")
+
+    T_k = float(params.temperature_c) + 273.15
+    if not np.isfinite(T_k) or T_k <= 0:
+        raise ValueError("temperature invalid")
+
+    d_um = float(params.bead_diameter_um)
+    if not np.isfinite(d_um) or d_um <= 0:
+        raise ValueError("bead_diameter_um must be > 0")
+    r_um = 0.5 * d_um
+    r_m = r_um * 1e-6
+
+    # variances (um^2)
+    var_x = float(np.var(x, ddof=1))
+    var_y = float(np.var(y, ddof=1))
+    if var_x <= 0 or var_y <= 0:
+        raise ValueError("variance <= 0 (check units, drift correction, or tracking)")
+
+    # equipartition: kappa = kBT / <x^2>
+    kBT = K_B * T_k
+    kappa_x = float(kBT / (var_x * 1e-12))  # um^2 -> m^2 via 1e-12
+    kappa_y = float(kBT / (var_y * 1e-12))
+
+    # viscosity from kappa + fc: eta = kappa / (12π^2 R fc)
+    # derived from: fc = kappa / (2πγ), γ = 6π η R => eta = kappa / (12 π^2 R fc)
+    fx = float(fc_x_hz)
+    fy = float(fc_y_hz)
+    if not np.isfinite(fx) or fx <= 0 or not np.isfinite(fy) or fy <= 0:
+        raise ValueError("fc_x_hz/fc_y_hz must be > 0")
+
+    denom_x = float(12.0 * (math.pi ** 2) * r_m * fx)
+    denom_y = float(12.0 * (math.pi ** 2) * r_m * fy)
+    eta_x = float(kappa_x / denom_x)
+    eta_y = float(kappa_y / denom_y)
+
+    # if override viscosity provided, use it for D (but keep inferred for reporting)
+    eta_mean = float(0.5 * (eta_x + eta_y))
+    eta_for_d = float(params.viscosity_pa_s_override) if float(params.viscosity_pa_s_override) > 0 else eta_mean
+
+    # diffusion: D = kBT / (6π η R)
+    d = float(kBT / (6.0 * math.pi * eta_for_d * r_m))
+
+    return CalibrationResult(
+        temperature_k=float(T_k),
+        bead_radius_um=float(r_um),
+        kappa_x_n_per_m=float(kappa_x),
+        kappa_y_n_per_m=float(kappa_y),
+        kappa_x_pn_per_um=_to_kappa_pn_per_um(kappa_x),
+        kappa_y_pn_per_um=_to_kappa_pn_per_um(kappa_y),
+        kappa_iso_ratio=float(kappa_x / kappa_y) if kappa_y != 0 else float("nan"),
+        eta_x_pa_s=float(eta_x),
+        eta_y_pa_s=float(eta_y),
+        eta_mean_pa_s=float(eta_mean),
+        d_m2_s=float(d),
+        var_x_um2=float(var_x),
+        var_y_um2=float(var_y),
+        fc_x_hz=float(fx),
+        fc_y_hz=float(fy),
+        n_used=int(x.size),
+    )
+

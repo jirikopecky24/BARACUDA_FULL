@@ -4,7 +4,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
-    QToolButton, QHBoxLayout, QMenu
+    QToolButton, QHBoxLayout, QMenu, QComboBox
 )
 
 
@@ -204,6 +204,47 @@ class PipelinePanel(QWidget):
         self._drift_window_s.setSingleStep(0.1)
         self._drift_window_s.setValue(1.0)
 
+        # Physics mode (Brownian vs Dragging)
+        self._physics_mode = QComboBox()
+        self._physics_mode.addItem("BROWNIAN (equilibrium)", "BROWNIAN")
+        self._physics_mode.addItem("DRAGGING (stage pulling)", "DRAGGING")
+        self._physics_mode.setCurrentIndex(0)
+
+        self._stage_speed = QDoubleSpinBox()
+        self._stage_speed.setRange(0.0, 1e9)
+        self._stage_speed.setDecimals(6)
+        self._stage_speed.setSingleStep(1.0)
+        self._stage_speed.setValue(0.0)
+
+        self._drag_axis = QComboBox()
+        self._drag_axis.addItem("x", "x")
+        self._drag_axis.addItem("y", "y")
+        self._drag_axis.setCurrentIndex(0)
+
+        self._viscosity = QDoubleSpinBox()
+        self._viscosity.setRange(0.0, 10.0)
+        self._viscosity.setDecimals(6)
+        self._viscosity.setSingleStep(0.0005)
+        self._viscosity.setValue(0.001)  # Pa·s
+
+        self._bead_radius = QDoubleSpinBox()
+        self._bead_radius.setRange(0.0, 1e6)
+        self._bead_radius.setDecimals(6)
+        self._bead_radius.setSingleStep(0.05)
+        self._bead_radius.setValue(0.5)  # µm (1 µm diameter bead)
+
+        self._temperature_c = QDoubleSpinBox()
+        self._temperature_c.setRange(-10.0, 100.0)
+        self._temperature_c.setDecimals(2)
+        self._temperature_c.setSingleStep(0.5)
+        self._temperature_c.setValue(25.0)
+
+        self._bead_diameter_um = QDoubleSpinBox()
+        self._bead_diameter_um.setRange(0.1, 100.0)
+        self._bead_diameter_um.setDecimals(3)
+        self._bead_diameter_um.setSingleStep(0.1)
+        self._bead_diameter_um.setValue(1.0)  # DEFAULT as requested (most common)
+
         params_box = QWidget()
         params_box_layout = QFormLayout(params_box)
 
@@ -241,6 +282,13 @@ class PipelinePanel(QWidget):
         post_box_layout.addRow("QC jump_max (px)", self._qc_jump_max)
         post_box_layout.addRow("", self._drift_enabled)
         post_box_layout.addRow("Drift window (s)", self._drift_window_s)
+        post_box_layout.addRow("Physics mode", self._physics_mode)
+        post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
+        post_box_layout.addRow("Drag axis", self._drag_axis)
+        post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
+        post_box_layout.addRow("Bead radius (µm)", self._bead_radius)
+        post_box_layout.addRow("Temperature (°C)", self._temperature_c)
+        post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
 
         def _collapsible(title_text: str, inner: QWidget, expanded: bool) -> QWidget:
             wrap = QWidget()
@@ -346,6 +394,13 @@ class PipelinePanel(QWidget):
             "jump_max_px": float(self._qc_jump_max.value()),
             "drift_enabled": bool(self._drift_enabled.isChecked()),
             "drift_window_s": float(self._drift_window_s.value()),
+            "physics_mode": str(self._physics_mode.currentData()),
+            "stage_speed_um_s": float(self._stage_speed.value()),
+            "drag_axis": str(self._drag_axis.currentData()),
+            "viscosity_pa_s": float(self._viscosity.value()),
+            "bead_radius_um": float(self._bead_radius.value()),
+            "temperature_c": float(self._temperature_c.value()),
+            "bead_diameter_um": float(self._bead_diameter_um.value()),
         }
 
     def get_scale_params(self) -> dict:

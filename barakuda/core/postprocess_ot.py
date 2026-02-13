@@ -9,25 +9,50 @@ import numpy as np
 from barakuda.core.trajectory_csv_io import read_trajectory_csv, write_trajectory_csv_atomic
 from barakuda.core.qc_flags import QcParams, compute_track_loss_flags
 from barakuda.core.drift_correction import DriftParams, estimate_drift, apply_drift_correction
-from barakuda.core.ot_physics import PsdParams, compute_msd, compute_psd_welch, fit_lorentzian_psd
+from barakuda.core.ot_physics import (
+    PsdParams,
+    compute_msd,
+    compute_psd_welch,
+    fit_lorentzian_psd,
+    fit_lorentzian_psd,
+    DragParams,
+    CalibrationParams,
+    compute_calibration_from_equipartition_and_fc,
+)
 
 
 @dataclass(frozen=True)
 class PostprocessParams:
-    """OT-3.1: postprocess settings (QC + drift).
+    """OT-3.1: postprocess settings (QC + drift + physics).
 
     All settings are meant to be recorded into run.json (audit) and into
     trajectory.csv header lines.
     """
 
+    # QC
     qc_enabled: bool = True
     q_min: float = 0.0
     jump_max_px: float = 50.0
 
+    # Drift
     drift_enabled: bool = True
     drift_window_s: float = 1.0
 
+    # Units
     export_um_columns: bool = True
+
+    # Physics mode
+    # - BROWNIAN: equilibrium fluctuations → MSD + PSD + Lorentz fit (default)
+    # - DRAGGING: stage pulling calibration (constant v) + optional PSD/MSD on residuals
+    physics_mode: str = "BROWNIAN"  # "BROWNIAN" | "DRAGGING"
+
+    # Dragging parameters (used only when physics_mode == "DRAGGING")
+    stage_speed_um_s: float = 0.0
+    drag_axis: str = "x"  # "x" or "y"
+    viscosity_pa_s: float = 1.0e-3
+    bead_radius_um: float = 0.5
+    temperature_c: float = 25.0
+    bead_diameter_um: float = 1.0
 
 
 def postprocess_trajectory_csv_inplace(
@@ -124,6 +149,13 @@ def postprocess_trajectory_csv_inplace(
     meta.append(f"# postprocess_ot3_drift_enabled={bool(params.drift_enabled)}")
     meta.append(f"# postprocess_ot3_drift_window_s={float(params.drift_window_s)}")
     meta.append(f"# postprocess_ot3_drift_window_frames={int(win_frames)}")
+    meta.append(f"# postprocess_ot3_physics_mode={str(params.physics_mode)}")
+    meta.append(f"# postprocess_ot3_stage_speed_um_s={float(params.stage_speed_um_s)}")
+    meta.append(f"# postprocess_ot3_drag_axis={str(params.drag_axis)}")
+    meta.append(f"# postprocess_ot3_viscosity_pa_s={float(params.viscosity_pa_s)}")
+    meta.append(f"# postprocess_ot3_bead_radius_um={float(params.bead_radius_um)}")
+    meta.append(f"# postprocess_ot3_temperature_c={float(params.temperature_c)}")
+    meta.append(f"# postprocess_ot3_bead_diameter_um={float(params.bead_diameter_um)}")
     meta.append(f"# postprocess_ot3_lost_frames={lost_n}")
     meta.append(f"# postprocess_ot3_lost_fraction={lost_frac:.6g}")
 
@@ -146,8 +178,13 @@ def postprocess_trajectory_csv_inplace(
         "um_per_px": (float(um_per_px) if um_per_px is not None else None),
     }
 
-    # ---------------- Physics analysis (OT): MSD + PSD + Lorentz fit ----------------
-    # Choose corrected columns if present
+    # ---------------- Physics analysis (OT): two modes ----------------
+    # Mode A) BROWNIAN (default): equilibrium fluctuations → MSD + PSD + Lorentz fit
+    # Mode B) DRAGGING: stage pulling (constant v) → stiffness from Stokes drag + optional PSD/MSD on residuals
+
+    physics_mode = str(params.physics_mode).upper().strip()
+
+    # Choose corrected columns if present (px)
     x_use = col("x_corr_px") if "x_corr_px" in table.header else x
     y_use = col("y_corr_px") if "y_corr_px" in table.header else y
     t_use = col("t_s")
@@ -161,164 +198,282 @@ def postprocess_trajectory_csv_inplace(
 
     mask_rng = (frames >= sF) & (frames <= eF) & np.isfinite(x_use) & np.isfinite(y_use) & np.isfinite(t_use)
     if int(np.sum(mask_rng)) < 16:
-        # Not enough data for physics — skip but don't crash
-        summary["physics"] = {"skipped": True, "reason": "too few samples after filtering"}
+        summary["physics"] = {"skipped": True, "reason": "too few samples after filtering", "range_frames": {"start_frame": int(sF), "end_frame": int(eF)}}
         return summary
 
     x_rng = x_use[mask_rng]
     y_rng = y_use[mask_rng]
+    t_rng = t_use[mask_rng]
 
     # dt from fps (deterministic)
     dt_s = 1.0 / float(fps)
 
-    # MSD (px^2)
-    msd = compute_msd(x_rng, y_rng, dt_s=dt_s, max_lag=None)
-
-    # PSD (px^2/Hz) using Welch
-    nperseg = 1024
-    if x_rng.size < nperseg:
-        nperseg = max(64, int(2 ** np.floor(np.log2(x_rng.size))))
-    noverlap = int(nperseg // 2)
-
-    psd_params = PsdParams(fs_hz=float(fps), nperseg=int(nperseg), noverlap=int(noverlap), detrend=True)
-    f_x, pxx = compute_psd_welch(x_rng, psd_params)
-    f_y, pyy = compute_psd_welch(y_rng, psd_params)
-
-    # Lorentz fit (use a conservative band)
-    fit_band_min = max(1.0, float(f_x[1]) if f_x.size > 1 else 1.0)
-    fit_band_max = float(np.max(f_x))
-    try:
-        fit_x = fit_lorentzian_psd(f_x, pxx, fmin_hz=fit_band_min, fmax_hz=fit_band_max)
-    except Exception:
-        fit_x = {"error": "fit failed"}
-    try:
-        fit_y = fit_lorentzian_psd(f_y, pyy, fmin_hz=fit_band_min, fmax_hz=fit_band_max)
-    except Exception:
-        fit_y = {"error": "fit failed"}
-
-    # Save outputs next to trajectory with strict naming
     base = trajectory_csv_path.name.replace("_trajectory.csv", "")
     out_dir = trajectory_csv_path.parent
 
-    msd_path = out_dir / f"{base}_msd.csv"
-    psd_x_path = out_dir / f"{base}_psd_x.csv"
-    psd_y_path = out_dir / f"{base}_psd_y.csv"
-    fit_path = out_dir / f"{base}_psd_fit.json"
+    # Helper: PSD + MSD + fits (shared)
+    def _compute_brownian_physics(x_sig: np.ndarray, y_sig: np.ndarray) -> dict[str, Any]:
+        # MSD (px^2)
+        msd = compute_msd(x_sig, y_sig, dt_s=dt_s, max_lag=None)
 
-    # CSV writing (with units in header names)
-    msd_header = ["tau_s", "msd_x_px2", "msd_y_px2", "msd_r_px2"]
-    msd_rows_out: list[dict[str, str]] = []
-    for i in range(msd["tau_s"].size):
-        row_d: dict[str, str] = {
-            "tau_s": f"{msd['tau_s'][i]:.12g}",
-            "msd_x_px2": f"{msd['msd_x'][i]:.12g}",
-            "msd_y_px2": f"{msd['msd_y'][i]:.12g}",
-            "msd_r_px2": f"{msd['msd_r'][i]:.12g}",
-        }
-        msd_rows_out.append(row_d)
+        # PSD (px^2/Hz) using Welch
+        nperseg = 1024
+        if x_sig.size < nperseg:
+            nperseg = max(64, int(2 ** np.floor(np.log2(x_sig.size))))
+        noverlap = int(nperseg // 2)
 
-    if um_per_px is not None and float(um_per_px) > 0:
-        scale2 = float(um_per_px) ** 2
-        msd_header += ["msd_x_um2", "msd_y_um2", "msd_r_um2"]
+        psd_params = PsdParams(fs_hz=float(fps), nperseg=int(nperseg), noverlap=int(noverlap), detrend=True)
+        f_x, pxx = compute_psd_welch(x_sig, psd_params)
+        f_y, pyy = compute_psd_welch(y_sig, psd_params)
+
+        # Lorentz fit (conservative band)
+        fit_band_min = max(1.0, float(f_x[1]) if f_x.size > 1 else 1.0)
+        fit_band_max = float(np.max(f_x))
+        try:
+            fit_x = fit_lorentzian_psd(f_x, pxx, fmin_hz=fit_band_min, fmax_hz=fit_band_max)
+        except Exception:
+            fit_x = {"error": "fit failed"}
+        try:
+            fit_y = fit_lorentzian_psd(f_y, pyy, fmin_hz=fit_band_min, fmax_hz=fit_band_max)
+        except Exception:
+            fit_y = {"error": "fit failed"}
+
+        # Save outputs (strict naming)
+        msd_path = out_dir / f"{base}_msd.csv"
+        psd_x_path = out_dir / f"{base}_psd_x.csv"
+        psd_y_path = out_dir / f"{base}_psd_y.csv"
+        fit_path = out_dir / f"{base}_psd_fit.json"
+
+        # MSD CSV
+        msd_header = ["tau_s", "msd_x_px2", "msd_y_px2", "msd_r_px2"]
+        msd_rows_out: list[dict[str, str]] = []
         for i in range(msd["tau_s"].size):
-            msd_rows_out[i]["msd_x_um2"] = f"{(msd['msd_x'][i] * scale2):.12g}"
-            msd_rows_out[i]["msd_y_um2"] = f"{(msd['msd_y'][i] * scale2):.12g}"
-            msd_rows_out[i]["msd_r_um2"] = f"{(msd['msd_r'][i] * scale2):.12g}"
+            msd_rows_out.append({
+                "tau_s": f"{msd['tau_s'][i]:.12g}",
+                "msd_x_px2": f"{msd['msd_x'][i]:.12g}",
+                "msd_y_px2": f"{msd['msd_y'][i]:.12g}",
+                "msd_r_px2": f"{msd['msd_r'][i]:.12g}",
+            })
 
-    def _write_psd_csv(path: Path, f_arr: np.ndarray, p_arr: np.ndarray) -> None:
-        psd_header = ["f_hz", "psd_px2_per_hz"]
-        psd_rows: list[dict[str, str]] = [{"f_hz": f"{f_arr[i]:.12g}", "psd_px2_per_hz": f"{p_arr[i]:.12g}"} for i in range(f_arr.size)]
         if um_per_px is not None and float(um_per_px) > 0:
-            s2 = float(um_per_px) ** 2
-            psd_header.append("psd_um2_per_hz")
-            for i in range(f_arr.size):
-                psd_rows[i]["psd_um2_per_hz"] = f"{(p_arr[i] * s2):.12g}"
+            scale2 = float(um_per_px) ** 2
+            msd_header += ["msd_x_um2", "msd_y_um2", "msd_r_um2"]
+            for i in range(msd["tau_s"].size):
+                msd_rows_out[i]["msd_x_um2"] = f"{(msd['msd_x'][i] * scale2):.12g}"
+                msd_rows_out[i]["msd_y_um2"] = f"{(msd['msd_y'][i] * scale2):.12g}"
+                msd_rows_out[i]["msd_r_um2"] = f"{(msd['msd_r'][i] * scale2):.12g}"
+
         import csv as csv_mod
-        with path.open("w", encoding="utf-8", newline="") as fobj:
-            wr = csv_mod.DictWriter(fobj, fieldnames=psd_header)
+        with msd_path.open("w", encoding="utf-8", newline="") as fobj:
+            wr = csv_mod.DictWriter(fobj, fieldnames=msd_header)
             wr.writeheader()
-            wr.writerows(psd_rows)
+            wr.writerows(msd_rows_out)
 
-    import csv as csv_mod
-    import json
-    with msd_path.open("w", encoding="utf-8", newline="") as fobj:
-        wr = csv_mod.DictWriter(fobj, fieldnames=msd_header)
-        wr.writeheader()
-        wr.writerows(msd_rows_out)
+        def _write_psd_csv(path: Path, f_arr: np.ndarray, p_arr: np.ndarray) -> None:
+            psd_header = ["f_hz", "psd_px2_per_hz"]
+            psd_rows: list[dict[str, str]] = [{"f_hz": f"{f_arr[i]:.12g}", "psd_px2_per_hz": f"{p_arr[i]:.12g}"} for i in range(f_arr.size)]
+            if um_per_px is not None and float(um_per_px) > 0:
+                s2 = float(um_per_px) ** 2
+                psd_header.append("psd_um2_per_hz")
+                for i in range(f_arr.size):
+                    psd_rows[i]["psd_um2_per_hz"] = f"{(p_arr[i] * s2):.12g}"
+            with path.open("w", encoding="utf-8", newline="") as fobj:
+                wr = csv_mod.DictWriter(fobj, fieldnames=psd_header)
+                wr.writeheader()
+                wr.writerows(psd_rows)
 
-    _write_psd_csv(psd_x_path, f_x, pxx)
-    _write_psd_csv(psd_y_path, f_y, pyy)
+        _write_psd_csv(psd_x_path, f_x, pxx)
+        _write_psd_csv(psd_y_path, f_y, pyy)
 
-    fit_payload = {
-        "range_frames": {"start_frame": int(sF), "end_frame": int(eF)},
-        "psd_params": {
-            "fs_hz": float(psd_params.fs_hz),
-            "nperseg": int(psd_params.nperseg),
-            "noverlap": int(psd_params.noverlap),
-            "detrend": bool(psd_params.detrend),
-            "window": str(psd_params.window),
-        },
-        "fit_x": fit_x,
-        "fit_y": fit_y,
-    }
-    fit_path.write_text(json.dumps(fit_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        import json as json_mod
+        fit_payload = {
+            "range_frames": {"start_frame": int(sF), "end_frame": int(eF)},
+            "psd_params": {
+                "fs_hz": float(psd_params.fs_hz),
+                "nperseg": int(psd_params.nperseg),
+                "noverlap": int(psd_params.noverlap),
+                "detrend": bool(psd_params.detrend),
+                "window": str(psd_params.window),
+            },
+            "fit_x": fit_x,
+            "fit_y": fit_y,
+        }
+        fit_path.write_text(json_mod.dumps(fit_payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # QC plot (single PNG): PSD (x+y+fits) + MSD
-    qc_png = out_dir / f"{base}_qc.png"
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        # ---- Calibration (kappa, eta, D) + histograms (from static/brownian segment) ----
+        # Requires scale (um_per_px)
+        if um_per_px is not None and float(um_per_px) > 0:
+            # use corrected px if available, then convert to um
+            x_um = x_rng * float(um_per_px)
+            y_um = y_rng * float(um_per_px)
 
-        fig = plt.figure(figsize=(10, 8))
+            # pull fc from fits (if fit succeeded)
+            fc_x = float(fit_x.get("fc_hz", 0.0)) if isinstance(fit_x, dict) else 0.0
+            fc_y = float(fit_y.get("fc_hz", 0.0)) if isinstance(fit_y, dict) else 0.0
 
-        # PSD panel
-        ax1 = fig.add_subplot(2, 1, 1)
-        ax1.loglog(f_x[1:], pxx[1:], label="PSD X")
-        ax1.loglog(f_y[1:], pyy[1:], label="PSD Y")
+            try:
+                cal = compute_calibration_from_equipartition_and_fc(
+                    x_um=x_um,
+                    y_um=y_um,
+                    fc_x_hz=fc_x,
+                    fc_y_hz=fc_y,
+                    params=CalibrationParams(
+                        temperature_c=float(params.temperature_c),
+                        bead_diameter_um=float(params.bead_diameter_um),
+                        viscosity_pa_s_override=0.0,
+                    ),
+                )
 
-        # plot fits (only if fit succeeded)
-        if "fc_hz" in fit_x and "fc_hz" in fit_y:
-            fx = np.asarray(f_x, dtype=np.float64)
+                import json as _json
+                cal_json = out_dir / f"{base}_calibration.json"
+                cal_csv = out_dir / f"{base}_calibration.csv"
 
-            def _lorentz_curve(f: np.ndarray, A: float, fc: float, B: float) -> np.ndarray:
-                return (A / (fc * fc + f * f)) + B
+                payload = {
+                    "range_frames": {"start_frame": int(sF), "end_frame": int(eF)},
+                    "temperature_c": float(params.temperature_c),
+                    "temperature_k": cal.temperature_k,
+                    "bead_diameter_um": float(params.bead_diameter_um),
+                    "bead_radius_um": cal.bead_radius_um,
+                    "kappa": {
+                        "kappa_x_n_per_m": cal.kappa_x_n_per_m,
+                        "kappa_y_n_per_m": cal.kappa_y_n_per_m,
+                        "kappa_x_pn_per_um": cal.kappa_x_pn_per_um,
+                        "kappa_y_pn_per_um": cal.kappa_y_pn_per_um,
+                        "kappa_iso_ratio": cal.kappa_iso_ratio,
+                    },
+                    "viscosity": {
+                        "eta_x_pa_s": cal.eta_x_pa_s,
+                        "eta_y_pa_s": cal.eta_y_pa_s,
+                        "eta_mean_pa_s": cal.eta_mean_pa_s,
+                    },
+                    "diffusion": {"D_m2_s": cal.d_m2_s},
+                    "diagnostics": {
+                        "var_x_um2": cal.var_x_um2,
+                        "var_y_um2": cal.var_y_um2,
+                        "fc_x_hz": cal.fc_x_hz,
+                        "fc_y_hz": cal.fc_y_hz,
+                        "n_used": cal.n_used,
+                    },
+                }
+                cal_json.write_text(_json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
-            px_fit = _lorentz_curve(fx, float(fit_x["A"]), float(fit_x["fc_hz"]), float(fit_x["B"]))
-            py_fit = _lorentz_curve(fx, float(fit_y["A"]), float(fit_y["fc_hz"]), float(fit_y["B"]))
+                import csv as _csv
+                with cal_csv.open("w", encoding="utf-8", newline="") as f:
+                    w = _csv.writer(f)
+                    w.writerow(["metric", "value"])
+                    w.writerow(["temperature_C", f"{float(params.temperature_c):.12g}"])
+                    w.writerow(["bead_diameter_um", f"{float(params.bead_diameter_um):.12g}"])
+                    w.writerow(["kappa_x_n_per_m", f"{cal.kappa_x_n_per_m:.12g}"])
+                    w.writerow(["kappa_y_n_per_m", f"{cal.kappa_y_n_per_m:.12g}"])
+                    w.writerow(["kappa_x_pn_per_um", f"{cal.kappa_x_pn_per_um:.12g}"])
+                    w.writerow(["kappa_y_pn_per_um", f"{cal.kappa_y_pn_per_um:.12g}"])
+                    w.writerow(["kappa_iso_ratio", f"{cal.kappa_iso_ratio:.12g}"])
+                    w.writerow(["eta_x_pa_s", f"{cal.eta_x_pa_s:.12g}"])
+                    w.writerow(["eta_y_pa_s", f"{cal.eta_y_pa_s:.12g}"])
+                    w.writerow(["eta_mean_pa_s", f"{cal.eta_mean_pa_s:.12g}"])
+                    w.writerow(["D_m2_s", f"{cal.d_m2_s:.12g}"])
+                    w.writerow(["fc_x_hz", f"{cal.fc_x_hz:.12g}"])
+                    w.writerow(["fc_y_hz", f"{cal.fc_y_hz:.12g}"])
 
-            ax1.loglog(fx[1:], px_fit[1:], linestyle="--", label=f"Fit X (fc={fit_x['fc_hz']:.2f} Hz)")
-            ax1.loglog(fx[1:], py_fit[1:], linestyle="--", label=f"Fit Y (fc={fit_y['fc_hz']:.2f} Hz)")
+                # Histograms: x,y,r in um (simple deterministic bins)
+                def _write_hist(path, data_um):
+                    data_um = np.asarray(data_um, dtype=np.float64)
+                    data_um = data_um[np.isfinite(data_um)]
+                    if data_um.size < 16:
+                        return
+                    # Freedman–Diaconis is great, but deterministic & robust:
+                    # use 100 bins spanning [p0.5, p99.5] to avoid outliers
+                    lo = float(np.percentile(data_um, 0.5))
+                    hi = float(np.percentile(data_um, 99.5))
+                    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                        return
+                    bins = 100
+                    hist, edges = np.histogram(data_um, bins=bins, range=(lo, hi))
+                    centers = 0.5 * (edges[:-1] + edges[1:])
+                    import csv as _csv
+                    with path.open("w", encoding="utf-8", newline="") as f:
+                        w = _csv.writer(f)
+                        w.writerow(["bin_center_um", "count"])
+                        for c, h in zip(centers, hist):
+                            w.writerow([f"{float(c):.12g}", str(int(h))])
 
-        ax1.set_xlabel("f [Hz]")
-        ax1.set_ylabel("PSD [px^2/Hz]")
-        ax1.set_title("PSD + Lorentzian fit")
-        ax1.legend()
+                hx = out_dir / f"{base}_hist_x.csv"
+                hy = out_dir / f"{base}_hist_y.csv"
+                hr = out_dir / f"{base}_hist_r.csv"
+                _write_hist(hx, x_um)
+                _write_hist(hy, y_um)
+                _write_hist(hr, np.sqrt(x_um * x_um + y_um * y_um))
 
-        # MSD panel
-        ax2 = fig.add_subplot(2, 1, 2)
-        ax2.loglog(msd["tau_s"], msd["msd_r"], label="MSD r (px^2)")
-        ax2.set_xlabel("tau [s]")
-        ax2.set_ylabel("MSD [px^2]")
-        ax2.set_title("MSD")
-        ax2.legend()
+                summary.setdefault("calibration", {})
+                summary["calibration"] = {
+                    "calibration_json": cal_json.name,
+                    "calibration_csv": cal_csv.name,
+                    "hist_x_csv": hx.name,
+                    "hist_y_csv": hy.name,
+                    "hist_r_csv": hr.name,
+                }
+            except Exception as e:
+                summary.setdefault("calibration", {})
+                summary["calibration"] = {"skipped": True, "reason": repr(e)}
 
-        fig.tight_layout()
-        fig.savefig(qc_png, dpi=160)
-        plt.close(fig)
+        # QC plot (single PNG): PSD (x+y+fits) + MSD
+        qc_png = out_dir / f"{base}_qc.png"
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
 
-    except Exception:
-        # plotting must never fail the run
-        pass
+            fig = plt.figure(figsize=(10, 8))
 
-    summary["physics"] = {
-        "range_frames": {"start_frame": int(sF), "end_frame": int(eF)},
-        "msd_csv": msd_path.name,
-        "psd_x_csv": psd_x_path.name,
-        "psd_y_csv": psd_y_path.name,
-        "psd_fit_json": fit_path.name,
-        "qc_png": qc_png.name,
-        "lorentz_fit": {"x": fit_x, "y": fit_y},
-    }
+            ax1 = fig.add_subplot(2, 1, 1)
+            ax1.loglog(f_x[1:], pxx[1:], label="PSD X")
+            ax1.loglog(f_y[1:], pyy[1:], label="PSD Y")
 
+            if "fc_hz" in fit_x and "fc_hz" in fit_y:
+                fx = np.asarray(f_x, dtype=np.float64)
+
+                def _lorentz_curve(f: np.ndarray, A: float, fc: float, B: float) -> np.ndarray:
+                    return (A / (fc * fc + f * f)) + B
+
+                px_fit = _lorentz_curve(fx, float(fit_x["A"]), float(fit_x["fc_hz"]), float(fit_x["B"]))
+                py_fit = _lorentz_curve(fx, float(fit_y["A"]), float(fit_y["fc_hz"]), float(fit_y["B"]))
+
+                ax1.loglog(fx[1:], px_fit[1:], linestyle="--", label=f"Fit X (fc={fit_x['fc_hz']:.2f} Hz)")
+                ax1.loglog(fx[1:], py_fit[1:], linestyle="--", label=f"Fit Y (fc={fit_y['fc_hz']:.2f} Hz)")
+
+            ax1.set_xlabel("f [Hz]")
+            ax1.set_ylabel("PSD [px^2/Hz]")
+            ax1.set_title("PSD + Lorentzian fit")
+            ax1.legend()
+
+            ax2 = fig.add_subplot(2, 1, 2)
+            ax2.loglog(msd["tau_s"], msd["msd_r"], label="MSD r (px^2)")
+            ax2.set_xlabel("tau [s]")
+            ax2.set_ylabel("MSD [px^2]")
+            ax2.set_title("MSD")
+            ax2.legend()
+
+            fig.tight_layout()
+            fig.savefig(qc_png, dpi=160)
+            plt.close(fig)
+        except Exception:
+            pass
+
+        return {
+            "range_frames": {"start_frame": int(sF), "end_frame": int(eF)},
+            "msd_csv": msd_path.name,
+            "psd_x_csv": psd_x_path.name,
+            "psd_y_csv": psd_y_path.name,
+            "psd_fit_json": fit_path.name,
+            "qc_png": qc_png.name,
+            "lorentz_fit": {"x": fit_x, "y": fit_y},
+        }
+
+    if physics_mode == "DRAGGING":
+        # Handled in batch_controller (2-video comparison)
+        summary["physics"] = {"mode": "DRAGGING", "note": "Computed in batch comparison"}
+        return summary
+
+    # Default: BROWNIAN
+    summary["physics"] = {"mode": "BROWNIAN"} | _compute_brownian_physics(x_rng, y_rng)
     return summary

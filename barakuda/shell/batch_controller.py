@@ -16,6 +16,8 @@ from barakuda.core.run_manager import RunManager
 from barakuda.core.calibration_store import load_dataset_scale
 from barakuda.core.export_xlsx import export_ot_results_xlsx
 from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams
+from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, kappa_from_fc_n_per_m
+from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
 from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
 
@@ -40,6 +42,86 @@ class BatchController:
         self._stop_requested = False
         self.gate_results: dict[Path, tuple[bool, str]] = {}
         self.last_after_overlay_path: str | None = None
+
+    def _parse_capture_tokens(self, p: Path) -> dict[str, Any]:
+        """
+        Expected filename (stem) format:
+          YYYY-MM-DD-SampleName-Speed-Unit
+        Example:
+          2026-02-13-MySample-0-um_s
+          2026-02-13-MySample-10-um_s
+
+        Returns:
+          {
+            "ok": bool,
+            "key": str,   # pairing key (date + sample + unit)
+            "speed": float,
+            "unit": str,
+          }
+        """
+        stem = p.stem
+        parts = stem.split("-")
+        if len(parts) < 5:
+            return {"ok": False}
+
+        date = "-".join(parts[0:3])
+        unit = parts[-1]
+        speed_s = parts[-2]
+        sample = "-".join(parts[3:-2]).strip()
+        if not sample:
+            return {"ok": False}
+
+        try:
+            speed = float(speed_s)
+        except Exception:
+            return {"ok": False}
+
+        key = f"{date}|{sample}|{unit}"
+        return {"ok": True, "key": key, "speed": float(speed), "unit": unit, "date": date, "sample": sample}
+
+    def _reorder_for_pairing(self, paths: list[Path]) -> list[Path]:
+        """
+        Deterministic: for each key, process speed==0 first, then ascending speed.
+        """
+        tagged = []
+        for p in paths:
+            t = self._parse_capture_tokens(p)
+            if t.get("ok"):
+                tagged.append((t["key"], t["speed"], str(p)))
+            else:
+                # non-conforming names go last, keep stable order
+                tagged.append(("~", 1e99, str(p)))
+
+        tagged.sort(key=lambda x: (x[0], x[1], x[2]))
+        return [Path(s) for _, _, s in tagged]
+
+    def _mean_axis_um(self, trajectory_csv: Path, axis: str, um_per_px: float, fraction: float, tail: bool) -> float:
+        """
+        mean of x/y (corrected if present) over fraction of samples.
+        tail=True => last fraction, tail=False => first fraction
+        """
+        table = read_trajectory_csv(trajectory_csv)
+        axis = axis.lower().strip()
+        if axis not in ("x", "y"):
+            raise ValueError("axis must be x or y")
+
+        def col(name: str) -> np.ndarray:
+            idx = table.header.index(name)
+            return np.array([float(r.get(name, "nan")) for r in table.rows], dtype=np.float64)
+
+        x = col("x_corr_px") if "x_corr_px" in table.header else col("x_px")
+        y = col("y_corr_px") if "y_corr_px" in table.header else col("y_px")
+        sig = x if axis == "x" else y
+        sig = sig[np.isfinite(sig)]
+        if sig.size < 16:
+            raise ValueError("not enough finite samples for mean")
+
+        n = sig.size
+        k = max(5, int(round(float(fraction) * n)))
+        k = min(k, n)
+
+        sl = sig[-k:] if tail else sig[:k]
+        return float(np.mean(sl) * float(um_per_px))
 
     @property
     def preview_done(self) -> bool:
@@ -459,12 +541,22 @@ class BatchController:
             jump_max_px=float(post_params.get("jump_max_px", 50.0)),
             drift_enabled=bool(post_params.get("drift_enabled", True)),
             drift_window_s=float(post_params.get("drift_window_s", 1.0)),
+            physics_mode=str(post_params.get("physics_mode", "BROWNIAN")),
+            stage_speed_um_s=float(post_params.get("stage_speed_um_s", 0.0)),
+            drag_axis=str(post_params.get("drag_axis", "x")),
+            viscosity_pa_s=float(post_params.get("viscosity_pa_s", 1.0e-3)),
+            bead_radius_um=float(post_params.get("bead_radius_um", 0.5)),
         )
 
         use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
         ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
 
         base_roi = Roi(*roi_rect)
+
+        ok_paths = [Path(p) for p in ok_paths]
+        ok_paths = self._reorder_for_pairing(ok_paths)
+
+        baseline_by_key: dict[str, dict[str, Any]] = {}
 
         done = 0
         for file_path in ok_paths:
@@ -695,6 +787,152 @@ class BatchController:
                         )
                     except Exception as e:
                         self._log(f"WARN: postprocess failed ({file_path.name}): {e!r}")
+
+                # --- 2-video Pairing & Comparison (Brownian vs Dragging) ---
+                try:
+                    tok = self._parse_capture_tokens(file_path)
+                    if tok.get("ok") and float(tok["speed"]) == 0.0:
+                        # Store Brownian baseline info for later comparison
+                        baseline_by_key[tok["key"]] = {
+                            "path": str(file_path),
+                            "run_dir": str(run_dir),
+                            "base_name": str(file_path.stem),
+                            "psd_fit_json": str(run_dir / f"{file_path.stem}_psd_fit.json"),
+                            "trajectory_csv": str(run_dir / f"{file_path.stem}_trajectory.csv"),
+                        }
+                    
+                    elif tok.get("ok") and float(tok["speed"]) > 0.0:
+                        key = tok["key"]
+                        if key not in baseline_by_key:
+                            self._log(f"[DRAGGING] Missing baseline (speed=0) for key={key}. Cannot compare.")
+                            # non-fatal, just no comparison
+                        else:
+                            # Resolve drag params
+                            stage_speed_ui = float(post_params.get("stage_speed_um_s", 0.0))
+                            stage_speed = stage_speed_ui if stage_speed_ui > 0 else float(tok["speed"])
+                            axis = str(post_params.get("drag_axis", "x")).lower().strip()
+                            eta = float(post_params.get("viscosity_pa_s", 1.0e-3))
+                            r_um = float(post_params.get("bead_radius_um", 0.5))
+
+                            if ui_um_per_px <= 0:
+                                self._log("[DRAGGING] um_per_px must be > 0 for stiffness comparison.")
+                            else:
+                                base_info = baseline_by_key[key]
+
+                                # baseline mean from static (first 50%)
+                                baseline_mean_um = self._mean_axis_um(
+                                    Path(base_info["trajectory_csv"]), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=False
+                                )
+                                # steady mean from drag: last 50%
+                                steady_mean_um = self._mean_axis_um(
+                                    Path(run_dir / f"{file_path.stem}_trajectory.csv"), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=True
+                                )
+
+                                offset_um = float(steady_mean_um - baseline_mean_um)
+
+                                drag_res = compute_dragging_from_offset(
+                                    offset_um,
+                                    DragParams(
+                                        stage_speed_um_s=float(stage_speed),
+                                        axis=axis,
+                                        viscosity_pa_s=float(eta),
+                                        bead_radius_um=float(r_um),
+                                    ),
+                                )
+
+                                # Brownian kappa from baseline fc
+                                fit_json_path = Path(base_info["psd_fit_json"])
+                                if fit_json_path.exists():
+                                    import json as _json
+                                    fit_payload = _json.loads(fit_json_path.read_text(encoding="utf-8"))
+                                    # fit_x or fit_y depending on axis
+                                    fit_axis = fit_payload.get("fit_x" if axis == "x" else "fit_y", {})
+                                    if fit_axis and "fc_hz" in fit_axis:
+                                        fc = float(fit_axis.get("fc_hz", 0.0))
+                                        kappa_b = kappa_from_fc_n_per_m(fc, viscosity_pa_s=float(eta), bead_radius_um=float(r_um))
+                                        kappa_b_pn_um = float(abs(kappa_b) * 1e6 * 1e12)
+                                    else:
+                                        fc, kappa_b, kappa_b_pn_um = 0.0, 0.0, 0.0
+                                else:
+                                    fc, kappa_b, kappa_b_pn_um = 0.0, 0.0, 0.0
+
+                                # Write compare artifacts into DRAG run dir
+                                compare_csv = Path(run_dir) / f"{file_path.stem}_compare.csv"
+                                compare_json = Path(run_dir) / f"{file_path.stem}_compare.json"
+                                drag_json = Path(run_dir) / f"{file_path.stem}_drag.json"
+
+                                import json as _json
+                                drag_json.write_text(_json.dumps({
+                                    "pair_key": key,
+                                    "baseline": base_info,
+                                    "drag": {"path": str(file_path), "run_dir": str(run_dir)},
+                                    "params": {
+                                        "axis": axis,
+                                        "stage_speed_um_s": float(stage_speed),
+                                        "viscosity_pa_s": float(eta),
+                                        "bead_radius_um": float(r_um),
+                                        "um_per_px": float(ui_um_per_px),
+                                    },
+                                    "means_um": {
+                                        "baseline_mean_um": float(baseline_mean_um),
+                                        "steady_mean_um": float(steady_mean_um),
+                                        "offset_um": float(offset_um),
+                                    },
+                                    "dragging": {
+                                        "drag_force_n": float(drag_res.drag_force_n),
+                                        "kappa_n_per_m": float(drag_res.kappa_n_per_m),
+                                        "kappa_pn_per_um": float(drag_res.kappa_pn_per_um),
+                                    }
+                                }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                                import csv as _csv
+                                with compare_csv.open("w", encoding="utf-8", newline="") as f:
+                                    w = _csv.DictWriter(f, fieldnames=[
+                                        "pair_key",
+                                        "axis",
+                                        "fc_hz",
+                                        "kappa_brownian_n_per_m",
+                                        "kappa_brownian_pn_per_um",
+                                        "kappa_drag_n_per_m",
+                                        "kappa_drag_pn_per_um",
+                                        "ratio_drag_over_brownian",
+                                        "delta_n_per_m",
+                                    ])
+                                    w.writeheader()
+                                    w.writerow({
+                                        "pair_key": key,
+                                        "axis": axis,
+                                        "fc_hz": f"{fc:.12g}",
+                                        "kappa_brownian_n_per_m": f"{kappa_b:.12g}",
+                                        "kappa_brownian_pn_per_um": f"{kappa_b_pn_um:.12g}",
+                                        "kappa_drag_n_per_m": f"{drag_res.kappa_n_per_m:.12g}",
+                                        "kappa_drag_pn_per_um": f"{drag_res.kappa_pn_per_um:.12g}",
+                                        "ratio_drag_over_brownian": f"{(abs(drag_res.kappa_n_per_m)/abs(kappa_b)):.12g}" if abs(kappa_b) > 0 else "nan",
+                                        "delta_n_per_m": f"{(drag_res.kappa_n_per_m - kappa_b):.12g}",
+                                    })
+
+                                compare_json.write_text(_json.dumps({
+                                    "pair_key": key,
+                                    "axis": axis,
+                                    "brownian": {
+                                        "fc_hz": fc,
+                                        "kappa_n_per_m": kappa_b,
+                                        "kappa_pn_per_um": kappa_b_pn_um,
+                                        "psd_fit_json": base_info["psd_fit_json"],
+                                    },
+                                    "dragging": {
+                                        "kappa_n_per_m": float(drag_res.kappa_n_per_m),
+                                        "kappa_pn_per_um": float(drag_res.kappa_pn_per_um),
+                                        "drag_json": str(drag_json),
+                                    },
+                                    "delta": {
+                                        "delta_n_per_m": float(drag_res.kappa_n_per_m - kappa_b),
+                                        "ratio_drag_over_brownian": float(abs(drag_res.kappa_n_per_m)/abs(kappa_b)) if abs(kappa_b) > 0 else None,
+                                    },
+                                }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                except Exception as e:
+                    self._log(f"WARN: drag comparison failed ({file_path.name}): {e!r}")
 
                 try:
                     _msd = run_dir / f"{stem}_msd.csv"
