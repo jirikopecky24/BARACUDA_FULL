@@ -4,7 +4,7 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
-    QToolButton, QHBoxLayout
+    QToolButton, QHBoxLayout, QMenu
 )
 
 
@@ -25,13 +25,50 @@ class PipelinePanel(QWidget):
 
 
 
-        self.btn_preview_gate = QPushButton("Preview Gate")
+        # Preview Gate split-button (STRICT default) with popup policy menu
+        self._preview_gate_policy = "STRICT"  # STRICT | ROBUST | CUSTOM
+
+        self.btn_preview_gate = QToolButton()
+        self.btn_preview_gate.setText("Preview Gate")
+        self.btn_preview_gate.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.btn_preview_gate.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        from PyQt6.QtWidgets import QSizePolicy
+        self.btn_preview_gate.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_preview_gate.setMinimumHeight(26)
+
+        gate_menu = QMenu(self)
+        act_strict = gate_menu.addAction("STRICT (pass_ratio = 1.0)")
+        act_robust = gate_menu.addAction("ROBUST (pass_ratio = 0.85)")
+        act_custom = gate_menu.addAction("CUSTOM (use panel thresholds)")
+
+        def _set_policy(p: str) -> None:
+            self._preview_gate_policy = p
+            if p == "STRICT":
+                self.btn_preview_gate.setText("Preview Gate \u25b8 STRICT")
+            elif p == "ROBUST":
+                self.btn_preview_gate.setText("Preview Gate \u25b8 ROBUST")
+            else:
+                self.btn_preview_gate.setText("Preview Gate \u25b8 CUSTOM")
+
+        act_strict.triggered.connect(lambda: _set_policy("STRICT"))
+        act_robust.triggered.connect(lambda: _set_policy("ROBUST"))
+        act_custom.triggered.connect(lambda: _set_policy("CUSTOM"))
+
+        self.btn_preview_gate.setMenu(gate_menu)
+        _set_policy("STRICT")  # initialize label
+
+        self.btn_preview_gate.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.btn_preview_gate.customContextMenuRequested.connect(
+            lambda pos: gate_menu.exec(self.btn_preview_gate.mapToGlobal(pos))
+        )
+
+        self.btn_preview_gate.clicked.connect(self.preview_gate_clicked.emit)
+
         self.btn_gate_report = QPushButton("Report\u2026")
         self.btn_gate_report.setEnabled(False)
         self.btn_run = QPushButton("RUN")
         self.btn_stop = QPushButton("STOP")
 
-        self.btn_preview_gate.clicked.connect(self.preview_gate_clicked.emit)
         self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
@@ -253,6 +290,9 @@ class PipelinePanel(QWidget):
             "q_min": float(self._gate_q_min.value()),
             "jump_max_px": float(self._gate_jump_max.value()),
         }
+
+    def get_gate_policy(self) -> str:
+        return str(self._preview_gate_policy)
 
     def get_tracking_params(self) -> dict:
         # method UI zatím nemáme → držíme RS jako default
