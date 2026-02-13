@@ -290,54 +290,53 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Preview Gate: no selected files.")
             return
         if self._device_panel is None:
-            self.log_panel.log("Preview Gate: device panel not ready.")
+            self.log_panel.log("Preview Gate: no active panel.")
             return
 
         roi = self.preview.get_roi_rect()
+        frame_idx = int(self.preview.get_current_frame_index() or 0)
+
+        self.log_panel.log(f"Preview Gate: using preview frame index={frame_idx}")
         if roi is None and self._active_device_id == "optical_tweezers":
             self.log_panel.log("Preview Gate: ROI is required for Optical Tweezers.")
             return
 
-        frame_idx = int(self.preview.get_current_frame_index() or 0)
-        self.log_panel.log("Preview Gate: running...")
+        # Mark selected items as "running" while gating
+        for p in paths:
+            self.dataset.set_status(p, "running")
 
-        self.batch.run_preview_gate(
+        results = self.batch.run_preview_gate(
             file_paths=paths,
-            device_id=str(self._active_device_id),
+            device_id=self._active_device_id,
             device_panel=self._device_panel,
             preview_roi_rect=roi,
             preview_frame_index=frame_idx,
         )
 
-        results = getattr(self.batch, "gate_results", None)
-        if not results:
-            self.log_panel.log("Preview Gate: no results produced.")
-            return
+        # Per-file PASS/FAIL -> Dataset icons
+        failed: list[str] = []
+        passed: list[str] = []
 
-        # Reset icons for selected to unknown first
-        for p in paths:
-            try:
-                self.dataset.set_gate_result(p, None)
-            except Exception:
-                pass
-
-        fail_list: list[str] = []
-        for p, (passed, reason) in results.items():
-            try:
-                self.dataset.set_gate_result(Path(p), bool(passed), str(reason))
-            except Exception:
-                pass
-
-            if passed:
-                self.log_panel.log(f"Preview Gate PASS: {Path(p).name}")
+        for r in results:
+            p = Path(r.path)
+            if r.ok:
+                self.dataset.set_status(p, "done")     # ✅
+                passed.append(p.name)
+                self.log_panel.log(f"Preview Gate PASS: {p.name}")
             else:
-                self.log_panel.log(f"Preview Gate FAIL: {Path(p).name}  {reason}")
-                fail_list.append(Path(p).name)
+                self.dataset.set_status(p, "failed")   # ❌
+                failed.append(p.name)
+                # message already contains reason
+                self.log_panel.log(f"Preview Gate FAIL: {p.name} — {r.message}")
 
-        if fail_list:
-            self.log_panel.log(f"Preview Gate summary: FAIL ({len(fail_list)}): " + ", ".join(fail_list))
+        if failed:
+            self.log_panel.log(f"Preview Gate summary: FAIL ({len(failed)}): " + ", ".join(failed))
         else:
-            self.log_panel.log("Preview Gate summary: ALL PASS")
+            self.log_panel.log(f"Preview Gate summary: ALL PASS ({len(passed)})")
+
+        # Enable RUN only if gate passed for all
+        if hasattr(self._device_panel, 'btn_run'):
+            self._device_panel.btn_run.setEnabled(self.batch.preview_done)  # type: ignore[attr-defined]
 
     # ---------------- run batch ----------------
 
