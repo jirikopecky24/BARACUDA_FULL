@@ -17,7 +17,7 @@ from barakuda.core.calibration_store import load_dataset_scale
 from barakuda.core.export_xlsx import export_trajectory_xlsx
 from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams
 
-from barakuda.core.tracking import track_particle, Roi, TrackingMethod
+from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
 
 
 @dataclass(frozen=True)
@@ -238,6 +238,7 @@ class BatchController:
         blur_sigma = float(tracking_params.get("blur_sigma", 1.2))
         grad_th = float(tracking_params.get("radial_grad_threshold", 2.0))
         auto_pol = bool(tracking_params.get("auto_polarity", True))
+        adaptive_roi = bool(tracking_params.get("adaptive_roi", True))
 
         ann_enabled = bool(tracking_params.get("annulus_enabled", True))
         ann_auto = bool(tracking_params.get("annulus_auto", True))
@@ -257,7 +258,7 @@ class BatchController:
         use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
         ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
 
-        roi_obj = Roi(*roi_rect)
+        base_roi = Roi(*roi_rect)
 
         done = 0
         for file_path in ok_paths:
@@ -300,6 +301,7 @@ class BatchController:
                         "blur_sigma": blur_sigma,
                         "radial_grad_threshold": grad_th,
                         "roi": list(roi_rect),
+                        "adaptive_roi": adaptive_roi,
                         "fps": fps,
                         "frame_count": fc,
                         "annulus_enabled": ann_enabled,
@@ -323,17 +325,22 @@ class BatchController:
 
                 result = self.run_manager.create_run(file_path, config)
                 run_dir = result.run_dir
-                traj_path = run_dir / "trajectory.csv"
+                stem = Path(file_path).stem
+                traj_path = run_dir / f"{stem}_trajectory.csv"
 
                 # Tracking loop bookkeeping for overlays:
                 first_frame = None
                 first_xy = None
+                first_roi: tuple[int, int, int, int] | None = None
+
                 last_frame = None
                 last_xy = None
+                last_roi: tuple[int, int, int, int] | None = None
 
                 with traj_path.open("w", newline="", encoding="utf-8") as f_meta:
                     f_meta.write(f"# method={method.value}\n")
                     f_meta.write(f"# roi={list(roi_rect)}\n")
+                    f_meta.write(f"# adaptive_roi={adaptive_roi}\n")
                     f_meta.write(f"# auto_polarity={auto_pol}\n")
                     f_meta.write(f"# invert={invert}\n")
                     f_meta.write(f"# blur_sigma={blur_sigma}\n")
@@ -350,10 +357,13 @@ class BatchController:
                     f_meta.write(f"# um_per_px_source={um_src}\n")
 
                     w = csv.writer(f_meta)
-                    w.writerow(["frame", "t_s", "x_px", "y_px", "quality", "peak"])
+                    w.writerow(["frame", "t_s", "x_px", "y_px", "quality", "peak", "roi_x", "roi_y", "roi_w", "roi_h"])
+
+                    current_roi = base_roi
 
                     for fi in range(s, e + 1):
                         frame = reader.get_frame(fi)
+                        roi_obj = current_roi
                         det = track_particle(
                             frame,
                             roi_obj,
@@ -371,12 +381,26 @@ class BatchController:
                         if first_frame is None:
                             first_frame = frame
                             first_xy = (float(det.x_px), float(det.y_px))
+                            first_roi = (roi_obj.x, roi_obj.y, roi_obj.w, roi_obj.h)
 
                         last_frame = frame
                         last_xy = (float(det.x_px), float(det.y_px))
+                        last_roi = (roi_obj.x, roi_obj.y, roi_obj.w, roi_obj.h)
+
+                        if adaptive_roi:
+                            # Follow the detected center with fixed window size.
+                            current_roi = roi_follow_center(frame.shape, current_roi, det.x_px, det.y_px)
 
                         t_s = (fi / fps) if fps > 0 else 0.0
-                        w.writerow([fi, f"{t_s:.9f}", f"{det.x_px:.6f}", f"{det.y_px:.6f}", f"{det.quality:.6f}", f"{det.peak:.6f}"])
+                        w.writerow([
+                            fi,
+                            f"{t_s:.9f}",
+                            f"{det.x_px:.6f}",
+                            f"{det.y_px:.6f}",
+                            f"{det.quality:.6f}",
+                            f"{det.peak:.6f}",
+                            int(roi_obj.x), int(roi_obj.y), int(roi_obj.w), int(roi_obj.h),
+                        ])
                         QApplication.processEvents()
 
                 reader.close()
@@ -389,8 +413,8 @@ class BatchController:
                             frame_rgb=first_frame,
                             x=first_xy[0],
                             y=first_xy[1],
-                            roi=roi_rect,
-                            name="preview_tracking.png",
+                            roi=(first_roi if first_roi is not None else roi_rect),
+                            name=f"{stem}_preview_tracking.png",
                         )
                 except Exception as e:
                     self._log(f"WARN: preview overlay failed ({file_path.name}): {e!r}")
@@ -398,15 +422,16 @@ class BatchController:
                 try:
                     if last_frame is not None and last_xy is not None:
                         # Raw frame for audit (optional)
-                        self.run_manager.save_after_png(run_dir, last_frame)
+                        # Raw frame for audit (optional)
+                        self.run_manager.save_after_png(run_dir, last_frame, name=f"{stem}_after_raw.png")
                         # Overlay as 'after.png' (what user expects)
                         self.run_manager.save_overlay_png(
                             run_dir=run_dir,
                             frame_rgb=last_frame,
                             x=last_xy[0],
                             y=last_xy[1],
-                            roi=roi_rect,
-                            name="after.png",
+                            roi=(last_roi if last_roi is not None else roi_rect),
+                            name=f"{stem}_after.png",
                         )
                 except Exception as e:
                     self._log(f"WARN: after overlay failed ({file_path.name}): {e!r}")
@@ -434,7 +459,11 @@ class BatchController:
                         self._log(f"WARN: postprocess failed ({file_path.name}): {e!r}")
 
                 try:
-                    export_trajectory_xlsx(run_dir=run_dir, trajectory_csv_path=traj_path)
+                    export_trajectory_xlsx(
+                        run_dir=run_dir,
+                        trajectory_csv_path=traj_path,
+                        output_name=f"{stem}_trajectory.xlsx",
+                    )
                 except Exception as e:
                     self._log(f"WARN: excel export skipped ({file_path.name}): {e!r}")
 

@@ -174,6 +174,21 @@ class PreviewPanel(QWidget):
         self._after_locked = True
         self._view_after.setImage(np.asarray(arr), autoLevels=True)
 
+    def set_after_from_file(self, path_str: str) -> bool:
+        """Load an image via Qt and show it on AFTER tab.
+
+        Returns True on success. Never throws.
+        """
+        try:
+            arr = self._load_image_qt(Path(path_str))
+            if arr is None:
+                return False
+            self.set_after_image(arr)
+            self.show_after_tab()
+            return True
+        except Exception:
+            return False
+
     def unlock_after(self) -> None:
         self._after_locked = False
 

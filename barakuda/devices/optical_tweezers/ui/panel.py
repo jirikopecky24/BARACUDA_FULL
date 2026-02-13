@@ -49,6 +49,10 @@ class PipelinePanel(QWidget):
         self._normalize_strength.setValue(1.0)
 
         # tracking params
+        # Adaptive ROI is critical for kmitající částice (drift + Brownian motion).
+        self._adaptive_roi = QCheckBox("Adaptive ROI (follow particle)")
+        self._adaptive_roi.setChecked(True)
+
         self._invert = QCheckBox("Invert particle (dark spot)")
         self._invert.setChecked(True)
 
@@ -105,7 +109,8 @@ class PipelinePanel(QWidget):
         self._um_per_px.setRange(0.0, 1e6)
         self._um_per_px.setDecimals(6)
         self._um_per_px.setSingleStep(0.000001)
-        self._um_per_px.setValue(0.1)
+        # Default scale for OT (µm/px) — requested baseline.
+        self._um_per_px.setValue(0.066528)
 
         self._scale_status = QLabel("Scale: not set (px only)")
         self._scale_status.setStyleSheet("color: #666;")
@@ -145,6 +150,7 @@ class PipelinePanel(QWidget):
         form = QFormLayout(params_box)
 
         form.addRow("Normalize strength", self._normalize_strength)
+        form.addRow("", self._adaptive_roi)
         form.addRow("Blur sigma", self._blur_sigma)
         form.addRow("Radial grad threshold", self._radial_grad_threshold)
         form.addRow("", self._auto_polarity)
@@ -190,16 +196,20 @@ class PipelinePanel(QWidget):
 
     def get_tracking_params(self) -> dict:
         # method UI zatím nemáme → držíme RS jako default
+        use_ann = bool(self._use_annulus.isChecked())
+        r_in = float(self._annulus_r_inner.value())
+        r_out = float(self._annulus_r_outer.value())
         return {
             "method": "RADIAL_SYMMETRY",
+            "adaptive_roi": bool(self._adaptive_roi.isChecked()),
             "invert": bool(self._invert.isChecked()),
             "blur_sigma": float(self._blur_sigma.value()),
             "radial_grad_threshold": float(self._radial_grad_threshold.value()),
             "auto_polarity": bool(self._auto_polarity.isChecked()),
-            "annulus_enabled": bool(self._use_annulus.isChecked()),
-            "annulus_auto": bool(self._annulus_auto.isChecked()),
-            "annulus_r_inner_px": float(self._annulus_r_inner.value()),
-            "annulus_r_outer_px": float(self._annulus_r_outer.value()),
+            "annulus_enabled": use_ann,
+            "annulus_auto": (bool(self._annulus_auto.isChecked()) if use_ann else False),
+            "annulus_r_inner_px": (None if (not use_ann or r_in <= 0) else r_in),
+            "annulus_r_outer_px": (None if (not use_ann or r_out <= 0) else r_out),
             "annulus_profile_smooth": int(self._annulus_profile_smooth.value()),
         }
 

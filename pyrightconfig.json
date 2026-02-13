@@ -1,0 +1,5 @@
+{
+    "reportMissingModuleSource": false,
+    "reportMissingImports": "warning",
+    "reportMissingTypeStubs": false
+}

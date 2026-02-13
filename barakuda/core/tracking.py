@@ -28,6 +28,39 @@ class Detection:
     peak: float
 
 
+def roi_follow_center(
+    frame_shape: tuple[int, int] | tuple[int, int, int],
+    roi: Roi,
+    center_x_px: float,
+    center_y_px: float,
+) -> Roi:
+    """Return a new ROI with same (w,h) that follows the detected center.
+
+    - Deterministic.
+    - Clamped to image bounds.
+    - Keeps ROI size constant (audit-friendly + avoids implicit parameter drift).
+    """
+    H = int(frame_shape[0])
+    W = int(frame_shape[1])
+    rw = int(max(1, roi.w))
+    rh = int(max(1, roi.h))
+
+    # Center -> top-left
+    x = int(round(float(center_x_px) - rw / 2.0))
+    y = int(round(float(center_y_px) - rh / 2.0))
+
+    if x < 0:
+        x = 0
+    if y < 0:
+        y = 0
+    if x + rw > W:
+        x = max(0, W - rw)
+    if y + rh > H:
+        y = max(0, H - rh)
+
+    return Roi(x=int(x), y=int(y), w=int(rw), h=int(rh))
+
+
 # ---------------- utils ----------------
 
 def _to_gray_u8(image: np.ndarray) -> np.ndarray:

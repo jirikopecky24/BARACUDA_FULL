@@ -17,6 +17,7 @@ from barakuda.devices.base import DeviceSpec
 from barakuda.shell.batch_controller import BatchController
 from barakuda.core.video_io import is_video_file
 from barakuda.core.calibration_store import save_dataset_scale
+from barakuda.core.calibration_store import load_dataset_scale
 
 
 class ShellMainWindow(QMainWindow):
@@ -116,6 +117,26 @@ class ShellMainWindow(QMainWindow):
 
         self.batch.reset_gate()
         self.btn_run_batch.setEnabled(False)
+
+        # Keep OT scale visible + deterministic default.
+        if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
+            try:
+                info = load_dataset_scale(path)
+                if info is not None and info.um_per_px is not None:
+                    um = float(info.um_per_px)
+                    txt = f"Scale: {um:.6f} µm/px (dataset)"
+                    self.preview.set_scale_display(txt)
+                    self._device_panel.set_um_per_px(um)      # type: ignore[attr-defined]
+                    self._device_panel.set_scale_status(txt)   # type: ignore[attr-defined]
+                else:
+                    # Default OT scale (user requirement) for convenience; saved scale still wins.
+                    um = 0.066528
+                    txt = f"Scale: {um:.6f} µm/px (px default)"
+                    self.preview.set_scale_display(txt)
+                    self._device_panel.set_um_per_px(um)      # type: ignore[attr-defined]
+                    self._device_panel.set_scale_status(txt)   # type: ignore[attr-defined]
+            except Exception as e:
+                self.log_panel.log(f"WARN: scale load failed: {e!r}")
 
     # ---------------- device switching ----------------
 
@@ -223,6 +244,24 @@ class ShellMainWindow(QMainWindow):
                 dataset_set_status_fn=self.dataset.set_status,
                 progress_fn=progress_fn,
             )
+
+            # UI convenience: show the produced AFTER overlay for the selected video.
+            try:
+                runs_folder = self.batch.run_manager.runs_folder
+                stem = sel[0].stem
+                candidates = sorted(
+                    (p for p in runs_folder.glob(f"*-{stem}") if p.is_dir()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if candidates:
+                    after_path = candidates[0] / f"{stem}_after.png"
+                    if after_path.exists():
+                        ok = self.preview.set_after_from_file(str(after_path))
+                        if ok:
+                            self.log_panel.log(f"AFTER overlay shown: {after_path}")
+            except Exception:
+                pass
         except Exception as e:
             self.log_panel.log(f"Track range ERROR: {e!r}")
 
