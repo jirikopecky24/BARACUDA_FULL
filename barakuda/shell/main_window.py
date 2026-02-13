@@ -6,7 +6,7 @@ from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget
+    QHBoxLayout, QDockWidget, QToolButton, QMenu
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -74,7 +74,44 @@ class ShellMainWindow(QMainWindow):
         ml.addWidget(QLabel("Method:"))
         ml.addWidget(self.method_combo, 0)
 
+        # Preview Gate split-button (STRICT default) with popup policy menu
+        self._preview_gate_policy = "STRICT"  # STRICT | ROBUST | CUSTOM
 
+        self.btn_preview_gate = QToolButton()
+        self.btn_preview_gate.setText("Preview Gate")
+        self.btn_preview_gate.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.btn_preview_gate.setFixedHeight(26)
+        self.btn_preview_gate.clicked.connect(self._on_preview_gate)
+
+        gate_menu = QMenu(self)
+
+        act_strict = gate_menu.addAction("STRICT (pass_ratio = 1.0)")
+        act_robust = gate_menu.addAction("ROBUST (pass_ratio = 0.85)")
+        act_custom = gate_menu.addAction("CUSTOM (use panel thresholds)")
+
+        def _set_policy(p: str) -> None:
+            self._preview_gate_policy = p
+            if p == "STRICT":
+                self.btn_preview_gate.setText("Preview Gate ▸ STRICT")
+            elif p == "ROBUST":
+                self.btn_preview_gate.setText("Preview Gate ▸ ROBUST")
+            else:
+                self.btn_preview_gate.setText("Preview Gate ▸ CUSTOM")
+
+        act_strict.triggered.connect(lambda: _set_policy("STRICT"))
+        act_robust.triggered.connect(lambda: _set_policy("ROBUST"))
+        act_custom.triggered.connect(lambda: _set_policy("CUSTOM"))
+
+        self.btn_preview_gate.setMenu(gate_menu)
+        _set_policy("STRICT")  # initialize label
+
+        # Right-click on button also opens the menu
+        self.btn_preview_gate.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.btn_preview_gate.customContextMenuRequested.connect(
+            lambda pos: gate_menu.exec(self.btn_preview_gate.mapToGlobal(pos))
+        )
+
+        ml.addWidget(self.btn_preview_gate, 0)
 
         self.method_dock = QDockWidget("", self)
         self.method_dock.setWidget(method_widget)
@@ -298,6 +335,7 @@ class ShellMainWindow(QMainWindow):
         roi = self.preview.get_roi_rect()
         frame_idx = int(self.preview.get_current_frame_index() or 0)
 
+        self.log_panel.log(f"Preview Gate policy: {self._preview_gate_policy}")
         self.log_panel.log(f"Preview Gate: using preview frame index={frame_idx}")
         if roi is None and self._active_device_id == "optical_tweezers":
             self.log_panel.log("Preview Gate: ROI is required for Optical Tweezers.")
@@ -313,6 +351,7 @@ class ShellMainWindow(QMainWindow):
             device_panel=self._device_panel,
             preview_roi_rect=roi,
             preview_frame_index=frame_idx,
+            gate_policy=self._preview_gate_policy,
         )
 
         # Per-file PASS/FAIL -> Dataset icons

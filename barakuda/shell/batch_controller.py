@@ -72,6 +72,7 @@ class BatchController:
         device_panel,
         preview_roi_rect: Optional[tuple[int, int, int, int]],
         preview_frame_index: int,
+        gate_policy: str = "STRICT",
     ) -> list[PreviewResult]:
         self.reset_gate()
         if not file_paths:
@@ -97,6 +98,20 @@ class BatchController:
         PASS_MIN_RATIO = max(0.0, min(1.0, float(PASS_MIN_RATIO)))
         Q_MIN_GATE = max(0.0, float(Q_MIN_GATE))
         JUMP_MAX_GATE_PX = max(0.0, float(JUMP_MAX_GATE_PX))
+
+        # Apply policy override (audit-first)
+        gate_policy = str(gate_policy or "STRICT").upper()
+        if gate_policy == "STRICT":
+            PASS_MIN_RATIO = 1.0
+        elif gate_policy == "ROBUST":
+            PASS_MIN_RATIO = 0.85
+        elif gate_policy == "CUSTOM":
+            # keep PASS_MIN_RATIO from panel
+            pass
+        else:
+            # unknown policy -> safest fallback
+            gate_policy = "STRICT"
+            PASS_MIN_RATIO = 1.0
 
         def _sample_indices(frame_count: int, preferred: int, n: int) -> list[int]:
             if frame_count <= 0:
@@ -164,6 +179,7 @@ class BatchController:
                     "pass_min_ratio": float(PASS_MIN_RATIO),
                     "gate_q_min": float(Q_MIN_GATE),
                     "gate_jump_max_px": float(JUMP_MAX_GATE_PX),
+                    "gate_policy": gate_policy,
                 }
 
                 frame_indices = _sample_indices(frame_count, int(preview_frame_index), int(SAMPLE_COUNT))
@@ -343,6 +359,7 @@ class BatchController:
             "preview_frame_index": int(preview_frame_index),
             "sample_count": int(SAMPLE_COUNT),
             "pass_min_ratio": float(PASS_MIN_RATIO),
+            "gate_policy": gate_policy,
             "results": [
                 {
                     "path": r.path,
