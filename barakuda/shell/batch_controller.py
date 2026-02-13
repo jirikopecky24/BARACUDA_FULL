@@ -696,6 +696,11 @@ class BatchController:
                         psd_x_csv_path=(run_dir / f"{stem}_psd_x.csv"),
                         psd_y_csv_path=(run_dir / f"{stem}_psd_y.csv"),
                     )
+                    # Clean up intermediate CSVs — data is now in _results.xlsx sheets
+                    for _csv in ("_msd.csv", "_psd_x.csv", "_psd_y.csv"):
+                        _p = run_dir / f"{stem}{_csv}"
+                        if _p.exists():
+                            _p.unlink()
                 except Exception as e:
                     self._log(f"WARN: excel export skipped ({file_path.name}): {e!r}")
 
