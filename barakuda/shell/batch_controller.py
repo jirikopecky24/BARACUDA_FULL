@@ -553,6 +553,8 @@ class BatchController:
         use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
         ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
 
+        self._log(f"[OT] Using bead_diameter_um={pp.bead_diameter_um} (from UI postprocess params)")
+
         base_roi = Roi(*roi_rect)
 
         ok_paths = [Path(p) for p in ok_paths]
