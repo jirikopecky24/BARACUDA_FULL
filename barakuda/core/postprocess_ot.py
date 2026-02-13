@@ -331,6 +331,20 @@ def postprocess_trajectory_csv_inplace(
                     ),
                 )
 
+                fc_ratio = cal.fc_x_hz / cal.fc_y_hz if cal.fc_y_hz > 0 else float("nan")
+                anisotropy_pass = bool(0.5 <= fc_ratio <= 2.0)
+
+                eta_primary = cal.eta_mean_pa_s
+                eta_primary_axis = "mean"
+                if not anisotropy_pass:
+                    # pick the axis with higher fc (usually less polluted by drift)
+                    if cal.fc_y_hz >= cal.fc_x_hz:
+                        eta_primary = cal.eta_y_pa_s
+                        eta_primary_axis = "y"
+                    else:
+                        eta_primary = cal.eta_x_pa_s
+                        eta_primary_axis = "x"
+
                 import json as _json
                 cal_json = out_dir / f"{base}_calibration.json"
                 cal_csv = out_dir / f"{base}_calibration.csv"
@@ -341,6 +355,12 @@ def postprocess_trajectory_csv_inplace(
                     "temperature_k": cal.temperature_k,
                     "bead_diameter_um": float(params.bead_diameter_um),
                     "bead_radius_um": cal.bead_radius_um,
+                    "anisotropy": {
+                        "fc_ratio_x_over_y": fc_ratio,
+                        "pass": anisotropy_pass,
+                        "eta_primary_pa_s": eta_primary,
+                        "eta_primary_axis": eta_primary_axis,
+                    },
                     "kappa": {
                         "kappa_x_n_per_m": cal.kappa_x_n_per_m,
                         "kappa_y_n_per_m": cal.kappa_y_n_per_m,

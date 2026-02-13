@@ -227,12 +227,6 @@ class PipelinePanel(QWidget):
         self._viscosity.setSingleStep(0.0005)
         self._viscosity.setValue(0.001)  # Pa·s
 
-        self._bead_radius = QDoubleSpinBox()
-        self._bead_radius.setRange(0.0, 1e6)
-        self._bead_radius.setDecimals(6)
-        self._bead_radius.setSingleStep(0.05)
-        self._bead_radius.setValue(0.5)  # µm (1 µm diameter bead)
-
         self._temperature_c = QDoubleSpinBox()
         self._temperature_c.setRange(-10.0, 100.0)
         self._temperature_c.setDecimals(2)
@@ -286,7 +280,6 @@ class PipelinePanel(QWidget):
         post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         post_box_layout.addRow("Drag axis", self._drag_axis)
         post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
-        post_box_layout.addRow("Bead radius (µm)", self._bead_radius)
         post_box_layout.addRow("Temperature (°C)", self._temperature_c)
         post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
 
@@ -399,7 +392,6 @@ class PipelinePanel(QWidget):
             "stage_speed_um_s": float(self._stage_speed.value()),
             "drag_axis": str(self._drag_axis.currentData()),
             "viscosity_pa_s": float(self._viscosity.value()),
-            "bead_radius_um": float(self._bead_radius.value()),
             "temperature_c": float(self._temperature_c.value()),
             "bead_diameter_um": float(self._bead_diameter_um.value()),
         }
