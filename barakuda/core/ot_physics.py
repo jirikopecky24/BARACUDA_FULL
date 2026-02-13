@@ -318,8 +318,14 @@ class CalibrationResult:
 
 
 def _to_kappa_pn_per_um(kappa_n_per_m: float) -> float:
-    # (N/m) -> (pN/µm) = N/m * (1e12 pN/N) * (1e-6 m/µm)
-    return float(abs(kappa_n_per_m) * 1e6 * 1e12)
+    """
+    Convert stiffness from N/m to pN/µm.
+
+    1 N = 1e12 pN
+    1 m = 1e6 µm
+    => 1 N/m = (1e12 / 1e6) pN/µm = 1e6 pN/µm
+    """
+    return float(abs(kappa_n_per_m) * 1e6)
 
 
 def compute_calibration_from_equipartition_and_fc(

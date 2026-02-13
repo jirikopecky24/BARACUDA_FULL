@@ -354,6 +354,16 @@ def postprocess_trajectory_csv_inplace(
                         "fc_y_hz": cal.fc_y_hz,
                         "n_used": cal.n_used,
                     },
+                    "kappa_unit_check": {
+                        "expected_x_pn_per_um": float(cal.kappa_x_n_per_m * 1e6),
+                        "expected_y_pn_per_um": float(cal.kappa_y_n_per_m * 1e6),
+                        "actual_x_pn_per_um": float(cal.kappa_x_pn_per_um),
+                        "actual_y_pn_per_um": float(cal.kappa_y_pn_per_um),
+                        "pass": bool(
+                            abs(cal.kappa_x_pn_per_um - cal.kappa_x_n_per_m * 1e6) <= 1e-6
+                            and abs(cal.kappa_y_pn_per_um - cal.kappa_y_n_per_m * 1e6) <= 1e-6
+                        ),
+                    },
                 }
                 cal_json.write_text(_json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
