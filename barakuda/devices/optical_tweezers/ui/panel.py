@@ -12,6 +12,7 @@ class PipelinePanel(QWidget):
     run_selected_clicked = pyqtSignal()
     run_batch_clicked = pyqtSignal()
     preview_gate_clicked = pyqtSignal()
+    gate_report_clicked = pyqtSignal()
     stop_clicked = pyqtSignal()
 
     measure_clicked = pyqtSignal()
@@ -25,10 +26,13 @@ class PipelinePanel(QWidget):
 
 
         self.btn_preview_gate = QPushButton("Preview Gate")
+        self.btn_gate_report = QPushButton("Report\u2026")
+        self.btn_gate_report.setEnabled(False)
         self.btn_run = QPushButton("RUN")
         self.btn_stop = QPushButton("STOP")
 
         self.btn_preview_gate.clicked.connect(self.preview_gate_clicked.emit)
+        self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
 
@@ -207,6 +211,7 @@ class PipelinePanel(QWidget):
         layout.addWidget(_collapsible("Postprocess", post_box, expanded=False))
         layout.addStretch(1)
         layout.addWidget(self.btn_preview_gate)
+        layout.addWidget(self.btn_gate_report)
         layout.addWidget(self.btn_run)
         layout.addWidget(self.btn_stop)
         layout.addWidget(self.progress)

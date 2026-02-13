@@ -18,6 +18,7 @@ from barakuda.shell.batch_controller import BatchController
 from barakuda.core.video_io import is_video_file
 from barakuda.core.calibration_store import save_dataset_scale
 from barakuda.core.calibration_store import load_dataset_scale
+from barakuda.shell.widgets.preview_gate_report_dialog import PreviewGateReportDialog
 
 
 class ShellMainWindow(QMainWindow):
@@ -215,6 +216,7 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id == "optical_tweezers":
             try:
                 self._device_panel.preview_gate_clicked.connect(self._on_preview_gate)    # type: ignore[attr-defined]
+                self._device_panel.gate_report_clicked.connect(self._on_preview_gate_report) # type: ignore[attr-defined]
                 self._device_panel.run_batch_clicked.connect(self._on_run_batch)           # type: ignore[attr-defined]
                 self._device_panel.stop_clicked.connect(self.batch.stop)                   # type: ignore[attr-defined]
                 self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
@@ -337,6 +339,31 @@ class ShellMainWindow(QMainWindow):
         # Enable RUN only if gate passed for all
         if hasattr(self._device_panel, 'btn_run'):
             self._device_panel.btn_run.setEnabled(self.batch.preview_done)  # type: ignore[attr-defined]
+        # Enable Report button
+        if hasattr(self._device_panel, 'btn_gate_report'):
+            self._device_panel.btn_gate_report.setEnabled(True)  # type: ignore[attr-defined]
+
+    # ---------------- preview gate report ----------------
+
+    def _on_preview_gate_report(self) -> None:
+        results = []
+        try:
+            results = self.batch.get_preview_gate_results()
+        except Exception:
+            results = getattr(self.batch, "_last_preview_results", [])
+
+        report_path = None
+        try:
+            report_path = self.batch.get_preview_gate_report_path()
+        except Exception:
+            pass
+
+        if not results:
+            self.log_panel.log("Preview Gate Report: no results available.")
+            return
+
+        dlg = PreviewGateReportDialog(results=results, report_path=report_path, parent=self)
+        dlg.exec()
 
     # ---------------- run batch ----------------
 

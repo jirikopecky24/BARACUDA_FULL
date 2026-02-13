@@ -209,6 +209,17 @@ class BatchController:
         self._log(f"Preview report saved: {self._preview_dir / 'preview_report.json'}")
         return results
 
+    def get_preview_gate_results(self) -> list[PreviewResult]:
+        """Last Preview Gate results (per-file)."""
+        return list(self._last_preview_results)
+
+    def get_preview_gate_report_path(self) -> Path | None:
+        """Path to preview_report.json for the last gate run."""
+        if self._preview_dir is None:
+            return None
+        p = Path(self._preview_dir) / "preview_report.json"
+        return p if p.exists() else None
+
     # ---------------- Run Batch ----------------
 
     def run_batch(
