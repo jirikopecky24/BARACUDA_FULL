@@ -661,20 +661,26 @@ class BatchController:
 
                 if pp_enabled:
                     try:
-                        postprocess_trajectory_csv_inplace(
+                        pp_summary = postprocess_trajectory_csv_inplace(
                             trajectory_csv_path=traj_path,
                             fps=fps,
                             um_per_px=um_per_px,
                             params=pp,
+                            start_frame=int(s),
+                            end_frame=int(e),
                         )
                         (run_dir / f"{stem}_postprocess.json").write_text(
                             json.dumps({
                                 "enabled": True,
-                                "qc_enabled": pp.qc_enabled,
-                                "q_min": pp.q_min,
-                                "jump_max_px": pp.jump_max_px,
-                                "drift_enabled": pp.drift_enabled,
-                                "drift_window_s": pp.drift_window_s,
+                                "params": {
+                                    "qc_enabled": bool(pp.qc_enabled),
+                                    "q_min": float(pp.q_min),
+                                    "jump_max_px": float(pp.jump_max_px),
+                                    "drift_enabled": bool(pp.drift_enabled),
+                                    "drift_window_s": float(pp.drift_window_s),
+                                    "export_um_columns": bool(pp.export_um_columns),
+                                },
+                                "summary": pp_summary,
                             }, indent=2, ensure_ascii=False),
                             encoding="utf-8",
                         )
