@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
 class PipelinePanel(QWidget):
     run_selected_clicked = pyqtSignal()
     run_batch_clicked = pyqtSignal()
+    preview_gate_clicked = pyqtSignal()
     stop_clicked = pyqtSignal()
-    manage_runs_clicked = pyqtSignal()
 
     measure_clicked = pyqtSignal()
     track_range_clicked = pyqtSignal()
@@ -22,14 +22,15 @@ class PipelinePanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
-        title = QLabel("Pipeline")
-        title.setStyleSheet("font-weight: 600;")
 
+
+        self.btn_preview_gate = QPushButton("Preview Gate")
+        self.btn_run = QPushButton("RUN")
         self.btn_stop = QPushButton("STOP")
-        self.btn_manage_runs = QPushButton("Manage Runs…")
 
+        self.btn_preview_gate.clicked.connect(self.preview_gate_clicked.emit)
+        self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
-        self.btn_manage_runs.clicked.connect(self.manage_runs_clicked.emit)
 
         self.progress = QProgressBar()
         self.progress.setValue(0)
@@ -200,15 +201,15 @@ class PipelinePanel(QWidget):
         self._tracking_method = "RADIAL_SYMMETRY"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(8, 0, 8, 8)  # top margin 0 => starts at preview edge
         layout.setSpacing(6)
-        layout.addWidget(title)
-        layout.setAlignment(title, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(_collapsible("Parameters", params_box, expanded=False))
-        layout.addWidget(_collapsible("Postprocess (OT-3.1)", post_box, expanded=False))
+        layout.addWidget(_collapsible("Postprocess", post_box, expanded=False))
+        layout.addStretch(1)
+        layout.addWidget(self.btn_preview_gate)
+        layout.addWidget(self.btn_run)
         layout.addWidget(self.btn_stop)
         layout.addWidget(self.progress)
-        layout.addWidget(self.btn_manage_runs)
 
     # -------------------- API pro Shell --------------------
 

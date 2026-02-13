@@ -5,8 +5,8 @@ from typing import Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QSplitter, QLabel, QComboBox,
-    QSizePolicy, QPushButton, QToolButton, QHBoxLayout, QDockWidget
+    QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
+    QHBoxLayout, QDockWidget
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -41,39 +41,24 @@ class ShellMainWindow(QMainWindow):
         runs_folder = Path(__file__).resolve().parents[2] / "runs"
         self.batch = BatchController(runs_folder=runs_folder, log_fn=self.log_panel.log)
 
-        header = QWidget()
-        h_layout = QVBoxLayout(header)
-        h_layout.setContentsMargins(8, 8, 8, 0)
-        h_layout.setSpacing(6)
+        self._device_container = QWidget()
+        self._device_container_layout = QVBoxLayout(self._device_container)
+        self._device_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Compact top bar (always visible)
-        topbar = QWidget()
-        topbar_l = QHBoxLayout(topbar)
-        topbar_l.setContentsMargins(0, 0, 0, 0)
-        topbar_l.setSpacing(8)
+        # ---------------- Central (preview only) ----------------
+        root = QWidget()
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        title = QLabel("BARAKUDA Analysis Suite")
-        title.setStyleSheet("font-size: 14px; font-weight: 700;")
+        root_layout.addWidget(self.preview, 1)
+        self.setCentralWidget(root)
 
-        self.btn_toggle_controls = QToolButton()
-        self.btn_toggle_controls.setCheckable(True)
-        self.btn_toggle_controls.setChecked(False)
-        self.btn_toggle_controls.setText("▸ Controls")
-
-        def _sync_controls_text(checked: bool) -> None:
-            self.btn_toggle_controls.setText("▾ Controls" if checked else "▸ Controls")
-
-        self.btn_toggle_controls.toggled.connect(_sync_controls_text)
-
-        topbar_l.addWidget(title)
-        topbar_l.addStretch(1)
-        topbar_l.addWidget(self.btn_toggle_controls)
-
-        # Controls panel (collapsible)
-        self.controls = QWidget()
-        c = QHBoxLayout(self.controls)
-        c.setContentsMargins(0, 0, 0, 0)
-        c.setSpacing(8)
+        # ---------------- Method dock (above Dataset) ----------------
+        method_widget = QWidget()
+        ml = QHBoxLayout(method_widget)
+        ml.setContentsMargins(8, 6, 8, 6)
+        ml.setSpacing(8)
 
         self.device_combo = QComboBox()
         for d in self._devices:
@@ -83,46 +68,20 @@ class ShellMainWindow(QMainWindow):
         self.method_combo = QComboBox()
         self.method_combo.setVisible(False)
 
-        self.btn_run = QPushButton("RUN")
-        self.btn_run.setFixedHeight(28)
+        ml.addWidget(QLabel("Device:"))
+        ml.addWidget(self.device_combo, 1)
+        ml.addWidget(QLabel("Method:"))
+        ml.addWidget(self.method_combo, 0)
 
-        # Keep controls compact
-        for w in [self.device_combo, self.method_combo]:
-            try:
-                w.setFixedHeight(26)
-            except Exception:
-                pass
 
-        self.btn_run.clicked.connect(self._on_run_batch)
 
-        c.addWidget(QLabel("Device:"))
-        c.addWidget(self.device_combo, 1)
-        c.addWidget(QLabel("Analysis mode:"))
-        c.addWidget(self.method_combo, 0)
-        c.addWidget(self.btn_run, 0)
-        c.addStretch(1)
-
-        self.controls.setVisible(False)
-        self.btn_toggle_controls.toggled.connect(self.controls.setVisible)
-
-        h_layout.addWidget(topbar)
-        h_layout.addWidget(self.controls)
-        header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        header.setMaximumHeight(40)
-
-        self._device_container = QWidget()
-        self._device_container_layout = QVBoxLayout(self._device_container)
-        self._device_container_layout.setContentsMargins(0, 0, 0, 0)
-
-        # ---------------- Central (header + preview) ----------------
-        root = QWidget()
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
-
-        root_layout.addWidget(header)
-        root_layout.addWidget(self.preview, 1)
-        self.setCentralWidget(root)
+        self.method_dock = QDockWidget("", self)
+        self.method_dock.setWidget(method_widget)
+        self.method_dock.setTitleBarWidget(QWidget())  # no title bar
+        self.method_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
 
         # ---------------- Dock widgets (Dataset / Pipeline / Log) ----------------
         self.dataset_dock = QDockWidget("Dataset", self)
@@ -133,13 +92,25 @@ class ShellMainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
 
-        self.pipeline_dock = QDockWidget("Pipeline", self)
+        self.pipeline_dock = QDockWidget("", self)
         self.pipeline_dock.setWidget(self._device_container)
         self.pipeline_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
+
+        # Slim title bar (still draggable, but visually minimal)
+        tb = QWidget()
+        tb_l = QHBoxLayout(tb)
+        tb_l.setContentsMargins(6, 2, 6, 2)
+        tb_l.setSpacing(6)
+        lbl = QLabel("Pipeline")
+        lbl.setStyleSheet("color: #bbb; font-size: 11px;")
+        tb_l.addWidget(lbl)
+        tb_l.addStretch(1)
+        tb.setFixedHeight(20)
+        self.pipeline_dock.setTitleBarWidget(tb)
 
         self.log_dock = QDockWidget("Log", self)
         self.log_dock.setWidget(self.log_panel)
@@ -149,7 +120,22 @@ class ShellMainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
 
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.method_dock)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dataset_dock)
+        self.splitDockWidget(self.method_dock, self.dataset_dock, Qt.Orientation.Vertical)
+
+        # Ensure method dock stays visible above Dataset (avoid collapsing to ~0px).
+        try:
+            self.method_dock.setMinimumHeight(48)
+            self.method_dock.setMaximumHeight(80)
+            self.resizeDocks(
+                [self.method_dock, self.dataset_dock],
+                [60, 600],
+                Qt.Orientation.Vertical,
+            )
+        except Exception:
+            pass
+
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.pipeline_dock)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
 
@@ -226,11 +212,12 @@ class ShellMainWindow(QMainWindow):
         self._device_panel = spec.create_panel()
         self._device_container_layout.addWidget(self._device_panel)
 
-        # ALE: Track Video + Save scale musí fungovat → napojíme signály
         if self._active_device_id == "optical_tweezers":
             try:
-                self._device_panel.track_range_clicked.connect(self._ot_track_range)          # type: ignore[attr-defined]
-                self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale)    # type: ignore[attr-defined]
+                self._device_panel.preview_gate_clicked.connect(self._on_preview_gate)    # type: ignore[attr-defined]
+                self._device_panel.run_batch_clicked.connect(self._on_run_batch)           # type: ignore[attr-defined]
+                self._device_panel.stop_clicked.connect(self.batch.stop)                   # type: ignore[attr-defined]
+                self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
@@ -293,63 +280,7 @@ class ShellMainWindow(QMainWindow):
         except Exception as e:
             self.log_panel.log(f"Save scale ERROR: {e!r}")
 
-    def _ot_track_range(self) -> None:
-        # “Track Video (range)” uděláme jako single-run přes batch engine (1 file):
-        if self._device_panel is None:
-            return
-        sel = self.dataset.get_selected_paths()
-        if not sel:
-            self.log_panel.log("Track range: no selected video.")
-            return
-        roi = self.preview.get_roi_rect()
-        if roi is None:
-            self.log_panel.log("Track range: ROI is not set.")
-            return
 
-        # Aby to bylo audit-first, uděláme nejdřív mini gate na aktuálním frame:
-        frame_idx = int(self.preview.get_current_frame_index() or 0)
-        self.batch.run_preview_gate(
-            file_paths=[sel[0]],
-            device_id="optical_tweezers",
-            device_panel=self._device_panel,
-            preview_roi_rect=roi,
-            preview_frame_index=frame_idx,
-        )
-        if not self.batch.preview_done:
-            self.log_panel.log("Track range blocked: Preview Gate for this file FAILED.")
-            return
-
-        def progress_fn(done: int, total: int) -> None:
-            self.log_panel.log(f"Track progress: {done}/{total}")
-
-        try:
-            self.batch.run_batch(
-                device_id="optical_tweezers",
-                device_panel=self._device_panel,
-                roi_rect=roi,
-                dataset_set_status_fn=self.dataset.set_status,
-                progress_fn=progress_fn,
-            )
-
-            # UI convenience: show the produced AFTER overlay for the selected video.
-            try:
-                runs_folder = self.batch.run_manager.runs_folder
-                stem = sel[0].stem
-                candidates = sorted(
-                    (p for p in runs_folder.glob(f"*-{stem}") if p.is_dir()),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                if candidates:
-                    after_path = candidates[0] / f"{stem}_after.png"
-                    if after_path.exists():
-                        ok = self.preview.set_after_from_file(str(after_path))
-                        if ok:
-                            self.log_panel.log(f"AFTER overlay shown: {after_path}")
-            except Exception:
-                pass
-        except Exception as e:
-            self.log_panel.log(f"Track range ERROR: {e!r}")
 
     # ---------------- preview gate ----------------
 
@@ -359,25 +290,54 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Preview Gate: no selected files.")
             return
         if self._device_panel is None:
-            self.log_panel.log("Preview Gate: no active panel.")
+            self.log_panel.log("Preview Gate: device panel not ready.")
             return
 
         roi = self.preview.get_roi_rect()
-        frame_idx = int(self.preview.get_current_frame_index() or 0)
-
-        self.log_panel.log(f"Preview Gate: using preview frame index={frame_idx}")
         if roi is None and self._active_device_id == "optical_tweezers":
             self.log_panel.log("Preview Gate: ROI is required for Optical Tweezers.")
+            return
+
+        frame_idx = int(self.preview.get_current_frame_index() or 0)
+        self.log_panel.log("Preview Gate: running...")
 
         self.batch.run_preview_gate(
             file_paths=paths,
-            device_id=self._active_device_id,
+            device_id=str(self._active_device_id),
             device_panel=self._device_panel,
             preview_roi_rect=roi,
             preview_frame_index=frame_idx,
         )
 
-        pass  # preview gate result is logged
+        results = getattr(self.batch, "gate_results", None)
+        if not results:
+            self.log_panel.log("Preview Gate: no results produced.")
+            return
+
+        # Reset icons for selected to unknown first
+        for p in paths:
+            try:
+                self.dataset.set_gate_result(p, None)
+            except Exception:
+                pass
+
+        fail_list: list[str] = []
+        for p, (passed, reason) in results.items():
+            try:
+                self.dataset.set_gate_result(Path(p), bool(passed), str(reason))
+            except Exception:
+                pass
+
+            if passed:
+                self.log_panel.log(f"Preview Gate PASS: {Path(p).name}")
+            else:
+                self.log_panel.log(f"Preview Gate FAIL: {Path(p).name}  {reason}")
+                fail_list.append(Path(p).name)
+
+        if fail_list:
+            self.log_panel.log(f"Preview Gate summary: FAIL ({len(fail_list)}): " + ", ".join(fail_list))
+        else:
+            self.log_panel.log("Preview Gate summary: ALL PASS")
 
     # ---------------- run batch ----------------
 
@@ -394,7 +354,9 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Run Batch: ROI is required for Optical Tweezers.")
             return
 
-        self.btn_run.setEnabled(False)
+        # disable RUN on the panel if it exists
+        if hasattr(self._device_panel, 'btn_run'):
+            self._device_panel.btn_run.setEnabled(False)  # type: ignore[attr-defined]
 
         try:
             if hasattr(self._device_panel, "set_batch_running"):
@@ -418,4 +380,13 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.set_batch_running(False)  # type: ignore[attr-defined]
             except Exception:
                 pass
-            self.btn_run.setEnabled(True)
+            if hasattr(self._device_panel, 'btn_run'):
+                self._device_panel.btn_run.setEnabled(True)  # type: ignore[attr-defined]
+
+            # Show last after overlay in AFTER tab (crosshair + adaptive ROI)
+            after_path = getattr(self.batch, "last_after_overlay_path", None)
+            if after_path:
+                try:
+                    self.preview.set_after_from_file(after_path)
+                except Exception:
+                    pass

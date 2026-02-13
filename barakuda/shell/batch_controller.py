@@ -37,6 +37,9 @@ class BatchController:
         self._preview_done: bool = False
         self._last_preview_results: list[PreviewResult] = []
         self._preview_dir: Optional[Path] = None
+        self._stop_requested = False
+        self.gate_results: dict[Path, tuple[bool, str]] = {}
+        self.last_after_overlay_path: str | None = None
 
     @property
     def preview_done(self) -> bool:
@@ -54,6 +57,11 @@ class BatchController:
         self._preview_done = False
         self._last_preview_results = []
         self._preview_dir = None
+
+    def stop(self) -> None:
+        """Request cooperative stop of the running batch."""
+        self._stop_requested = True
+        self._log("STOP requested: batch will stop at the next safe checkpoint.")
 
     # ---------------- Preview Gate ----------------
 
@@ -192,6 +200,11 @@ class BatchController:
         self._preview_done = ok_all
         self._last_preview_results = results
 
+        # Build gate_results for shell icon updates
+        self.gate_results: dict[Path, tuple[bool, str]] = {}
+        for r in results:
+            self.gate_results[Path(r.path)] = (r.ok, r.message)
+
         self._log(f"Preview Gate finished: {'PASS' if ok_all else 'FAIL'} (items={len(results)})")
         self._log(f"Preview report saved: {self._preview_dir / 'preview_report.json'}")
         return results
@@ -216,6 +229,8 @@ class BatchController:
             return
 
         self._log(f"Run Batch start: PASS items={len(ok_paths)}")
+        self._stop_requested = False
+        self.last_after_overlay_path = None
         progress_fn(0, len(ok_paths))
         QApplication.processEvents()
 
@@ -262,6 +277,10 @@ class BatchController:
 
         done = 0
         for file_path in ok_paths:
+            if self._stop_requested:
+                self._log("Batch stopped before processing next file.")
+                break
+
             file_path = Path(file_path)
             dataset_set_status_fn(file_path, "running")
             QApplication.processEvents()
@@ -338,6 +357,7 @@ class BatchController:
                 last_roi: tuple[int, int, int, int] | None = None
 
                 with traj_path.open("w", newline="", encoding="utf-8") as f_meta:
+                    f_meta.write(f"# source_file={file_path.name}\n")
                     f_meta.write(f"# method={method.value}\n")
                     f_meta.write(f"# roi={list(roi_rect)}\n")
                     f_meta.write(f"# adaptive_roi={adaptive_roi}\n")
@@ -362,6 +382,10 @@ class BatchController:
                     current_roi = base_roi
 
                     for fi in range(s, e + 1):
+                        if self._stop_requested:
+                            self._log(f"Batch stopped during '{file_path.name}' at frame {fi}.")
+                            break
+
                         frame = reader.get_frame(fi)
                         roi_obj = current_roi
                         det = track_particle(
@@ -405,6 +429,13 @@ class BatchController:
 
                 reader.close()
 
+                if self._stop_requested:
+                    dataset_set_status_fn(file_path, "stopped")
+                    done += 1
+                    progress_fn(done, len(ok_paths))
+                    QApplication.processEvents()
+                    break
+
                 # Save overlays (never crash the run)
                 try:
                     if first_frame is not None and first_xy is not None:
@@ -433,6 +464,7 @@ class BatchController:
                             roi=(last_roi if last_roi is not None else roi_rect),
                             name=f"{stem}_after.png",
                         )
+                        self.last_after_overlay_path = str(run_dir / f"{stem}_after.png")
                 except Exception as e:
                     self._log(f"WARN: after overlay failed ({file_path.name}): {e!r}")
 
@@ -462,6 +494,7 @@ class BatchController:
                     export_trajectory_xlsx(
                         run_dir=run_dir,
                         trajectory_csv_path=traj_path,
+                        extra_metadata={"source_file": str(file_path.name)},
                         output_name=f"{stem}_trajectory.xlsx",
                     )
                 except Exception as e:

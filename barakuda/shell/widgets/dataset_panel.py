@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -13,6 +14,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QFileDialog,
     QLabel,
+    QStyle,
 )
 
 from barakuda.core.models import DatasetItem
@@ -150,3 +152,39 @@ class DatasetPanel(QWidget):
             "skipped": "⚠️",
         }.get(status, "•")
         return f"{icon} {name}"
+
+    # --- GATE RESULT API (volá MainWindow) ---
+
+    def _find_item_by_path(self, path: Path):
+        p = str(Path(path))
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            if str(it.data(Qt.ItemDataRole.UserRole)) == p:
+                return it
+        return None
+
+    def set_gate_result(self, path: Path, passed: bool | None, reason: str = "") -> None:
+        """
+        passed:
+          True  -> PASS (green/check icon)
+          False -> FAIL (red/error icon)
+          None  -> UNKNOWN (no icon)
+        """
+        item = self._find_item_by_path(path)
+        if item is None:
+            return
+
+        if passed is True:
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+            item.setIcon(icon)
+            item.setToolTip("Preview Gate: PASS")
+        elif passed is False:
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical)
+            item.setIcon(icon)
+            msg = "Preview Gate: FAIL"
+            if reason:
+                msg += f"\n{reason}"
+            item.setToolTip(msg)
+        else:
+            item.setIcon(QIcon())
+            item.setToolTip("")
