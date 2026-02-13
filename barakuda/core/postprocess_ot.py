@@ -311,6 +311,13 @@ def postprocess_trajectory_csv_inplace(
             fc_x = float(fit_x.get("fc_hz", 0.0)) if isinstance(fit_x, dict) else 0.0
             fc_y = float(fit_y.get("fc_hz", 0.0)) if isinstance(fit_y, dict) else 0.0
 
+            # Validation (UI/config)
+            if not np.isfinite(params.bead_diameter_um) or float(params.bead_diameter_um) <= 0:
+                raise ValueError("bead_diameter_um must be > 0 (UI/config)")
+
+            if "_2um_" in base and abs(params.bead_diameter_um - 1.0) < 0.1:
+                summary.setdefault("warnings", []).append(f"Filename '{base}' suggests 2um bead, but analysis uses 1um!")
+
             try:
                 cal = compute_calibration_from_equipartition_and_fc(
                     x_um=x_um,

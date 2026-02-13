@@ -546,6 +546,8 @@ class BatchController:
             drag_axis=str(post_params.get("drag_axis", "x")),
             viscosity_pa_s=float(post_params.get("viscosity_pa_s", 1.0e-3)),
             bead_radius_um=float(post_params.get("bead_radius_um", 0.5)),
+            temperature_c=float(post_params.get("temperature_c", 25.0)),
+            bead_diameter_um=float(post_params.get("bead_diameter_um", 1.0)),
         )
 
         use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
