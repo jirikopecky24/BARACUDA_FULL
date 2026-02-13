@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
-    QGroupBox, QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
+    QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
     QToolButton, QHBoxLayout
 )
 
@@ -25,20 +25,11 @@ class PipelinePanel(QWidget):
         title = QLabel("Pipeline")
         title.setStyleSheet("font-weight: 600;")
 
-        self.btn_run_selected = QPushButton("Run Selected")
-        self.btn_run_batch = QPushButton("Run Batch (Selected)")
         self.btn_stop = QPushButton("STOP")
         self.btn_manage_runs = QPushButton("Manage Runs…")
 
-        self.btn_measure = QPushButton("Measure (current frame)")
-        self.btn_track_range = QPushButton("Track Video (range)")
-
-        self.btn_run_selected.clicked.connect(self.run_selected_clicked.emit)
-        self.btn_run_batch.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
         self.btn_manage_runs.clicked.connect(self.manage_runs_clicked.emit)
-        self.btn_measure.clicked.connect(self.measure_clicked.emit)
-        self.btn_track_range.clicked.connect(self.track_range_clicked.emit)
 
         self.progress = QProgressBar()
         self.progress.setValue(0)
@@ -147,38 +138,38 @@ class PipelinePanel(QWidget):
         self._drift_window_s.setSingleStep(0.1)
         self._drift_window_s.setValue(1.0)
 
-        params_box = QGroupBox("Params")
-        form = QFormLayout(params_box)
+        params_box = QWidget()
+        params_box_layout = QFormLayout(params_box)
 
-        form.addRow("Normalize strength", self._normalize_strength)
-        form.addRow("", self._adaptive_roi)
-        form.addRow("Blur sigma", self._blur_sigma)
-        form.addRow("Radial grad threshold", self._radial_grad_threshold)
-        form.addRow("", self._auto_polarity)
-        form.addRow("", self._invert)
+        params_box_layout.addRow("Normalize strength", self._normalize_strength)
+        params_box_layout.addRow("", self._adaptive_roi)
+        params_box_layout.addRow("Blur sigma", self._blur_sigma)
+        params_box_layout.addRow("Radial grad threshold", self._radial_grad_threshold)
+        params_box_layout.addRow("", self._auto_polarity)
+        params_box_layout.addRow("", self._invert)
 
-        form.addRow("", self._use_annulus)
-        form.addRow("", self._annulus_auto)
-        form.addRow("Annulus r_inner (px)", self._annulus_r_inner)
-        form.addRow("Annulus r_outer (px)", self._annulus_r_outer)
-        form.addRow("Annulus smooth (bins)", self._annulus_profile_smooth)
+        params_box_layout.addRow("", self._use_annulus)
+        params_box_layout.addRow("", self._annulus_auto)
+        params_box_layout.addRow("Annulus r_inner (px)", self._annulus_r_inner)
+        params_box_layout.addRow("Annulus r_outer (px)", self._annulus_r_outer)
+        params_box_layout.addRow("Annulus smooth (bins)", self._annulus_profile_smooth)
 
-        form.addRow("Start frame", self._start_frame)
-        form.addRow("End frame", self._end_frame)
+        params_box_layout.addRow("Start frame", self._start_frame)
+        params_box_layout.addRow("End frame", self._end_frame)
 
-        form.addRow("", self._use_dataset_scale)
-        form.addRow("Scale (µm/px)", self._um_per_px)
-        form.addRow("", self._scale_status)
-        form.addRow("", self.btn_save_scale)
+        params_box_layout.addRow("", self._use_dataset_scale)
+        params_box_layout.addRow("Scale (µm/px)", self._um_per_px)
+        params_box_layout.addRow("", self._scale_status)
+        params_box_layout.addRow("", self.btn_save_scale)
 
-        post_box = QGroupBox("Postprocess (OT-3.1)")
-        post_form = QFormLayout(post_box)
-        post_form.addRow("", self._pp_enabled)
-        post_form.addRow("", self._qc_enabled)
-        post_form.addRow("QC q_min", self._qc_q_min)
-        post_form.addRow("QC jump_max (px)", self._qc_jump_max)
-        post_form.addRow("", self._drift_enabled)
-        post_form.addRow("Drift window (s)", self._drift_window_s)
+        post_box = QWidget()
+        post_box_layout = QFormLayout(post_box)
+        post_box_layout.addRow("", self._pp_enabled)
+        post_box_layout.addRow("", self._qc_enabled)
+        post_box_layout.addRow("QC q_min", self._qc_q_min)
+        post_box_layout.addRow("QC jump_max (px)", self._qc_jump_max)
+        post_box_layout.addRow("", self._drift_enabled)
+        post_box_layout.addRow("Drift window (s)", self._drift_window_s)
 
         def _collapsible(title_text: str, inner: QWidget, expanded: bool) -> QWidget:
             wrap = QWidget()
@@ -210,13 +201,11 @@ class PipelinePanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         layout.addWidget(title)
-        layout.addWidget(_collapsible("Params", params_box, expanded=True))
+        layout.setAlignment(title, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(_collapsible("Parameters", params_box, expanded=False))
         layout.addWidget(_collapsible("Postprocess (OT-3.1)", post_box, expanded=False))
-        layout.addWidget(self.btn_measure)
-        layout.addWidget(self.btn_track_range)
-        layout.addWidget(self.btn_run_selected)
-        layout.addWidget(self.btn_run_batch)
         layout.addWidget(self.btn_stop)
         layout.addWidget(self.progress)
         layout.addWidget(self.btn_manage_runs)
@@ -263,8 +252,6 @@ class PipelinePanel(QWidget):
 
     def set_batch_running(self, running: bool) -> None:
         for b in [
-            self.btn_measure, self.btn_track_range,
-            self.btn_run_selected, self.btn_run_batch,
             self.btn_save_scale,
         ]:
             b.setEnabled(not running)

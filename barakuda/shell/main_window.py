@@ -6,7 +6,7 @@ from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QSplitter, QLabel, QComboBox,
-    QSizePolicy, QPushButton, QToolButton, QHBoxLayout
+    QSizePolicy, QPushButton, QToolButton, QHBoxLayout, QDockWidget
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -83,26 +83,23 @@ class ShellMainWindow(QMainWindow):
         self.method_combo = QComboBox()
         self.method_combo.setVisible(False)
 
-        self.btn_preview_gate = QPushButton("Preview Gate")
-        self.btn_run_batch = QPushButton("Run Batch")
-        self.btn_run_batch.setEnabled(False)
+        self.btn_run = QPushButton("RUN")
+        self.btn_run.setFixedHeight(28)
 
         # Keep controls compact
-        for w in [self.device_combo, self.method_combo, self.btn_preview_gate, self.btn_run_batch]:
+        for w in [self.device_combo, self.method_combo]:
             try:
                 w.setFixedHeight(26)
             except Exception:
                 pass
 
-        self.btn_preview_gate.clicked.connect(self._on_preview_gate)
-        self.btn_run_batch.clicked.connect(self._on_run_batch)
+        self.btn_run.clicked.connect(self._on_run_batch)
 
         c.addWidget(QLabel("Device:"))
         c.addWidget(self.device_combo, 1)
-        c.addWidget(QLabel("Method:"))
+        c.addWidget(QLabel("Analysis mode:"))
         c.addWidget(self.method_combo, 0)
-        c.addWidget(self.btn_preview_gate, 0)
-        c.addWidget(self.btn_run_batch, 0)
+        c.addWidget(self.btn_run, 0)
         c.addStretch(1)
 
         self.controls.setVisible(False)
@@ -111,32 +108,57 @@ class ShellMainWindow(QMainWindow):
         h_layout.addWidget(topbar)
         h_layout.addWidget(self.controls)
         header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        self.main_split = QSplitter(Qt.Orientation.Horizontal)
-        self.main_split.addWidget(self.dataset)
-        self.main_split.addWidget(self.preview)
+        header.setMaximumHeight(40)
 
         self._device_container = QWidget()
         self._device_container_layout = QVBoxLayout(self._device_container)
         self._device_container_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_split.addWidget(self._device_container)
 
-        self.main_split.setStretchFactor(0, 1)
-        self.main_split.setStretchFactor(1, 3)
-        self.main_split.setStretchFactor(2, 1)
-
-        vertical = QSplitter(Qt.Orientation.Vertical)
-        vertical.addWidget(self.main_split)
-        vertical.addWidget(self.log_panel)
-        vertical.setStretchFactor(0, 6)
-        vertical.setStretchFactor(1, 1)
-
+        # ---------------- Central (header + preview) ----------------
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
         root_layout.addWidget(header)
-        root_layout.addWidget(vertical, 1)
+        root_layout.addWidget(self.preview, 1)
         self.setCentralWidget(root)
+
+        # ---------------- Dock widgets (Dataset / Pipeline / Log) ----------------
+        self.dataset_dock = QDockWidget("Dataset", self)
+        self.dataset_dock.setWidget(self.dataset)
+        self.dataset_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+
+        self.pipeline_dock = QDockWidget("Pipeline", self)
+        self.pipeline_dock.setWidget(self._device_container)
+        self.pipeline_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+
+        self.log_dock = QDockWidget("Log", self)
+        self.log_dock.setWidget(self.log_panel)
+        self.log_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dataset_dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.pipeline_dock)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
+
+        # Reasonable default proportions (can be adjusted by user)
+        try:
+            self.resizeDocks([self.dataset_dock, self.pipeline_dock], [300, 360], Qt.Orientation.Horizontal)
+            self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
+        except Exception:
+            pass
 
         self.log_panel.log("Shell started.")
         self._set_device_by_index(0)
@@ -161,7 +183,6 @@ class ShellMainWindow(QMainWindow):
                 self.log_panel.log(f"WARN: end-frame autoload failed: {e!r}")
 
         self.batch.reset_gate()
-        self.btn_run_batch.setEnabled(False)
 
         # Keep OT scale visible + deterministic default.
         if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
@@ -193,7 +214,6 @@ class ShellMainWindow(QMainWindow):
             return
         self._activate_device(self._devices[idx])
         self.batch.reset_gate()
-        self.btn_run_batch.setEnabled(False)
 
     def _activate_device(self, spec: DeviceSpec) -> None:
         if self._device_panel is not None:
@@ -205,16 +225,6 @@ class ShellMainWindow(QMainWindow):
         self._active_device_id = str(spec.device_id)
         self._device_panel = spec.create_panel()
         self._device_container_layout.addWidget(self._device_panel)
-
-        # Option A: Shell owns batch → schovej panelové batch/run tlačítka
-        try:
-            if hasattr(self._device_panel, "btn_run_batch"):
-                self._device_panel.btn_run_batch.setEnabled(False)  # type: ignore[attr-defined]
-                self._device_panel.btn_run_batch.hide()             # type: ignore[attr-defined]
-            if hasattr(self._device_panel, "btn_run_selected"):
-                self._device_panel.btn_run_selected.hide()          # type: ignore[attr-defined]
-        except Exception:
-            pass
 
         # ALE: Track Video + Save scale musí fungovat → napojíme signály
         if self._active_device_id == "optical_tweezers":
@@ -367,7 +377,7 @@ class ShellMainWindow(QMainWindow):
             preview_frame_index=frame_idx,
         )
 
-        self.btn_run_batch.setEnabled(self.batch.preview_done)
+        pass  # preview gate result is logged
 
     # ---------------- run batch ----------------
 
@@ -384,8 +394,7 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Run Batch: ROI is required for Optical Tweezers.")
             return
 
-        self.btn_preview_gate.setEnabled(False)
-        self.btn_run_batch.setEnabled(False)
+        self.btn_run.setEnabled(False)
 
         try:
             if hasattr(self._device_panel, "set_batch_running"):
@@ -409,5 +418,4 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.set_batch_running(False)  # type: ignore[attr-defined]
             except Exception:
                 pass
-            self.btn_preview_gate.setEnabled(True)
-            self.btn_run_batch.setEnabled(self.batch.preview_done)
+            self.btn_run.setEnabled(True)
