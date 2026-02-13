@@ -396,8 +396,10 @@ class ShellMainWindow(QMainWindow):
             if hasattr(self._device_panel, "set_batch_running"):
                 self._device_panel.set_batch_running(True)  # type: ignore[attr-defined]
 
-            def progress_fn(done: int, total: int) -> None:
-                self.log_panel.log(f"Batch progress: {done}/{total}")
+            def progress_fn(done: int, total: int, filename: str = "", pct: int = 0) -> None:
+                self.log_panel.log(f"Batch progress: {done}/{total} {pct}%" + (f" ({filename})" if filename else ""))
+                if hasattr(self._device_panel, "set_batch_progress"):
+                    self._device_panel.set_batch_progress(done, total, filename, pct)  # type: ignore[attr-defined]
 
             self.batch.run_batch(
                 device_id=self._active_device_id,

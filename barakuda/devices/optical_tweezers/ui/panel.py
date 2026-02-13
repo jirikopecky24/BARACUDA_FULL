@@ -73,6 +73,7 @@ class PipelinePanel(QWidget):
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
 
+        self._progress_label = QLabel("Ready")
         self.progress = QProgressBar()
         self.progress.setValue(0)
 
@@ -279,6 +280,7 @@ class PipelinePanel(QWidget):
         layout.addWidget(self.btn_gate_report)
         layout.addWidget(self.btn_run)
         layout.addWidget(self.btn_stop)
+        layout.addWidget(self._progress_label)
         layout.addWidget(self.progress)
 
     # -------------------- API pro Shell --------------------
@@ -293,6 +295,29 @@ class PipelinePanel(QWidget):
 
     def get_gate_policy(self) -> str:
         return str(self._preview_gate_policy)
+
+    def set_batch_running(self, running: bool) -> None:
+        """Toggle progress bar between indeterminate pulse and idle."""
+        if running:
+            self.progress.setRange(0, 0)  # indeterminate pulse
+            self._progress_label.setText("Starting\u2026")
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self._progress_label.setText("Ready")
+
+    def set_batch_progress(self, done: int, total: int, filename: str = "", pct: int = 0) -> None:
+        """Update file counter label and progress bar value (pct = 0..100 within current video)."""
+        if total <= 0:
+            return
+        label = f"File {done + 1} / {total}" if pct < 100 else f"File {done} / {total} ✅"
+        if filename:
+            label += f"  —  {filename}"
+        if pct < 100:
+            label += f"  ({pct}%)"
+        self._progress_label.setText(label)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(pct)
 
     def get_tracking_params(self) -> dict:
         # method UI zatím nemáme → držíme RS jako default

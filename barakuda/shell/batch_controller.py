@@ -408,7 +408,7 @@ class BatchController:
         device_panel,
         roi_rect: tuple[int, int, int, int],
         dataset_set_status_fn: Callable[[Path, str], None],
-        progress_fn: Callable[[int, int], None],
+        progress_fn: Callable[[int, int, str, int], None],
     ) -> None:
         if not self._preview_done:
             self._log("Run Batch blocked: Preview Gate has not passed.")
@@ -422,7 +422,7 @@ class BatchController:
         self._log(f"Run Batch start: PASS items={len(ok_paths)}")
         self._stop_requested = False
         self.last_after_overlay_path = None
-        progress_fn(0, len(ok_paths))
+        progress_fn(0, len(ok_paths), "", 0)
         QApplication.processEvents()
 
         if device_id != "optical_tweezers":
@@ -572,10 +572,19 @@ class BatchController:
 
                     current_roi = base_roi
 
+                    total_frames = max(1, e - s + 1)
+
                     for fi in range(s, e + 1):
                         if self._stop_requested:
                             self._log(f"Batch stopped during '{file_path.name}' at frame {fi}.")
                             break
+
+                        # Per-frame progress (throttled: every 10 frames + first + last)
+                        frame_idx = fi - s
+                        if frame_idx % 10 == 0 or fi == e:
+                            pct = int(100 * frame_idx / total_frames)
+                            progress_fn(done, len(ok_paths), file_path.name, pct)
+                            QApplication.processEvents()
 
                         frame = reader.get_frame(fi)
                         roi_obj = current_roi
@@ -623,7 +632,7 @@ class BatchController:
                 if self._stop_requested:
                     dataset_set_status_fn(file_path, "stopped")
                     done += 1
-                    progress_fn(done, len(ok_paths))
+                    progress_fn(done, len(ok_paths), file_path.name, 100)
                     QApplication.processEvents()
                     break
 
@@ -735,7 +744,7 @@ class BatchController:
                 self._log(f"ERROR: {file_path.name}: {e!r}")
 
             done += 1
-            progress_fn(done, len(ok_paths))
+            progress_fn(done, len(ok_paths), file_path.name, 100)
             QApplication.processEvents()
 
         self._log("Run Batch done ✅")
