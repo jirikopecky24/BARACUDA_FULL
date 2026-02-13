@@ -35,10 +35,11 @@ class PreviewGateReportDialog(QDialog):
         self.lbl = QLabel("")
         self.lbl.setStyleSheet("color: #666;")
 
-        self.table = QTableWidget(0, 12)
+        self.table = QTableWidget(0, 15)
         self.table.setHorizontalHeaderLabels([
             "File", "PASS", "Status", "Message",
             "Pass ratio", "Samples",
+            "Median q", "Max jump (px)", "Fail reason",
             "Frame", "x", "y", "Quality", "Peak", "Method"
         ])
         self.table.setSortingEnabled(True)
@@ -104,13 +105,16 @@ class PreviewGateReportDialog(QDialog):
 
             self.table.setItem(row, 4, item(_fmt(d.get("pass_ratio"))))
             self.table.setItem(row, 5, item(_fmt(d.get("sample_n"))))
+            self.table.setItem(row, 6, item(_fmt(d.get("median_quality"))))
+            self.table.setItem(row, 7, item(_fmt(d.get("max_jump_px"))))
+            self.table.setItem(row, 8, item(_fmt(d.get("fail_reason"))))
 
-            self.table.setItem(row, 6, item(_fmt(d.get("preview_frame_index"))))
-            self.table.setItem(row, 7, item(_fmt(d.get("x_px"))))
-            self.table.setItem(row, 8, item(_fmt(d.get("y_px"))))
-            self.table.setItem(row, 9, item(_fmt(d.get("quality"))))
-            self.table.setItem(row, 10, item(_fmt(d.get("peak"))))
-            self.table.setItem(row, 11, item(_fmt(d.get("method"))))
+            self.table.setItem(row, 9, item(_fmt(d.get("preview_frame_index"))))
+            self.table.setItem(row, 10, item(_fmt(d.get("x_px"))))
+            self.table.setItem(row, 11, item(_fmt(d.get("y_px"))))
+            self.table.setItem(row, 12, item(_fmt(d.get("quality"))))
+            self.table.setItem(row, 13, item(_fmt(d.get("peak"))))
+            self.table.setItem(row, 14, item(_fmt(d.get("method"))))
 
             # red-ish highlight for FAIL
             if not r.ok:

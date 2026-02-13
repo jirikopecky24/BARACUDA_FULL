@@ -89,6 +89,29 @@ class PipelinePanel(QWidget):
         self._annulus_profile_smooth.setRange(0, 999)
         self._annulus_profile_smooth.setValue(3)
 
+        # Preview Gate QC thresholds (applies to multi-frame gate)
+        self._gate_sample_count = QSpinBox()
+        self._gate_sample_count.setRange(1, 99)
+        self._gate_sample_count.setValue(7)
+
+        self._gate_pass_min_ratio = QDoubleSpinBox()
+        self._gate_pass_min_ratio.setRange(0.0, 1.0)
+        self._gate_pass_min_ratio.setDecimals(3)
+        self._gate_pass_min_ratio.setSingleStep(0.05)
+        self._gate_pass_min_ratio.setValue(1.0)
+
+        self._gate_q_min = QDoubleSpinBox()
+        self._gate_q_min.setRange(0.0, 1e12)
+        self._gate_q_min.setDecimals(6)
+        self._gate_q_min.setSingleStep(0.1)
+        self._gate_q_min.setValue(0.0)
+
+        self._gate_jump_max = QDoubleSpinBox()
+        self._gate_jump_max.setRange(0.0, 1e6)
+        self._gate_jump_max.setDecimals(3)
+        self._gate_jump_max.setSingleStep(1.0)
+        self._gate_jump_max.setValue(50.0)
+
         # range
         self._start_frame = QSpinBox()
         self._start_frame.setRange(0, 10**9)
@@ -159,6 +182,11 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("Annulus r_outer (px)", self._annulus_r_outer)
         params_box_layout.addRow("Annulus smooth (bins)", self._annulus_profile_smooth)
 
+        params_box_layout.addRow("Gate samples", self._gate_sample_count)
+        params_box_layout.addRow("Gate pass min ratio", self._gate_pass_min_ratio)
+        params_box_layout.addRow("Gate q_min", self._gate_q_min)
+        params_box_layout.addRow("Gate jump_max (px)", self._gate_jump_max)
+
         params_box_layout.addRow("Start frame", self._start_frame)
         params_box_layout.addRow("End frame", self._end_frame)
 
@@ -217,6 +245,14 @@ class PipelinePanel(QWidget):
         layout.addWidget(self.progress)
 
     # -------------------- API pro Shell --------------------
+
+    def get_preview_gate_params(self) -> dict:
+        return {
+            "sample_count": int(self._gate_sample_count.value()),
+            "pass_min_ratio": float(self._gate_pass_min_ratio.value()),
+            "q_min": float(self._gate_q_min.value()),
+            "jump_max_px": float(self._gate_jump_max.value()),
+        }
 
     def get_tracking_params(self) -> dict:
         # method UI zatím nemáme → držíme RS jako default

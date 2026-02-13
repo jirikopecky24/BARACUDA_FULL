@@ -77,9 +77,26 @@ class BatchController:
         if not file_paths:
             return []
 
-        # Deterministic sampling: robust gate without randomness.
+        # Defaults (device panel may override)
         SAMPLE_COUNT = 7
-        PASS_MIN_RATIO = 1.0  # Hard gate by default (require all sampled frames to pass)
+        PASS_MIN_RATIO = 1.0
+        Q_MIN_GATE = 0.0
+        JUMP_MAX_GATE_PX = 50.0
+
+        try:
+            if hasattr(device_panel, "get_preview_gate_params"):
+                gp = device_panel.get_preview_gate_params()  # type: ignore[attr-defined]
+                SAMPLE_COUNT = int(gp.get("sample_count", SAMPLE_COUNT))
+                PASS_MIN_RATIO = float(gp.get("pass_min_ratio", PASS_MIN_RATIO))
+                Q_MIN_GATE = float(gp.get("q_min", Q_MIN_GATE))
+                JUMP_MAX_GATE_PX = float(gp.get("jump_max_px", JUMP_MAX_GATE_PX))
+        except Exception:
+            pass
+
+        SAMPLE_COUNT = max(1, int(SAMPLE_COUNT))
+        PASS_MIN_RATIO = max(0.0, min(1.0, float(PASS_MIN_RATIO)))
+        Q_MIN_GATE = max(0.0, float(Q_MIN_GATE))
+        JUMP_MAX_GATE_PX = max(0.0, float(JUMP_MAX_GATE_PX))
 
         def _sample_indices(frame_count: int, preferred: int, n: int) -> list[int]:
             if frame_count <= 0:
@@ -145,6 +162,8 @@ class BatchController:
                     "height": h,
                     "sample_count": int(SAMPLE_COUNT),
                     "pass_min_ratio": float(PASS_MIN_RATIO),
+                    "gate_q_min": float(Q_MIN_GATE),
+                    "gate_jump_max_px": float(JUMP_MAX_GATE_PX),
                 }
 
                 frame_indices = _sample_indices(frame_count, int(preview_frame_index), int(SAMPLE_COUNT))
@@ -221,13 +240,19 @@ class BatchController:
                         (det.x_px == det.x_px) and
                         (det.y_px == det.y_px)
                     )
-                    if finite:
-                        pass_count += 1
-                        ok = True
-                        msg = "OK"
-                    else:
+
+                    if not finite:
                         ok = False
                         msg = "NaN in detection"
+                    elif float(det.quality) < float(Q_MIN_GATE):
+                        ok = False
+                        msg = f"quality<{Q_MIN_GATE:g}"
+                    else:
+                        ok = True
+                        msg = "OK"
+
+                    if ok:
+                        pass_count += 1
 
                     samples.append({
                         "frame_index": int(fi),
@@ -256,9 +281,38 @@ class BatchController:
             except Exception:
                 pass
 
+            # Compute max jump between consecutive OK samples (in frame order)
+            ok_pts = [(s["frame_index"], s.get("x_px"), s.get("y_px")) for s in samples if s.get("ok") is True and s.get("x_px") is not None and s.get("y_px") is not None]
+            ok_pts.sort(key=lambda t: int(t[0]))
+            max_jump = 0.0
+            for i in range(1, len(ok_pts)):
+                dx = float(ok_pts[i][1]) - float(ok_pts[i-1][1])
+                dy = float(ok_pts[i][2]) - float(ok_pts[i-1][2])
+                j = (dx*dx + dy*dy) ** 0.5
+                if j > max_jump:
+                    max_jump = j
+
+            # Median quality (from OK samples)
+            ok_q = [float(s.get("quality")) for s in samples if s.get("ok") is True and s.get("quality") is not None]
+            if ok_q:
+                ok_q_sorted = sorted(ok_q)
+                mid = len(ok_q_sorted) // 2
+                median_q = ok_q_sorted[mid] if (len(ok_q_sorted) % 2 == 1) else 0.5 * (ok_q_sorted[mid-1] + ok_q_sorted[mid])
+            else:
+                median_q = 0.0
+
             n = max(1, len(frame_indices))
             ratio = float(pass_count) / float(n)
-            ok_overall = ratio >= float(PASS_MIN_RATIO)
+            fail_reasons: list[str] = []
+
+            if ratio < float(PASS_MIN_RATIO):
+                fail_reasons.append(f"pass_ratio<{PASS_MIN_RATIO:g} ({pass_count}/{n})")
+            if float(median_q) < float(Q_MIN_GATE):
+                fail_reasons.append(f"median_q<{Q_MIN_GATE:g} ({median_q:g})")
+            if float(max_jump) > float(JUMP_MAX_GATE_PX):
+                fail_reasons.append(f"max_jump>{JUMP_MAX_GATE_PX:g}px ({max_jump:g})")
+
+            ok_overall = (len(fail_reasons) == 0)
 
             details.update({
                 "method": method.value,
@@ -266,6 +320,9 @@ class BatchController:
                 "pass_count": int(pass_count),
                 "sample_n": int(n),
                 "pass_ratio": float(ratio),
+                "max_jump_px": float(max_jump),
+                "median_quality": float(median_q),
+                "fail_reason": "; ".join(fail_reasons),
                 "samples": samples,
             })
 
@@ -273,10 +330,9 @@ class BatchController:
                 results.append(PreviewResult(str(p), True, "OK", f"OT gate PASS ({pass_count}/{n})", details))
             else:
                 msg = f"OT gate FAIL ({pass_count}/{n})"
-                if fail_messages:
-                    msg += " — " + "; ".join(fail_messages[:3])
-                    if len(fail_messages) > 3:
-                        msg += f" (+{len(fail_messages)-3} more)"
+                fr = details.get("fail_reason", "")
+                if fr:
+                    msg += f" — {fr}"
                 results.append(PreviewResult(str(p), False, "FAIL", msg, details))
 
             QApplication.processEvents()
