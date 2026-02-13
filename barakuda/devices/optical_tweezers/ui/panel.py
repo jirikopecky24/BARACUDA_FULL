@@ -394,6 +394,7 @@ class PipelinePanel(QWidget):
             "jump_max_px": float(self._qc_jump_max.value()),
             "drift_enabled": bool(self._drift_enabled.isChecked()),
             "drift_window_s": float(self._drift_window_s.value()),
+            "export_um_columns": True,
             "physics_mode": str(self._physics_mode.currentData()),
             "stage_speed_um_s": float(self._stage_speed.value()),
             "drag_axis": str(self._drag_axis.currentData()),

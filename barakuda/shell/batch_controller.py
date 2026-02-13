@@ -513,6 +513,11 @@ class BatchController:
 
         tracking_params = device_panel.get_tracking_params()
         post_params = device_panel.get_postprocess_params()
+        # Fail-safe defaults (must exist for audit + calibration)
+        post_params.setdefault("temperature_c", 25.0)
+        post_params.setdefault("bead_diameter_um", 1.0)
+        self._log(f"[OT] postprocess params: bead_diameter_um={post_params.get('bead_diameter_um')} temperature_c={post_params.get('temperature_c')}")
+
         scale_params = device_panel.get_scale_params()
         start_frame, end_frame = device_panel.get_frame_range()
 
