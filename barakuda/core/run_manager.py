@@ -35,9 +35,9 @@ class RunManager:
         (run_dir / "run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         return RunResult(run_id=run_id, run_dir=run_dir)
 
-    def save_after_png(self, run_dir: Path, arr: np.ndarray) -> Path:
+    def save_after_png(self, run_dir: Path, arr: np.ndarray, name: str = "after_raw.png") -> Path:
         """Raw frame (no overlays)."""
-        out = Path(run_dir) / "after_raw.png"
+        out = Path(run_dir) / name
         self._save_png_qimage(out, arr)
         return out
 

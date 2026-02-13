@@ -444,7 +444,7 @@ class BatchController:
                             um_per_px=um_per_px,
                             params=pp,
                         )
-                        (run_dir / "postprocess.json").write_text(
+                        (run_dir / f"{stem}_postprocess.json").write_text(
                             json.dumps({
                                 "enabled": True,
                                 "qc_enabled": pp.qc_enabled,
