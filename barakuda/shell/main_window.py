@@ -32,6 +32,7 @@ class ShellMainWindow(QMainWindow):
         self.preview = PreviewPanel()
         self.log_panel = LogPanel()
 
+        self.preview.gateStatusChanged.connect(self._on_gate_status_changed)
         self.dataset.item_selected.connect(self._on_item_selected)
 
         self._devices: list[DeviceSpec] = list_devices()
@@ -168,6 +169,7 @@ class ShellMainWindow(QMainWindow):
                 self.log_panel.log(f"WARN: end-frame autoload failed: {e!r}")
 
         self.batch.reset_gate()
+        self._on_gate_status_changed(False)
 
         # Keep OT scale visible + deterministic default.
         if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
@@ -199,6 +201,7 @@ class ShellMainWindow(QMainWindow):
             return
         self._activate_device(self._devices[idx])
         self.batch.reset_gate()
+        self._on_gate_status_changed(False)
 
     def _activate_device(self, spec: DeviceSpec) -> None:
         if self._device_panel is not None:
@@ -218,6 +221,7 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.run_batch_clicked.connect(self._on_run_batch)           # type: ignore[attr-defined]
                 self._device_panel.stop_clicked.connect(self.batch.stop)                   # type: ignore[attr-defined]
                 self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
+                self._device_panel.params_changed.connect(lambda: self._on_gate_status_changed(False))  # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
@@ -241,6 +245,7 @@ class ShellMainWindow(QMainWindow):
                     mid = str(self.method_combo.currentData())
                     if hasattr(self._device_panel, "set_tracking_method"):
                         self._device_panel.set_tracking_method(mid)  # type: ignore[attr-defined]
+                    self._on_gate_status_changed(False)
 
                 # avoid duplicate connections
                 try:
@@ -344,9 +349,8 @@ class ShellMainWindow(QMainWindow):
         else:
             self.log_panel.log(f"Preview Gate summary: ALL PASS ({len(passed)})")
 
-        # Enable RUN only if gate passed for all
-        if hasattr(self._device_panel, 'btn_run'):
-            self._device_panel.btn_run.setEnabled(self.batch.preview_done)  # type: ignore[attr-defined]
+        # Enable RUN only if gate passed for all — emit via signal
+        self._on_gate_status_changed(self.batch.preview_done)
         # Enable Report button
         if hasattr(self._device_panel, 'btn_gate_report'):
             self._device_panel.btn_gate_report.setEnabled(True)  # type: ignore[attr-defined]
@@ -416,8 +420,8 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.set_batch_running(False)  # type: ignore[attr-defined]
             except Exception:
                 pass
-            if hasattr(self._device_panel, 'btn_run'):
-                self._device_panel.btn_run.setEnabled(True)  # type: ignore[attr-defined]
+            # Re-enable based on current gate status (not blindly True)
+            self._on_gate_status_changed(self.batch.preview_done)
 
             # Show last after overlay in AFTER tab (crosshair + adaptive ROI)
             after_path = getattr(self.batch, "last_after_overlay_path", None)
@@ -426,3 +430,15 @@ class ShellMainWindow(QMainWindow):
                     self.preview.set_after_from_file(after_path)
                 except Exception:
                     pass
+
+    # ---------------- gate status handler ----------------
+
+    def _on_gate_status_changed(self, passed: bool) -> None:
+        if self._device_panel is not None and hasattr(self._device_panel, 'btn_run'):
+            self._device_panel.btn_run.setEnabled(bool(passed))  # type: ignore[attr-defined]
+            if passed:
+                self._device_panel.btn_run.setToolTip("RUN analysis")  # type: ignore[attr-defined]
+            else:
+                self._device_panel.btn_run.setToolTip("Run disabled: Preview Gate must PASS first.")  # type: ignore[attr-defined]
+        # Also emit on PreviewPanel for external listeners
+        self.preview.gateStatusChanged.emit(bool(passed))

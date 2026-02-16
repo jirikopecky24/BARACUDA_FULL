@@ -19,6 +19,7 @@ class PipelinePanel(QWidget):
     track_range_clicked = pyqtSignal()
 
     save_dataset_scale_clicked = pyqtSignal()
+    params_changed = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -67,6 +68,8 @@ class PipelinePanel(QWidget):
         self.btn_gate_report = QPushButton("Report\u2026")
         self.btn_gate_report.setEnabled(False)
         self.btn_run = QPushButton("RUN")
+        self.btn_run.setEnabled(False)
+        self.btn_run.setToolTip("RUN is available only after Preview Gate PASS.")
         self.btn_stop = QPushButton("STOP")
 
         self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
@@ -310,6 +313,31 @@ class PipelinePanel(QWidget):
             return wrap
 
         self._tracking_method = "RADIAL_SYMMETRY"
+
+        # Connect all parameter widgets to params_changed signal (gate invalidation)
+        for sb in [
+            self._normalize_strength, self._blur_sigma,
+            self._radial_grad_threshold, self._annulus_r_inner,
+            self._annulus_r_outer, self._gate_q_min,
+            self._gate_jump_max, self._gate_pass_min_ratio,
+            self._um_per_px, self._qc_q_min, self._qc_jump_max,
+            self._drift_window_s, self._stage_speed,
+            self._viscosity, self._temperature_c, self._bead_diameter_um,
+        ]:
+            sb.valueChanged.connect(self.params_changed.emit)
+        for sb_int in [
+            self._gate_sample_count, self._start_frame, self._end_frame,
+            self._annulus_profile_smooth,
+        ]:
+            sb_int.valueChanged.connect(self.params_changed.emit)
+        for cb in [
+            self._adaptive_roi, self._invert, self._auto_polarity,
+            self._use_annulus, self._annulus_auto, self._use_dataset_scale,
+            self._pp_enabled, self._qc_enabled, self._drift_enabled,
+        ]:
+            cb.stateChanged.connect(self.params_changed.emit)
+        for cmb in [self._physics_mode, self._drag_axis]:
+            cmb.currentIndexChanged.connect(self.params_changed.emit)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 0, 8, 8)  # top margin 0 => starts at preview edge

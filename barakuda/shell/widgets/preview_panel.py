@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTabWidget, QSlider, QHBoxLayout
@@ -15,6 +15,8 @@ from barakuda.core.video_reader import VideoReader
 
 
 class PreviewPanel(QWidget):
+    gateStatusChanged = pyqtSignal(bool)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
