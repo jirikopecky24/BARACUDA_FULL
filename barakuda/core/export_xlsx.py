@@ -99,14 +99,21 @@ def export_ot_results_xlsx(
     psd_y_csv_path: Path | None = None,
 ) -> Path:
     """
-    Create <base_name>_results.xlsx with sheets:
-      Trajectory, MSD, PSD_X, PSD_Y
+    Create <base_name>_results.xlsx with sheets (variant 1):
+      - Trajectory
+      - MSD
+      - PSD_X
+      - PSD_Y
+      - Metadata   (audit-first)
+      - CALIBRATION (either from *_calibration.csv or from *_calibration.json)
+      - HIST_X / HIST_Y / HIST_R (if present)
 
-    CSV files remain as canonical scientific output.
-    XLSX is a human-friendly bundle (units encoded in column names, variant 1).
+    Notes:
+      - CSV files remain canonical scientific outputs.
+      - XLSX is a human-friendly bundle and MUST NOT drop audit metadata.
     """
-
     import csv
+    import json
 
     try:
         from openpyxl import Workbook
@@ -115,6 +122,7 @@ def export_ot_results_xlsx(
         raise RuntimeError("openpyxl is required for XLSX export.") from e
 
     output_dir = Path(output_dir)
+    trajectory_csv_path = Path(trajectory_csv_path)
     out_path = output_dir / f"{base_name}_results.xlsx"
 
     wb = Workbook()
@@ -124,18 +132,15 @@ def export_ot_results_xlsx(
             return
         csv_path = Path(csv_path)
 
-        if is_first:
-            ws = wb.active
-            ws.title = title
-        else:
-            ws = wb.create_sheet(title)
+        ws = wb.active if is_first else wb.create_sheet(title)
+        ws.title = title
 
         with csv_path.open("r", encoding="utf-8", newline="") as f:
             reader = csv.reader(f)
-            # skip comment lines (trajectory CSV has # meta lines)
             rows: list[list[str]] = []
             for row in reader:
-                if row and row[0].startswith("#"):
+                # keep non-comment data; trajectory.csv has leading '# ...' metadata lines
+                if row and str(row[0]).startswith("#"):
                     continue
                 rows.append(row)
 
@@ -145,7 +150,6 @@ def export_ot_results_xlsx(
         for rr in rows:
             ws.append(rr)
 
-        # freeze header + filter
         ws.freeze_panes = "A2"
         if ws.dimensions:
             ws.auto_filter.ref = ws.dimensions
@@ -157,12 +161,101 @@ def export_ot_results_xlsx(
                 v = cell[0].value
                 if v is not None:
                     max_len = max(max_len, len(str(v)))
-            ws.column_dimensions[get_column_letter(col_idx)].width = float(min(28, max_len + 2))
+            ws.column_dimensions[get_column_letter(col_idx)].width = float(min(36, max_len + 2))
 
+    def _flatten(prefix: str, obj: Any, out: list[tuple[str, str]]) -> None:
+        if isinstance(obj, dict):
+            for k in sorted(obj.keys(), key=lambda x: str(x)):
+                _flatten(f"{prefix}{k}.", obj[k], out)
+        elif isinstance(obj, list):
+            out.append((prefix[:-1] if prefix.endswith(".") else prefix, json.dumps(obj, ensure_ascii=False)))
+        else:
+            key = prefix[:-1] if prefix.endswith(".") else prefix
+            out.append((key, "" if obj is None else str(obj)))
+
+    # Core data sheets
     _add_csv_sheet("Trajectory", trajectory_csv_path, is_first=True)
     _add_csv_sheet("MSD", msd_csv_path)
     _add_csv_sheet("PSD_X", psd_x_csv_path)
     _add_csv_sheet("PSD_Y", psd_y_csv_path)
+
+    # ---------- Metadata sheet (ALWAYS) ----------
+    ws_meta = wb.create_sheet("Metadata")
+    ws_meta.append(["Key", "Value"])
+
+    # run.json (if present)
+    run_json = output_dir / "run.json"
+    meta_pairs: list[tuple[str, str]] = []
+    if run_json.exists():
+        try:
+            payload = json.loads(run_json.read_text(encoding="utf-8"))
+            _flatten("run.", payload, meta_pairs)
+        except Exception:
+            meta_pairs.append(("run_json_error", "failed to parse run.json"))
+
+    # postprocess json (if present)
+    post_json = output_dir / f"{base_name}_postprocess.json"
+    if post_json.exists():
+        try:
+            payload = json.loads(post_json.read_text(encoding="utf-8"))
+            _flatten("postprocess.", payload, meta_pairs)
+        except Exception:
+            meta_pairs.append(("postprocess_json_error", "failed to parse *_postprocess.json"))
+
+    # trajectory header lines (from trajectory.csv)
+    try:
+        table = read_trajectory_csv(trajectory_csv_path)
+        for i, line in enumerate(table.meta_lines):
+            meta_pairs.append((f"trajectory_meta[{i}]", line))
+    except Exception:
+        meta_pairs.append(("trajectory_meta_error", "failed to read trajectory.csv meta lines"))
+
+    for k, v in meta_pairs:
+        ws_meta.append([k, v])
+
+    ws_meta.freeze_panes = "A2"
+    ws_meta.column_dimensions["A"].width = 44
+    ws_meta.column_dimensions["B"].width = 110
+
+    # ---------- Calibration sheet (ALWAYS) ----------
+    cal_csv = output_dir / f"{base_name}_calibration.csv"
+    cal_json = output_dir / f"{base_name}_calibration.json"
+    ws_cal = wb.create_sheet("CALIBRATION")
+
+    if cal_csv.exists():
+        with cal_csv.open("r", encoding="utf-8", newline="") as f:
+            rows = list(csv.reader(f))
+        for i, rr in enumerate(rows, start=1):
+            for j, vv in enumerate(rr, start=1):
+                ws_cal.cell(row=i, column=j, value=vv)
+    elif cal_json.exists():
+        # Key-value dump if CSV absent (e.g., scale missing)
+        ws_cal.append(["Key", "Value"])
+        try:
+            payload = json.loads(cal_json.read_text(encoding="utf-8"))
+            pairs: list[tuple[str, str]] = []
+            _flatten("calibration.", payload, pairs)
+            for k, v in pairs:
+                ws_cal.append([k, v])
+        except Exception:
+            ws_cal.append(["calibration_json_error", "failed to parse *_calibration.json"])
+    else:
+        ws_cal.append(["status", "MISSING"])
+        ws_cal.append(["reason", "No calibration artifacts found"])
+
+    ws_cal.freeze_panes = "A2"
+
+    # ---------- Hist sheets (optional) ----------
+    for tag in ("x", "y", "r"):
+        hp = output_dir / f"{base_name}_hist_{tag}.csv"
+        if hp.exists():
+            ws = wb.create_sheet(f"HIST_{tag.upper()}")
+            with hp.open("r", encoding="utf-8", newline="") as f:
+                rows = list(csv.reader(f))
+            for i, rr in enumerate(rows, start=1):
+                for j, vv in enumerate(rr, start=1):
+                    ws.cell(row=i, column=j, value=vv)
+            ws.freeze_panes = "A2"
 
     # Optional: DRAG + COMPARE sheets (two-video comparison outputs)
     drag_json = output_dir / f"{base_name}_drag.json"
@@ -170,52 +263,23 @@ def export_ot_results_xlsx(
 
     if drag_json.exists():
         ws = wb.create_sheet("DRAG")
-        import json as _json
-        payload = _json.loads(drag_json.read_text(encoding="utf-8"))
-        # simple key-value dump
-        row = 1
-        def _emit(prefix: str, obj: Any):
-            nonlocal row
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    _emit(f"{prefix}{k}.", v)
-            else:
-                ws.cell(row=row, column=1, value=prefix[:-1] if prefix.endswith(".") else prefix)
-                ws.cell(row=row, column=2, value=str(obj))
-                row += 1
-        _emit("", payload)
+        try:
+            payload = json.loads(drag_json.read_text(encoding="utf-8"))
+            pairs: list[tuple[str, str]] = []
+            _flatten("drag.", payload, pairs)
+            ws.append(["Key", "Value"])
+            for k, v in pairs:
+                ws.append([k, v])
+        except Exception:
+            ws.append(["drag_json_error", "failed to parse *_drag.json"])
 
     if compare_csv.exists():
         ws = wb.create_sheet("COMPARE")
-        import csv as _csv
         with compare_csv.open("r", encoding="utf-8", newline="") as f:
-            r = _csv.reader(f)
-            rows = list(r)
+            rows = list(csv.reader(f))
         for i, rr in enumerate(rows, start=1):
             for j, vv in enumerate(rr, start=1):
                 ws.cell(row=i, column=j, value=vv)
-
-    # Optional: CALIBRATION + HIST sheets
-    cal_csv = output_dir / f"{base_name}_calibration.csv"
-    if cal_csv.exists():
-        ws = wb.create_sheet("CALIBRATION")
-        import csv as _csv
-        with cal_csv.open("r", encoding="utf-8", newline="") as f:
-            rows = list(_csv.reader(f))
-        for i, rr in enumerate(rows, start=1):
-            for j, vv in enumerate(rr, start=1):
-                ws.cell(row=i, column=j, value=vv)
-
-    for tag in ("x", "y", "r"):
-        hp = output_dir / f"{base_name}_hist_{tag}.csv"
-        if hp.exists():
-            ws = wb.create_sheet(f"HIST_{tag.upper()}")
-            import csv as _csv
-            with hp.open("r", encoding="utf-8", newline="") as f:
-                rows = list(_csv.reader(f))
-            for i, rr in enumerate(rows, start=1):
-                for j, vv in enumerate(rr, start=1):
-                    ws.cell(row=i, column=j, value=vv)
 
     wb.save(out_path)
     return out_path
