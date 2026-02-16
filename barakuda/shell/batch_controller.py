@@ -1004,13 +1004,6 @@ class BatchController:
                             except Exception:
                                 meta_pairs.append((f"{tag}_json_error", f"failed to parse {pth.name}"))
 
-                    metadata_csv = run_dir / f"{stem}_metadata.csv"
-                    with metadata_csv.open("w", encoding="utf-8", newline="") as f:
-                        w = csv.writer(f)
-                        w.writerow(["key", "value"])
-                        for k, v in meta_pairs:
-                            w.writerow([k, v])
-
                     # --- _results.xlsx (human bundle; MUST include Metadata + Calibration) ---
                     export_ot_results_xlsx(
                         output_dir=run_dir,
