@@ -452,6 +452,18 @@ def postprocess_trajectory_csv_inplace(
             except Exception as e:
                 summary.setdefault("calibration", {})
                 summary["calibration"] = {"skipped": True, "reason": repr(e)}
+        else:
+            # Scale missing → write audit-only calibration.json with FAIL status
+            import json as _json
+            cal_json = out_dir / f"{base}_calibration.json"
+            _fail_payload = {
+                "status": "FAIL_SCALE_MISSING",
+                "reason": "um_per_px is None or <= 0; calibration requires scale.",
+                "um_per_px": None,
+            }
+            cal_json.write_text(_json.dumps(_fail_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            summary.setdefault("calibration", {})
+            summary["calibration"] = {"skipped": True, "reason": "FAIL_SCALE_MISSING"}
 
         # QC plot (single PNG): PSD (x+y+fits) + MSD
         qc_png = out_dir / f"{base}_qc.png"

@@ -769,6 +769,13 @@ class BatchController:
                 except Exception as e:
                     self._log(f"WARN: after overlay failed ({file_path.name}): {e!r}")
 
+                # --- Audit guard: warn if scale is missing but um export requested ---
+                _scale_status = "OK"
+                if pp_enabled and bool(pp.export_um_columns) and um_per_px is None:
+                    self._log(f"WARNING: um_per_px is None for '{file_path.name}' but export_um_columns=True. "
+                              f"Calibration will be skipped or px-only. Set scale before RUN.")
+                    _scale_status = "FAIL_SCALE_MISSING"
+
                 if pp_enabled:
                     try:
                         pp_summary = postprocess_trajectory_csv_inplace(
@@ -789,6 +796,15 @@ class BatchController:
                                     "drift_enabled": bool(pp.drift_enabled),
                                     "drift_window_s": float(pp.drift_window_s),
                                     "export_um_columns": bool(pp.export_um_columns),
+                                    "um_per_px": float(um_per_px) if um_per_px is not None else None,
+                                    "um_per_px_source": um_src,
+                                    "bead_diameter_um": float(pp.bead_diameter_um),
+                                    "temperature_c": float(pp.temperature_c),
+                                    "physics_mode": str(pp.physics_mode),
+                                    "viscosity_pa_s": float(pp.viscosity_pa_s),
+                                },
+                                "audit_flags": {
+                                    "scale_status": _scale_status,
                                 },
                                 "summary": pp_summary,
                             }, indent=2, ensure_ascii=False),
@@ -947,8 +963,13 @@ class BatchController:
                     _msd = run_dir / f"{stem}_msd.csv"
                     _psd_x = run_dir / f"{stem}_psd_x.csv"
                     _psd_y = run_dir / f"{stem}_psd_y.csv"
+                    _cal_csv = run_dir / f"{stem}_calibration.csv"
+                    _cal_json = run_dir / f"{stem}_calibration.json"
+                    _hist_x = run_dir / f"{stem}_hist_x.csv"
+                    _hist_y = run_dir / f"{stem}_hist_y.csv"
+                    _hist_r = run_dir / f"{stem}_hist_r.csv"
 
-                    # --- _results.xlsx (4 sheets) ---
+                    # --- _results.xlsx (sheets: Trajectory, MSD, PSD_X, PSD_Y, CALIBRATION, HIST_X/Y/R) ---
                     export_ot_results_xlsx(
                         output_dir=run_dir,
                         base_name=stem,
@@ -966,6 +987,10 @@ class BatchController:
                             ("MSD", _msd),
                             ("PSD_X", _psd_x),
                             ("PSD_Y", _psd_y),
+                            ("Calibration", _cal_csv),
+                            ("Hist_X", _hist_x),
+                            ("Hist_Y", _hist_y),
+                            ("Hist_R", _hist_r),
                         ]:
                             if src.exists():
                                 out.write(f"# [{section}]\n")
@@ -977,7 +1002,9 @@ class BatchController:
                                 out.write("\n")
 
                     # Clean up intermediate CSVs — data is in _results.xlsx + _results.csv
-                    for _tmp in (traj_path, _msd, _psd_x, _psd_y):
+                    # Keep _calibration.json as standalone audit artifact
+                    for _tmp in (traj_path, _msd, _psd_x, _psd_y,
+                                 _cal_csv, _hist_x, _hist_y, _hist_r):
                         if _tmp.exists():
                             _tmp.unlink()
                 except Exception as e:
