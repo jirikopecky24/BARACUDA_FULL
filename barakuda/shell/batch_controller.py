@@ -593,15 +593,21 @@ class BatchController:
 
                 um_per_px: float | None = None
                 um_src = "none"
+
+                # Scale policy (audit-first):
+                # 1) If dataset sidecar exists and enabled → use it.
+                # 2) Otherwise fall back to UI value (default should be 0.066528 µm/px).
+                # This prevents silent "um_per_px=None" causing calibration exports to disappear.
                 if use_dataset_scale:
                     info = load_dataset_scale(file_path)
-                    if info is not None and info.um_per_px is not None:
+                    if info is not None and info.um_per_px is not None and float(info.um_per_px) > 0:
                         um_per_px = float(info.um_per_px)
                         um_src = str(info.source)
-                else:
-                    if ui_um_per_px > 0:
-                        um_per_px = float(ui_um_per_px)
-                        um_src = "ui"
+
+                # UI fallback (also used when use_dataset_scale=False)
+                if um_per_px is None and ui_um_per_px > 0:
+                    um_per_px = float(ui_um_per_px)
+                    um_src = "ui" if not use_dataset_scale else "ui_fallback"
 
                 config = {
                     "device": {"id": "optical_tweezers"},
@@ -631,6 +637,14 @@ class BatchController:
                         "jump_max_px": pp.jump_max_px,
                         "drift_enabled": pp.drift_enabled,
                         "drift_window_s": pp.drift_window_s,
+                        "export_um_columns": bool(pp.export_um_columns),
+                        "physics_mode": str(pp.physics_mode),
+                        "stage_speed_um_s": float(pp.stage_speed_um_s),
+                        "drag_axis": str(pp.drag_axis),
+                        "viscosity_pa_s": float(pp.viscosity_pa_s),
+                        "bead_radius_um": float(pp.bead_radius_um),
+                        "temperature_c": float(pp.temperature_c),
+                        "bead_diameter_um": float(pp.bead_diameter_um),
                     },
                 }
 
@@ -947,8 +961,57 @@ class BatchController:
                     _msd = run_dir / f"{stem}_msd.csv"
                     _psd_x = run_dir / f"{stem}_psd_x.csv"
                     _psd_y = run_dir / f"{stem}_psd_y.csv"
+                    _cal_csv = run_dir / f"{stem}_calibration.csv"
+                    _cal_json = run_dir / f"{stem}_calibration.json"
+                    _hist_x = run_dir / f"{stem}_hist_x.csv"
+                    _hist_y = run_dir / f"{stem}_hist_y.csv"
+                    _hist_r = run_dir / f"{stem}_hist_r.csv"
 
-                    # --- _results.xlsx (4 sheets) ---
+                    # --- metadata.csv (audit-first, key/value) ---
+                    def _flatten(prefix: str, obj: Any, out: list[tuple[str, str]]) -> None:
+                        if isinstance(obj, dict):
+                            for k in sorted(obj.keys(), key=lambda x: str(x)):
+                                _flatten(f"{prefix}{k}.", obj[k], out)
+                        elif isinstance(obj, list):
+                            out.append((prefix[:-1] if prefix.endswith(".") else prefix, json.dumps(obj, ensure_ascii=False)))
+                        else:
+                            key = prefix[:-1] if prefix.endswith(".") else prefix
+                            out.append((key, "" if obj is None else str(obj)))
+
+                    meta_pairs: list[tuple[str, str]] = []
+                    try:
+                        run_payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+                        _flatten("run.", run_payload, meta_pairs)
+                    except Exception:
+                        meta_pairs.append(("run_json_error", "failed to parse run.json"))
+
+                    # trajectory.csv header lines (start with '#')
+                    try:
+                        table = read_trajectory_csv(traj_path)
+                        for i, line in enumerate(table.meta_lines):
+                            meta_pairs.append((f"trajectory_meta[{i}]", line))
+                    except Exception:
+                        meta_pairs.append(("trajectory_meta_error", "failed to read trajectory.csv meta lines"))
+
+                    # postprocess + calibration json (if present)
+                    for tag, pth in [
+                        ("postprocess", run_dir / f"{stem}_postprocess.json"),
+                        ("calibration", _cal_json),
+                    ]:
+                        if pth.exists():
+                            try:
+                                _flatten(f"{tag}.", json.loads(pth.read_text(encoding="utf-8")), meta_pairs)
+                            except Exception:
+                                meta_pairs.append((f"{tag}_json_error", f"failed to parse {pth.name}"))
+
+                    metadata_csv = run_dir / f"{stem}_metadata.csv"
+                    with metadata_csv.open("w", encoding="utf-8", newline="") as f:
+                        w = csv.writer(f)
+                        w.writerow(["key", "value"])
+                        for k, v in meta_pairs:
+                            w.writerow([k, v])
+
+                    # --- _results.xlsx (human bundle; MUST include Metadata + Calibration) ---
                     export_ot_results_xlsx(
                         output_dir=run_dir,
                         base_name=stem,
@@ -958,28 +1021,37 @@ class BatchController:
                         psd_y_csv_path=_psd_y,
                     )
 
-                    # --- _results.csv (all data in one file, sections separated by headers) ---
+                    # --- _results.csv (single-file bundle; keep canonical CSVs too) ---
                     results_csv = run_dir / f"{stem}_results.csv"
                     with results_csv.open("w", encoding="utf-8", newline="") as out:
-                        for section, src in [
-                            ("Trajectory", traj_path),
-                            ("MSD", _msd),
-                            ("PSD_X", _psd_x),
-                            ("PSD_Y", _psd_y),
+                        # Metadata section (key/value)
+                        out.write("# [Metadata]\n")
+                        out.write("key,value\n")
+                        for k, v in meta_pairs:
+                            out.write(f"{k},{json.dumps(v, ensure_ascii=False)}\n")
+                        out.write("\n")
+
+                        for section, src, keep_comments in [
+                            ("Trajectory", traj_path, True),
+                            ("MSD", _msd, False),
+                            ("PSD_X", _psd_x, False),
+                            ("PSD_Y", _psd_y, False),
+                            ("Calibration", _cal_csv, False),
+                            ("Hist_X", _hist_x, False),
+                            ("Hist_Y", _hist_y, False),
+                            ("Hist_R", _hist_r, False),
                         ]:
                             if src.exists():
                                 out.write(f"# [{section}]\n")
-                                txt = src.read_text(encoding="utf-8")
-                                # skip existing comment lines for trajectory
-                                for line in txt.splitlines():
-                                    if not line.startswith("#"):
-                                        out.write(line + "\n")
+                                txt_blob = src.read_text(encoding="utf-8")
+                                for line in txt_blob.splitlines():
+                                    if (not keep_comments) and line.startswith("#"):
+                                        continue
+                                    out.write(line + "\n")
                                 out.write("\n")
 
-                    # Clean up intermediate CSVs — data is in _results.xlsx + _results.csv
-                    for _tmp in (traj_path, _msd, _psd_x, _psd_y):
-                        if _tmp.exists():
-                            _tmp.unlink()
+                    # IMPORTANT: Do NOT delete canonical scientific CSVs.
+                    # (trajectory/msd/psd/calibration/hist remain the source of truth)
                 except Exception as e:
                     self._log(f"WARN: results export failed ({file_path.name}): {e!r}")
 
