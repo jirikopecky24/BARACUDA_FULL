@@ -403,11 +403,27 @@ class PreviewPanel(QWidget):
         if img.isNull():
             return None
 
+        # Convert to RGB888 (standard 3-channel, 8-bit per channel)
         img = img.convertToFormat(QImage.Format.Format_RGB888)
+        
         w = img.width()
         h = img.height()
+        
+        # IMPORTANT: QImage rows are 32-bit aligned. 
+        # bytesPerLine() gives the true stride (width in bytes including padding).
+        bpl = img.bytesPerLine()
 
         ptr = img.bits()
-        ptr.setsize(h * w * 3)
-        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 3))
+        ptr.setsize(h * bpl)
+        
+        # 1) View as 1D uint8 array of size (h * bpl)
+        # 2) Reshape to (h, bpl) to handle rows
+        arr_padded = np.frombuffer(ptr, dtype=np.uint8).reshape((h, bpl))
+        
+        # 3) Crop the valid data width (w * 3 bytes for RGB888)
+        #    and reshape to (h, w, 3)
+        valid_bytes = w * 3
+        arr = arr_padded[:, :valid_bytes].reshape((h, w, 3))
+        
+        # 4) Make a deep copy to detach from QImage memory
         return arr.copy()
