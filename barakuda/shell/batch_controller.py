@@ -593,15 +593,18 @@ class BatchController:
 
                 um_per_px: float | None = None
                 um_src = "none"
+
+                # 1) Prefer dataset scale if enabled and available
                 if use_dataset_scale:
                     info = load_dataset_scale(file_path)
-                    if info is not None and info.um_per_px is not None:
+                    if info is not None and info.um_per_px is not None and float(info.um_per_px) > 0:
                         um_per_px = float(info.um_per_px)
                         um_src = str(info.source)
-                else:
-                    if ui_um_per_px > 0:
-                        um_per_px = float(ui_um_per_px)
-                        um_src = "ui"
+
+                # 2) Fallback to UI scale (even when dataset scale is enabled)
+                if um_per_px is None and ui_um_per_px > 0:
+                    um_per_px = float(ui_um_per_px)
+                    um_src = "ui" if not use_dataset_scale else "ui_fallback"
 
                 config = {
                     "device": {"id": "optical_tweezers"},

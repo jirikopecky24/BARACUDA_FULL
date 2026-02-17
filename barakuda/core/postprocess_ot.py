@@ -300,6 +300,19 @@ def postprocess_trajectory_csv_inplace(
         }
         fit_path.write_text(json_mod.dumps(fit_payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
+        # ---- Calibration audit artifact must always exist (PASS/FAIL/SKIPPED) ----
+        cal_json = out_dir / f"{base}_calibration.json"
+        if um_per_px is None or float(um_per_px) <= 0:
+            payload = {
+                "status": "SKIPPED",
+                "reason": "SCALE_MISSING_OR_INVALID",
+                "um_per_px": None if um_per_px is None else float(um_per_px),
+                "range_frames": {"start_frame": int(sF), "end_frame": int(eF)},
+            }
+            cal_json.write_text(json_mod.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            summary.setdefault("calibration", {})
+            summary["calibration"] = {"skipped": True, "reason": "SCALE_MISSING_OR_INVALID", "calibration_json": cal_json.name}
+
         # ---- Calibration (kappa, eta, D) + histograms (from static/brownian segment) ----
         # Requires scale (um_per_px)
         if um_per_px is not None and float(um_per_px) > 0:
