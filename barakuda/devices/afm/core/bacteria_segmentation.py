@@ -221,14 +221,38 @@ def segment_bacteria_contours_afm(img: np.ndarray, params: AfmBacteriaSegParams)
     if int(params.close_radius_px) > 0:
         edges = morphology.binary_closing(edges, morphology.disk(int(params.close_radius_px)))
 
-    # fill holes inside closed loops -> candidate objects
-    filled = ndi.binary_fill_holes(edges)
+    # ---- build candidate mask without "fill everything" risk ----
+    # 1) Instead of binary_fill_holes (can fill whole ROI), we create a thin band and then fill only small holes.
+    # Start from edges, then a gentle closing to make local loops.
+    cand = edges.copy()
 
-    # remove tiny speckles
-    filled = morphology.remove_small_objects(filled, min_size=int(params.min_area_px))
+    # Optional: a bit more closing for local continuity (already applied above, so keep small)
+    # cand = morphology.binary_closing(cand, morphology.disk(1))
 
-    # fill small holes inside objects
-    filled = morphology.remove_small_holes(filled, area_threshold=int(params.fill_holes_area_px))
+    # 2) Convert edge-net into regions by dilation + erosion (a controlled "thickening")
+    # This avoids creating a single giant closed boundary that would fill everything.
+    cand = morphology.binary_dilation(cand, morphology.disk(1))
+    cand = morphology.binary_erosion(cand, morphology.disk(1))
+
+    # 3) Remove speckles
+    cand = morphology.remove_small_objects(cand, min_size=int(params.min_area_px // 3))
+
+    # 4) Fill only small holes INSIDE regions (bounded by area threshold)
+    filled = morphology.remove_small_holes(cand, area_threshold=int(params.fill_holes_area_px))
+
+    # 5) Safety guard: if mask covers too much, it's unusable (likely full-fill situation)
+    filled_cov = float(filled.mean())
+    if filled_cov > 0.60:
+        # too much area -> edges are too dense; return empty and let caller/fallback handle it
+        out = np.zeros_like(img01, dtype=np.int32)
+        mask = out > 0
+        debug = {
+            "edges_coverage": float(edges.mean()),
+            "filled_coverage": filled_cov,
+            "kept_objects": 0,
+            "guard_triggered": True,
+        }
+        return out, mask, debug
 
     # label objects
     labels = measure.label(filled)

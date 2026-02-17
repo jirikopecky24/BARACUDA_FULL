@@ -1300,3 +1300,71 @@ class BatchController:
 
         self._log("Run Batch done ✅")
 
+    def compute_afm_preview(self, file_path: str, roi_rect, afm_params: dict):
+        import imageio.v2 as iio
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from skimage import measure
+
+        from barakuda.devices.afm.core.bacteria_segmentation import (
+            AfmBacteriaSegParams,
+            segment_bacteria_afm,
+        )
+
+        img = iio.imread(file_path)
+        # crop ROI (x, y, w, h)
+        x, y, w, h = roi_rect
+        roi_img = img[y:y+h, x:x+w]
+
+        pp = AfmBacteriaSegParams(
+            bg_sigma=float(afm_params.get("bg_sigma", 12.0)),
+            smooth_sigma=float(afm_params.get("smooth_sigma", 1.0)),
+            min_area_px=int(afm_params.get("min_area_px", 120)),
+            closing_radius_px=int(afm_params.get("closing_radius_px", 2)),
+            hole_area_px=int(afm_params.get("hole_area_px", 240)),
+            separate=bool(afm_params.get("separate", True)),
+            invert=bool(afm_params.get("invert", False)),
+            area_bins=int(afm_params.get("area_bins", 20)),
+            log_sigma=float(afm_params.get("log_sigma", 2.0)),
+            peak_min_distance_px=int(afm_params.get("peak_min_distance_px", 6)),
+            low_mask_factor=float(afm_params.get("low_mask_factor", 0.65)),
+            max_markers=int(afm_params.get("max_markers", 5000)),
+            use_contours=bool(afm_params.get("use_contours", True)),
+            edge_sigma=float(afm_params.get("edge_sigma", 1.2)),
+            canny_low=float(afm_params.get("canny_low", 0.05)),
+            canny_high=float(afm_params.get("canny_high", 0.20)),
+            edge_dilate_px=int(afm_params.get("edge_dilate_px", 1)),
+            close_radius_px=int(afm_params.get("close_radius_px", 2)),
+            fill_holes_area_px=int(afm_params.get("fill_holes_area_px", 300)),
+            min_perimeter_px=int(afm_params.get("min_perimeter_px", 60)),
+            min_eccentricity=float(afm_params.get("min_eccentricity", 0.70)),
+            min_solidity=float(afm_params.get("min_solidity", 0.50)),
+        )
+
+        res = segment_bacteria_afm(roi_img, pp)
+        mask = res["mask"]
+
+        # render overlay with red contours
+        fig = plt.figure(figsize=(6, 6))
+        ax = fig.add_subplot(1, 1, 1)
+        ax.imshow(roi_img, cmap="gray")
+        ax.set_axis_off()
+        
+        contours = measure.find_contours(mask.astype(np.float32), 0.5)
+        for c in contours:
+            ax.plot(c[:, 1], c[:, 0], linewidth=1.0, color='red')
+            
+        fig.tight_layout(pad=0)
+        
+        # render to numpy array
+        canvas = FigureCanvasAgg(fig)
+        canvas.draw()
+        buf = canvas.buffer_rgba()
+        w, h = fig.canvas.get_width_height()
+        overlay_rgba = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 4))
+        plt.close(fig)
+        
+        # return RGB
+        return overlay_rgba[:, :, :3]
+

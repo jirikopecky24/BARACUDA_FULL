@@ -226,6 +226,8 @@ class ShellMainWindow(QMainWindow):
                 # Wire the Run button from AfmPanel
                 if hasattr(self._device_panel, "run_batch_clicked"):
                     self._device_panel.run_batch_clicked.connect(self._on_run_batch)  # type: ignore[attr-defined]
+                if hasattr(self._device_panel, "btn_preview"):
+                    self._device_panel.btn_preview.clicked.connect(self._on_afm_preview)  # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
 
@@ -504,3 +506,34 @@ class ShellMainWindow(QMainWindow):
                     self.preview.set_after_from_file(after_path)
                 except Exception:
                     pass
+
+    def _on_afm_preview(self) -> None:
+        if self._active_device_id != "afm" or self._device_panel is None:
+            return
+
+        try:
+            paths = self.dataset.get_selected_paths()
+            if not paths:
+                self.log_panel.log("AFM Preview: no file selected.")
+                return
+
+            roi = self.preview.get_roi_rect()
+            if roi is None:
+                self.log_panel.log("AFM Preview: ROI is required.")
+                return
+
+            # Get params from panel
+            afm_params = {}
+            if hasattr(self._device_panel, "get_afm_params"):
+                 afm_params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
+
+            overlay_rgb = self.batch.compute_afm_preview(
+                file_path=str(paths[0]),
+                roi_rect=roi,
+                afm_params=afm_params,
+            )
+
+            self.preview.set_after_image(overlay_rgb)
+            self.log_panel.log("AFM Preview: updated.")
+        except Exception as e:
+            self.log_panel.log(f"AFM Preview ERROR: {e!r}")

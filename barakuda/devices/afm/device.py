@@ -15,6 +15,10 @@ class AfmPanel(QWidget):
         title = QLabel("AFM — Bacteria Segmentation")
         title.setStyleSheet("font-weight: 600;")
         layout.addWidget(title)
+        
+        
+        self.btn_preview = QPushButton("Preview AFM")
+        layout.addWidget(self.btn_preview)
 
         form = QFormLayout()
 
