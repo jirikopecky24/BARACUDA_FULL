@@ -948,7 +948,56 @@ class BatchController:
                     _psd_x = run_dir / f"{stem}_psd_x.csv"
                     _psd_y = run_dir / f"{stem}_psd_y.csv"
 
-                    # --- _results.xlsx (4 sheets) ---
+                    import json as _json
+
+                    # --- Prepare Metadata (for _results.csv) ---
+                    meta_pairs = []
+
+                    # 1) run.json
+                    run_json_path = run_dir / "run.json"
+                    if run_json_path.exists():
+                        try:
+                            payload = _json.loads(run_json_path.read_text(encoding="utf-8"))
+                            
+                            def _flatten(prefix, obj, out):
+                                if isinstance(obj, dict):
+                                    for k in sorted(obj.keys(), key=lambda x: str(x)):
+                                        _flatten(f"{prefix}{k}.", obj[k], out)
+                                elif isinstance(obj, list):
+                                    out.append((prefix[:-1] if prefix.endswith(".") else prefix, _json.dumps(obj, ensure_ascii=False)))
+                                else:
+                                    out.append((prefix[:-1] if prefix.endswith(".") else prefix, "" if obj is None else str(obj)))
+
+                            _flatten("run.", payload, meta_pairs)
+                        except Exception:
+                            pass
+
+                    # 2) postprocess.json
+                    pp_json_path = run_dir / f"{stem}_postprocess.json"
+                    if pp_json_path.exists():
+                        try:
+                            payload = _json.loads(pp_json_path.read_text(encoding="utf-8"))
+                            _flatten("postprocess.", payload, meta_pairs)
+                        except Exception:
+                            pass
+
+                    # 3) trajectory.csv headers
+                    try:
+                        # Re-read trajectory just to grab # meta lines
+                        with (run_dir / f"{stem}_trajectory.csv").open("r", encoding="utf-8") as f:
+                            lines = f.readlines()
+                        meta_lines = [line.strip() for line in lines if line.startswith("#")]
+                        for i, line in enumerate(meta_lines):
+                            meta_pairs.append((f"trajectory_meta[{i}]", line))
+                    except Exception:
+                        pass
+
+                    # --- _results.xlsx (bundled) ---
+                    _cal_csv = run_dir / f"{stem}_calibration.csv"
+                    _hist_x = run_dir / f"{stem}_hist_x.csv"
+                    _hist_y = run_dir / f"{stem}_hist_y.csv"
+                    _hist_r = run_dir / f"{stem}_hist_r.csv"
+
                     export_ot_results_xlsx(
                         output_dir=run_dir,
                         base_name=stem,
@@ -958,28 +1007,43 @@ class BatchController:
                         psd_y_csv_path=_psd_y,
                     )
 
-                    # --- _results.csv (all data in one file, sections separated by headers) ---
+                    # --- _results.csv (Metadata first, then others) ---
                     results_csv = run_dir / f"{stem}_results.csv"
                     with results_csv.open("w", encoding="utf-8", newline="") as out:
-                        for section, src in [
-                            ("Trajectory", traj_path),
-                            ("MSD", _msd),
-                            ("PSD_X", _psd_x),
-                            ("PSD_Y", _psd_y),
+                        # [Metadata]
+                        out.write("# [Metadata]\n")
+                        wmeta = csv.writer(out)
+                        wmeta.writerow(["key", "value"])
+                        for k, v in meta_pairs:
+                            wmeta.writerow([k, v])
+                        out.write("\n")
+
+                        # [Sections]
+                        for section, src, keep_comments in [
+                            ("Trajectory", traj_path, False),
+                            ("MSD", _msd, False),
+                            ("PSD_X", _psd_x, False),
+                            ("PSD_Y", _psd_y, False),
+                            ("CALIBRATION", _cal_csv, False),
+                            ("HIST_X", _hist_x, False),
+                            ("HIST_Y", _hist_y, False),
+                            ("HIST_R", _hist_r, False),
                         ]:
                             if src.exists():
                                 out.write(f"# [{section}]\n")
                                 txt = src.read_text(encoding="utf-8")
-                                # skip existing comment lines for trajectory
                                 for line in txt.splitlines():
-                                    if not line.startswith("#"):
+                                    if keep_comments or not line.startswith("#"):
                                         out.write(line + "\n")
                                 out.write("\n")
 
-                    # Clean up intermediate CSVs — data is in _results.xlsx + _results.csv
-                    for _tmp in (traj_path, _msd, _psd_x, _psd_y):
-                        if _tmp.exists():
-                            _tmp.unlink()
+                    # Keep only bundled CSV (_results.csv). Remove intermediate CSVs.
+                    for _tmp in (traj_path, _msd, _psd_x, _psd_y, _cal_csv, _hist_x, _hist_y, _hist_r):
+                        try:
+                            if _tmp.exists():
+                                _tmp.unlink()
+                        except Exception:
+                            pass
                 except Exception as e:
                     self._log(f"WARN: results export failed ({file_path.name}): {e!r}")
 
