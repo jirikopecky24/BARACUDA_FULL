@@ -218,6 +218,7 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.run_batch_clicked.connect(self._on_run_batch)           # type: ignore[attr-defined]
                 self._device_panel.stop_clicked.connect(self.batch.stop)                   # type: ignore[attr-defined]
                 self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
+                self._device_panel.scale_changed.connect(self._update_run_enabled)         # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
@@ -284,6 +285,84 @@ class ShellMainWindow(QMainWindow):
 
     # ---------------- preview gate ----------------
 
+    def _scale_ok_for_paths(self, paths: list[Path]) -> tuple[bool, str]:
+        """
+        Fail-fast rule:
+        If export_um_columns=True then effective um_per_px must be > 0 for ALL selected paths.
+        Effective scale:
+          - if use_dataset_scale and sidecar exists -> dataset um_per_px
+          - else fallback to UI um_per_px
+        """
+        if self._device_panel is None:
+            return True, "no panel"
+
+        # If panel doesn't provide these, don't block (other devices)
+        if not hasattr(self._device_panel, "get_postprocess_params") or not hasattr(self._device_panel, "get_scale_params"):
+            return True, "no scale api"
+
+        try:
+            post = self._device_panel.get_postprocess_params()  # type: ignore[attr-defined]
+            need_scale = bool(post.get("export_um_columns", False))
+        except Exception:
+            return True, "postprocess unreadable"
+
+        if not need_scale:
+            return True, "scale not required"
+
+        try:
+            sc = self._device_panel.get_scale_params()  # type: ignore[attr-defined]
+            use_dataset = bool(sc.get("use_dataset_scale", False))
+            ui_um = float(sc.get("um_per_px", 0.0))
+        except Exception:
+            return False, "scale params unreadable"
+
+        # UI must be valid fallback if dataset is missing
+        if ui_um <= 0:
+            # even with dataset scales, we still keep strict: require a valid UI value as fallback baseline
+            return False, "Scale required: set um_per_px > 0 (default 0.066528 µm/px)."
+
+        # Check each selected path if dataset-scale is requested
+        if use_dataset:
+            for p in paths:
+                info = None
+                try:
+                    info = load_dataset_scale(p)
+                except Exception:
+                    info = None
+                # dataset missing is OK only if UI fallback is valid (>0), which we already required above
+                # but we still report that fallback is being used (audit transparency)
+                if info is not None and info.um_per_px is not None and float(info.um_per_px) > 0:
+                    continue
+                # fallback to UI OK
+            return True, "Scale OK (dataset or UI fallback)"
+        else:
+            return True, "Scale OK (UI)"
+
+    def _update_run_enabled(self) -> None:
+        """Recompute RUN enabled state from Gate PASS + Scale OK."""
+        if self._device_panel is None:
+            return
+        if not hasattr(self._device_panel, "btn_run"):
+            return
+
+        paths = self.dataset.get_selected_paths()
+        # Gate applies to selected paths; if nothing selected, keep RUN off
+        if not paths:
+            self._device_panel.btn_run.setEnabled(False)  # type: ignore[attr-defined]
+            return
+
+        ok, msg = self._scale_ok_for_paths(paths)
+        can_run = bool(self.batch.preview_done) and ok
+
+        self._device_panel.btn_run.setEnabled(can_run)  # type: ignore[attr-defined]
+
+        # Optional: show scale status message on panel if available
+        if hasattr(self._device_panel, "set_scale_status"):
+            if ok:
+                self._device_panel.set_scale_status(msg)  # type: ignore[attr-defined]
+            else:
+                self._device_panel.set_scale_status("Scale FAIL: " + msg)  # type: ignore[attr-defined]
+
     def _on_preview_gate(self) -> None:
         paths = self.dataset.get_selected_paths()
         if not paths:
@@ -344,9 +423,9 @@ class ShellMainWindow(QMainWindow):
         else:
             self.log_panel.log(f"Preview Gate summary: ALL PASS ({len(passed)})")
 
-        # Enable RUN only if gate passed for all
-        if hasattr(self._device_panel, 'btn_run'):
-            self._device_panel.btn_run.setEnabled(self.batch.preview_done)  # type: ignore[attr-defined]
+        # Enable RUN only if gate passed for all (and scale is OK as per fail-fast rule)
+        self._update_run_enabled()
+        
         # Enable Report button
         if hasattr(self._device_panel, 'btn_gate_report'):
             self._device_panel.btn_gate_report.setEnabled(True)  # type: ignore[attr-defined]
@@ -379,6 +458,16 @@ class ShellMainWindow(QMainWindow):
         if not self.batch.preview_done:
             self.log_panel.log("Run Batch blocked: Preview Gate has not passed.")
             return
+        
+        # Hard scale check (fail-fast)
+        paths = self.dataset.get_selected_paths()
+        ok, msg = self._scale_ok_for_paths(paths)
+        if not ok:
+            self.log_panel.log("Run Batch blocked: " + msg)
+            if hasattr(self._device_panel, 'btn_run'):
+                self._device_panel.btn_run.setEnabled(False)  # type: ignore[attr-defined]
+            return
+
         if self._device_panel is None:
             self.log_panel.log("Run Batch: no active panel.")
             return
@@ -416,8 +505,9 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.set_batch_running(False)  # type: ignore[attr-defined]
             except Exception:
                 pass
-            if hasattr(self._device_panel, 'btn_run'):
-                self._device_panel.btn_run.setEnabled(True)  # type: ignore[attr-defined]
+            
+            # restore correct RUN state (Gate + Scale)
+            self._update_run_enabled()
 
             # Show last after overlay in AFTER tab (crosshair + adaptive ROI)
             after_path = getattr(self.batch, "last_after_overlay_path", None)

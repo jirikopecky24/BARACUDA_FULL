@@ -19,6 +19,7 @@ class PipelinePanel(QWidget):
     track_range_clicked = pyqtSignal()
 
     save_dataset_scale_clicked = pyqtSignal()
+    scale_changed = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -175,6 +176,16 @@ class PipelinePanel(QWidget):
 
         self.btn_save_scale = QPushButton("Save current scale as dataset default")
         self.btn_save_scale.clicked.connect(self.save_dataset_scale_clicked.emit)
+
+        # Recompute RUN gating when scale settings change
+        try:
+            self._use_dataset_scale.toggled.connect(self.scale_changed.emit)
+        except Exception:
+            pass
+        try:
+            self._um_per_px.valueChanged.connect(lambda _v: self.scale_changed.emit())
+        except Exception:
+            pass
 
         # OT-3.1 postprocess (QC + drift)
         self._pp_enabled = QCheckBox("Enable OT-3.1 postprocess (QC + drift)")
