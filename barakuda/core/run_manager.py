@@ -57,7 +57,7 @@ class RunManager:
     ) -> Path:
         """RGB frame + ROI rectangle + red crosshair at (x,y)."""
         out = Path(run_dir) / name
-        img = self._to_qimage_rgb(frame_rgb)
+        img = self._to_qimage(frame_rgb)
 
         painter = QPainter(img)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -87,19 +87,24 @@ class RunManager:
 
     def _to_qimage(self, arr: np.ndarray) -> QImage:
         arr = np.asarray(arr)
+
         if arr.ndim == 2:
-            h, w = arr.shape
-            a = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
-            img = QImage(a.data, w, h, w, QImage.Format.Format_Grayscale8)
-            return img.copy()
+            arr = np.stack([arr, arr, arr], axis=-1)
 
-        if arr.ndim == 3 and arr.shape[2] >= 3:
-            return self._to_qimage_rgb(arr[..., :3])
+        if arr.dtype != np.uint8:
+            a = arr.astype(np.float32)
+            a -= np.nanmin(a)
+            mx = np.nanmax(a)
+            if mx > 0:
+                a /= mx
+            arr = (np.clip(a, 0, 1) * 255).astype(np.uint8)
 
-        raise ValueError(f"Unsupported array shape for QImage: {arr.shape}")
+        # !!! KRITICKÉ !!!
+        arr = np.ascontiguousarray(arr)
 
-    def _to_qimage_rgb(self, rgb: np.ndarray) -> QImage:
-        rgb = np.clip(rgb, 0, 255).astype(np.uint8, copy=False)
-        h, w, _ = rgb.shape
-        img = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
-        return img.copy()
+        h, w, c = arr.shape
+        bytes_per_line = 3 * w
+
+        qimg = QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+
+        return qimg.copy()  # odpojí buffer
