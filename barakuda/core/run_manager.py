@@ -98,8 +98,38 @@ class RunManager:
 
         raise ValueError(f"Unsupported array shape for QImage: {arr.shape}")
 
-    def _to_qimage_rgb(self, rgb: np.ndarray) -> QImage:
-        rgb = np.clip(rgb, 0, 255).astype(np.uint8, copy=False)
-        h, w, _ = rgb.shape
-        img = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888)
-        return img.copy()
+    def _to_qimage_rgb(self, frame_rgb: np.ndarray) -> QImage:
+        """
+        Robust numpy (H,W,3) uint8 -> QImage without stride artifacts.
+        """
+        arr = np.asarray(frame_rgb)
+
+        if arr.ndim == 2:
+            # grayscale -> RGB
+            arr = np.stack([arr, arr, arr], axis=-1)
+
+        if arr.dtype != np.uint8:
+            # normalize safely into uint8 if needed
+            a = arr.astype(np.float32)
+            a -= np.nanmin(a)
+            mx = np.nanmax(a)
+            if mx > 0:
+                a /= mx
+            arr = (np.clip(a, 0, 1) * 255.0).astype(np.uint8)
+
+        # Ensure contiguous memory (CRITICAL)
+        arr = np.ascontiguousarray(arr)
+
+        h, w, c = arr.shape
+        if c != 3:
+            # fallback: take first 3 channels
+            arr = arr[:, :, :3]
+            arr = np.ascontiguousarray(arr)
+            h, w, c = arr.shape
+
+        bytes_per_line = 3 * w  # CRITICAL: correct stride
+
+        qimg = QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+
+        # Detach from numpy buffer (prevents random artifacts after arr goes out of scope)
+        return qimg.copy()
