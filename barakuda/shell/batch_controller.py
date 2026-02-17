@@ -948,7 +948,56 @@ class BatchController:
                     _psd_x = run_dir / f"{stem}_psd_x.csv"
                     _psd_y = run_dir / f"{stem}_psd_y.csv"
 
-                    # --- _results.xlsx (4 sheets) ---
+                    import json as _json
+
+                    # --- Prepare Metadata (for _results.csv) ---
+                    meta_pairs = []
+
+                    # 1) run.json
+                    run_json_path = run_dir / "run.json"
+                    if run_json_path.exists():
+                        try:
+                            payload = _json.loads(run_json_path.read_text(encoding="utf-8"))
+                            
+                            def _flatten(prefix, obj, out):
+                                if isinstance(obj, dict):
+                                    for k in sorted(obj.keys(), key=lambda x: str(x)):
+                                        _flatten(f"{prefix}{k}.", obj[k], out)
+                                elif isinstance(obj, list):
+                                    out.append((prefix[:-1] if prefix.endswith(".") else prefix, _json.dumps(obj, ensure_ascii=False)))
+                                else:
+                                    out.append((prefix[:-1] if prefix.endswith(".") else prefix, "" if obj is None else str(obj)))
+
+                            _flatten("run.", payload, meta_pairs)
+                        except Exception:
+                            pass
+
+                    # 2) postprocess.json
+                    pp_json_path = run_dir / f"{stem}_postprocess.json"
+                    if pp_json_path.exists():
+                        try:
+                            payload = _json.loads(pp_json_path.read_text(encoding="utf-8"))
+                            _flatten("postprocess.", payload, meta_pairs)
+                        except Exception:
+                            pass
+
+                    # 3) trajectory.csv headers
+                    try:
+                        # Re-read trajectory just to grab # meta lines
+                        with (run_dir / f"{stem}_trajectory.csv").open("r", encoding="utf-8") as f:
+                            lines = f.readlines()
+                        meta_lines = [line.strip() for line in lines if line.startswith("#")]
+                        for i, line in enumerate(meta_lines):
+                            meta_pairs.append((f"trajectory_meta[{i}]", line))
+                    except Exception:
+                        pass
+
+                    # --- _results.xlsx (bundled) ---
+                    _cal_csv = run_dir / f"{stem}_calibration.csv"
+                    _hist_x = run_dir / f"{stem}_hist_x.csv"
+                    _hist_y = run_dir / f"{stem}_hist_y.csv"
+                    _hist_r = run_dir / f"{stem}_hist_r.csv"
+
                     export_ot_results_xlsx(
                         output_dir=run_dir,
                         base_name=stem,
@@ -958,28 +1007,115 @@ class BatchController:
                         psd_y_csv_path=_psd_y,
                     )
 
-                    # --- _results.csv (all data in one file, sections separated by headers) ---
+                    # --- _results.csv (Virtual Sheets identical to XLSX) ---
+                    _cal_json = run_dir / f"{stem}_calibration.json"
+
                     results_csv = run_dir / f"{stem}_results.csv"
                     with results_csv.open("w", encoding="utf-8", newline="") as out:
-                        for section, src in [
-                            ("Trajectory", traj_path),
-                            ("MSD", _msd),
-                            ("PSD_X", _psd_x),
-                            ("PSD_Y", _psd_y),
-                        ]:
-                            if src.exists():
-                                out.write(f"# [{section}]\n")
-                                txt = src.read_text(encoding="utf-8")
-                                # skip existing comment lines for trajectory
-                                for line in txt.splitlines():
-                                    if not line.startswith("#"):
-                                        out.write(line + "\n")
-                                out.write("\n")
 
-                    # Clean up intermediate CSVs — data is in _results.xlsx + _results.csv
-                    for _tmp in (traj_path, _msd, _psd_x, _psd_y):
-                        if _tmp.exists():
-                            _tmp.unlink()
+                        def write_sheet_marker(name: str) -> None:
+                            # Excel-like "sheet boundary" marker (CSV-safe single column)
+                            out.write(f"#sheet={name}\n")
+
+                        def dump_csv_file(src: Path, *, skip_hash_comments: bool = True) -> bool:
+                            if not src.exists():
+                                return False
+                            with src.open("r", encoding="utf-8", newline="") as fin:
+                                for line in fin:
+                                    if skip_hash_comments and line.startswith("#"):
+                                        continue
+                                    out.write(line)
+                            return True
+
+                        def dump_kv_rows(rows: list[tuple[str, str]]) -> None:
+                            w = csv.writer(out)
+                            w.writerow(["key", "value"])
+                            for k, v in rows:
+                                w.writerow([k, v])
+
+                        # ---- Sheet: Metadata (ALWAYS FIRST) ----
+                        write_sheet_marker("Metadata")
+                        dump_kv_rows(meta_pairs)
+                        out.write("\n")
+
+                        # ---- Sheet: Trajectory ----
+                        write_sheet_marker("Trajectory")
+                        if not dump_csv_file(traj_path, skip_hash_comments=True):
+                            w = csv.writer(out)
+                            w.writerow(["status", "MISSING"])
+                            w.writerow(["reason", f"{traj_path.name} not found"])
+                        out.write("\n")
+
+                        # ---- Sheet: MSD ----
+                        write_sheet_marker("MSD")
+                        if not dump_csv_file(_msd, skip_hash_comments=True):
+                            w = csv.writer(out)
+                            w.writerow(["status", "MISSING"])
+                            w.writerow(["reason", f"{_msd.name} not found"])
+                        out.write("\n")
+
+                        # ---- Sheet: PSD_X ----
+                        write_sheet_marker("PSD_X")
+                        if not dump_csv_file(_psd_x, skip_hash_comments=True):
+                            w = csv.writer(out)
+                            w.writerow(["status", "MISSING"])
+                            w.writerow(["reason", f"{_psd_x.name} not found"])
+                        out.write("\n")
+
+                        # ---- Sheet: PSD_Y ----
+                        write_sheet_marker("PSD_Y")
+                        if not dump_csv_file(_psd_y, skip_hash_comments=True):
+                            w = csv.writer(out)
+                            w.writerow(["status", "MISSING"])
+                            w.writerow(["reason", f"{_psd_y.name} not found"])
+                        out.write("\n")
+
+                        # ---- Sheet: CALIBRATION (ALWAYS) ----
+                        write_sheet_marker("CALIBRATION")
+                        if _cal_csv.exists():
+                            dump_csv_file(_cal_csv, skip_hash_comments=True)
+                        elif _cal_json.exists():
+                            # Flatten calibration.json into key/value table
+                            def _flat(prefix: str, obj: Any, out_rows: list[tuple[str, str]]) -> None:
+                                if isinstance(obj, dict):
+                                    for kk in sorted(obj.keys(), key=lambda x: str(x)):
+                                        _flat(f"{prefix}{kk}.", obj[kk], out_rows)
+                                elif isinstance(obj, list):
+                                    out_rows.append((prefix[:-1], json.dumps(obj, ensure_ascii=False)))
+                                else:
+                                    out_rows.append((prefix[:-1], "" if obj is None else str(obj)))
+
+                            try:
+                                payload = json.loads(_cal_json.read_text(encoding="utf-8"))
+                                rows: list[tuple[str, str]] = []
+                                _flat("calibration.", payload, rows)
+                                dump_kv_rows(rows)
+                            except Exception:
+                                w = csv.writer(out)
+                                w.writerow(["status", "SKIPPED"])
+                                w.writerow(["reason", "failed to parse calibration.json"])
+                        else:
+                            w = csv.writer(out)
+                            w.writerow(["status", "MISSING"])
+                            w.writerow(["reason", "no calibration artifacts found"])
+                        out.write("\n")
+
+                        # ---- Sheet: HIST_X/Y/R (ALWAYS) ----
+                        for tag, hp in [("HIST_X", _hist_x), ("HIST_Y", _hist_y), ("HIST_R", _hist_r)]:
+                            write_sheet_marker(tag)
+                            if not dump_csv_file(hp, skip_hash_comments=True):
+                                w = csv.writer(out)
+                                w.writerow(["status", "SKIPPED"])
+                                w.writerow(["reason", f"{hp.name} not found"])
+                            out.write("\n")
+
+                    # Keep only bundled CSV (_results.csv). Remove intermediate CSVs.
+                    for _tmp in (traj_path, _msd, _psd_x, _psd_y, _cal_csv, _hist_x, _hist_y, _hist_r):
+                        try:
+                            if _tmp.exists():
+                                _tmp.unlink()
+                        except Exception:
+                            pass
                 except Exception as e:
                     self._log(f"WARN: results export failed ({file_path.name}): {e!r}")
 
