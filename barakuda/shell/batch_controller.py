@@ -1313,6 +1313,13 @@ class BatchController:
         )
 
         img = iio.imread(file_path)
+        
+        # ensure 2D grayscale for segmentation (PNG can be RGB)
+        if img.ndim == 3:
+            # simple luminance-ish conversion without extra deps
+            img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+            img = img.astype(np.float32)
+
         # crop ROI (x, y, w, h)
         x, y, w, h = roi_rect
         roi_img = img[y:y+h, x:x+w]

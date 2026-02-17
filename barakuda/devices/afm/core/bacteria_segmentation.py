@@ -194,6 +194,10 @@ def segment_bacteria_contours_afm(img: np.ndarray, params: AfmBacteriaSegParams)
     from scipy import ndimage as ndi
     from skimage import exposure, filters, morphology, measure, feature
 
+    # ensure grayscale (2D)
+    if img.ndim == 3:
+        img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+
     img01 = _normalize01(img)
     if params.invert:
         img01 = 1.0 - img01

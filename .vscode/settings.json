@@ -3,3 +3,9 @@
     "python-envs.defaultPackageManager": "ms-python.python:conda",
     "python-envs.pythonProjects": []
 }
+{
+    "python.analysis.extraPaths": [
+        "."
+    ],
+    "python.defaultInterpreterPath": "D:/Python/envs/barakuda/python.exe"
+}
