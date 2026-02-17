@@ -1043,10 +1043,50 @@ class BatchController:
                                     out.write(line + "\n")
                                 out.write("\n")
 
-                    # IMPORTANT: Do NOT delete canonical scientific CSVs.
-                    # (trajectory/msd/psd/calibration/hist remain the source of truth)
+                    # --- Organize Outputs (Audit/Tracking/Physics) ---
+                    # Create subfolders
+                    dir_audit = run_dir / "audit"
+                    dir_tracking = run_dir / "tracking"
+                    dir_physics = run_dir / "physics"
+                    for d in (dir_audit, dir_tracking, dir_physics):
+                        d.mkdir(parents=True, exist_ok=True)
+
+                    # Helper to move file if exists
+                    def _move_to(src_path: Path, dest_dir: Path) -> None:
+                        if src_path.exists():
+                            try:
+                                src_path.rename(dest_dir / src_path.name)
+                            except Exception as e:
+                                self._log(f"WARN: failed to move {src_path.name} -> {dest_dir.name}: {e}")
+
+                    # 1. Audit
+                    _move_to(run_dir / f"{stem}_postprocess.json", dir_audit)
+                    _move_to(run_dir / f"{stem}_psd_fit.json", dir_audit)
+                    _move_to(run_dir / f"{stem}_calibration.json", dir_audit)
+
+                    # 2. Tracking
+                    _move_to(traj_path, dir_tracking)
+                    _move_to(run_dir / f"{stem}_preview_tracking.png", dir_tracking)
+                    _move_to(run_dir / f"{stem}_after.png", dir_tracking)
+                    _move_to(run_dir / f"{stem}_after_raw.png", dir_tracking)
+
+                    # 3. Physics
+                    _move_to(_msd, dir_physics)
+                    _move_to(_psd_x, dir_physics)
+                    _move_to(_psd_y, dir_physics)
+                    _move_to(_cal_csv, dir_physics)
+                    _move_to(_hist_x, dir_physics)
+                    _move_to(_hist_y, dir_physics)
+                    _move_to(_hist_r, dir_physics)
+                    
+                    # Optional: Move 2-video compare artifacts to physics
+                    _move_to(run_dir / f"{stem}_compare.csv", dir_physics)
+                    _move_to(run_dir / f"{stem}_drag.json", dir_physics)
+                    
+                    # IMPORTANT: run.json, _results.csv, _results.xlsx, _qc.png stay in ROOT.
+
                 except Exception as e:
-                    self._log(f"WARN: results export failed ({file_path.name}): {e!r}")
+                    self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
 
                 dataset_set_status_fn(file_path, "done")
                 self._log(f"OK: {file_path.name} -> {result.run_id}")
