@@ -1163,11 +1163,6 @@ class BatchController:
                     min_area_px=int(afm_params.get("min_area_px", 120)),
                     closing_radius_px=int(afm_params.get("closing_radius_px", 2)),
                     hole_area_px=int(afm_params.get("hole_area_px", 240)),
-                    separate=bool(afm_params.get("separate", True)),
-                    invert=bool(afm_params.get("invert", False)),
-                    area_bins=int(afm_params.get("area_bins", 20)),
-                )
-
                 res = segment_bacteria_afm(roi_img, pp)
                 mask = res["mask"]
                 labels = res["labels"]

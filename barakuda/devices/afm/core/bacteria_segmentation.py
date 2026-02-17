@@ -16,6 +16,12 @@ class AfmBacteriaSegParams:
     invert: bool = False
     area_bins: int = 20
 
+    # Marker-based watershed (LoG seeds)
+    log_sigma: float = 2.0
+    peak_min_distance_px: int = 6
+    low_mask_factor: float = 0.65   # mask = den > (otsu * factor)
+    max_markers: int = 5000
+
 
 def _normalize01(img: np.ndarray) -> np.ndarray:
     x = np.asarray(img, dtype=np.float32)
@@ -28,34 +34,76 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
 
 def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
     from scipy import ndimage as ndi
-    from skimage import exposure, filters, morphology, measure, segmentation
+    from skimage import exposure, filters, morphology, measure, segmentation, feature
 
     img01 = _normalize01(img)
     if params.invert:
         img01 = 1.0 - img01
 
+    # --- background flattening ---
     bg = ndi.gaussian_filter(img01, sigma=float(params.bg_sigma))
     flat = img01 - bg
     flat = exposure.rescale_intensity(flat, in_range="image", out_range=(0.0, 1.0))
 
+    # --- denoise ---
     den = ndi.gaussian_filter(flat, sigma=float(params.smooth_sigma))
 
-    thr = float(filters.threshold_otsu(den))
-    mask = den > thr
+    # ------------------------------------------------------------
+    # Marker-based watershed (LoG seeds)  ✅ správně pro dense field
+    # ------------------------------------------------------------
 
-    min_area = int(params.min_area_px)
-    hole_area = int(params.hole_area_px) if int(params.hole_area_px) > 0 else int(2 * min_area)
+    # base mask: not "den > otsu" (too aggressive), but a lower mask to constrain watershed
+    thr_otsu = float(filters.threshold_otsu(den))
+    thr_low = float(thr_otsu * float(params.low_mask_factor))
+    base_mask = den > thr_low
 
-    mask = morphology.remove_small_objects(mask, min_size=min_area)
-    mask = morphology.remove_small_holes(mask, area_threshold=hole_area)
-    mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
+    # clean base mask slightly (avoid speckles)
+    base_mask = morphology.remove_small_objects(base_mask, min_size=max(20, int(params.min_area_px // 6)))
+    base_mask = morphology.remove_small_holes(base_mask, area_threshold=max(30, int(params.min_area_px // 6)))
 
-    if bool(params.separate):
-        dist = ndi.distance_transform_edt(mask)
-        local_max = morphology.local_maxima(dist)
-        markers = ndi.label(local_max)[0]
-        labels = segmentation.watershed(-dist, markers, mask=mask)
+    # LoG response: peaks ~ centers of rod-like objects / local maxima structures
+    # Use LoG on den (already flattened), then find local maxima as markers.
+    log_resp = -ndi.gaussian_laplace(den, sigma=float(params.log_sigma))
+    # normalize response for stability
+    log_resp = (log_resp - np.nanmin(log_resp)) / (np.nanmax(log_resp) - np.nanmin(log_resp) + 1e-12)
+
+    # peak picking only inside base mask
+    peaks = feature.peak_local_max(
+        log_resp,
+        min_distance=int(params.peak_min_distance_px),
+        threshold_abs=float(np.percentile(log_resp[base_mask], 70)) if np.any(base_mask) else 0.0,
+        labels=base_mask.astype(np.uint8),
+        num_peaks=int(params.max_markers),
+    )
+
+    markers = np.zeros_like(den, dtype=np.int32)
+    for i, (r, c) in enumerate(peaks, start=1):
+        markers[r, c] = i
+
+    # If no markers found, fall back to a very conservative connected-components mask
+    if markers.max() < 2:
+        # conservative fallback: higher threshold + morphology
+        mask = den > thr_otsu
+        mask = morphology.remove_small_objects(mask, min_size=int(params.min_area_px))
+        mask = morphology.remove_small_holes(mask, area_threshold=int(params.hole_area_px) if int(params.hole_area_px) > 0 else int(2 * params.min_area_px))
+        mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
+        labels = measure.label(mask)
     else:
+        # Watershed on gradient (best practice: use gradient to follow ridges/boundaries)
+        grad = filters.sobel(den)
+        labels = segmentation.watershed(grad, markers, mask=base_mask)
+
+        # Post-filter: remove tiny fragments & relabel
+        # (watershed sometimes creates tiny regions)
+        labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
+        labels = measure.label(labels > 0)
+
+        # Reconstruct final mask from labels
+        mask = labels > 0
+
+    # Optional closing to ensure "solid" bacteria shapes
+    if int(params.closing_radius_px) > 0:
+        mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
         labels = measure.label(mask)
 
     props = measure.regionprops(labels)
@@ -93,18 +141,20 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
     summary = {
         "count_bacteria": count,
         "coverage_mask": coverage,
-        "threshold_otsu": thr,
+        "threshold_otsu": thr_otsu,
+        "threshold_low": thr_low,
+        "markers_found": int(markers.max()),
         "area_frequencies": {"n_bins": int(params.area_bins), "bins": bins_out},
     }
 
     audit = {
-        "method": "AFM_BACTERIA_SEG_V1",
+        "method": "AFM_BACTERIA_SEG_V2_MARKER_WATERSHED",
         "params": asdict(params),
         "notes": {
             "flatten": "gaussian subtract + rescale",
-            "threshold": "otsu",
-            "morphology": "remove_small_objects/holes + closing(disk)",
-            "separate": "watershed(distance_transform)" if params.separate else "connected_components",
+            "masking": "low threshold (otsu * factor)",
+            "markers": "LoG seeds on intensity",
+            "segmentation": "watershed on sobel gradient",
         },
     }
 

@@ -38,6 +38,24 @@ class AfmPanel(QWidget):
         self.sp_smooth.setValue(1.0)
         form.addRow("Smooth sigma", self.sp_smooth)
 
+        self.sp_log_sigma = QDoubleSpinBox()
+        self.sp_log_sigma.setRange(0.5, 10.0)
+        self.sp_log_sigma.setDecimals(2)
+        self.sp_log_sigma.setValue(2.0)
+        form.addRow("LoG sigma", self.sp_log_sigma)
+
+        self.sp_peak_dist = QSpinBox()
+        self.sp_peak_dist.setRange(1, 50)
+        self.sp_peak_dist.setValue(6)
+        form.addRow("Peak min distance (px)", self.sp_peak_dist)
+
+        self.sp_low_factor = QDoubleSpinBox()
+        self.sp_low_factor.setRange(0.10, 1.00)
+        self.sp_low_factor.setDecimals(2)
+        self.sp_low_factor.setSingleStep(0.05)
+        self.sp_low_factor.setValue(0.65)
+        form.addRow("Low mask factor", self.sp_low_factor)
+
         self.sp_min_area = QSpinBox()
         self.sp_min_area.setRange(1, 10_000_000)
         self.sp_min_area.setValue(120)
@@ -73,6 +91,9 @@ class AfmPanel(QWidget):
             "invert": bool(self.cb_invert.isChecked()),
             "bg_sigma": float(self.sp_bg.value()),
             "smooth_sigma": float(self.sp_smooth.value()),
+            "log_sigma": float(self.sp_log_sigma.value()),
+            "peak_min_distance_px": int(self.sp_peak_dist.value()),
+            "low_mask_factor": float(self.sp_low_factor.value()),
             "min_area_px": int(self.sp_min_area.value()),
             "closing_radius_px": int(self.sp_close.value()),
             "hole_area_px": int(self.sp_holes.value()),
