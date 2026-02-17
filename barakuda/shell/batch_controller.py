@@ -1163,6 +1163,16 @@ class BatchController:
                     min_area_px=int(afm_params.get("min_area_px", 120)),
                     closing_radius_px=int(afm_params.get("closing_radius_px", 2)),
                     hole_area_px=int(afm_params.get("hole_area_px", 240)),
+                    separate=bool(afm_params.get("separate", True)),
+                    invert=bool(afm_params.get("invert", False)),
+                    area_bins=int(afm_params.get("area_bins", 20)),
+                    # Marker-based watershed params (LoG seeds)
+                    log_sigma=float(afm_params.get("log_sigma", 2.0)),
+                    peak_min_distance_px=int(afm_params.get("peak_min_distance_px", 6)),
+                    low_mask_factor=float(afm_params.get("low_mask_factor", 0.65)),
+                    max_markers=int(afm_params.get("max_markers", 5000)),
+                )
+
                 res = segment_bacteria_afm(roi_img, pp)
                 mask = res["mask"]
                 labels = res["labels"]
