@@ -1182,6 +1182,11 @@ class BatchController:
                     min_perimeter_px=int(afm_params.get("min_perimeter_px", 60)),
                     min_eccentricity=float(afm_params.get("min_eccentricity", 0.70)),
                     min_solidity=float(afm_params.get("min_solidity", 0.50)),
+                    # Watershed detect-all
+                    dist_sigma=float(afm_params.get("dist_sigma", 1.0)),
+                    seed_percentile=float(afm_params.get("seed_percentile", 75.0)),
+                    peak_min_distance=int(afm_params.get("peak_min_distance", 6)),
+                    watershed_compactness=float(afm_params.get("watershed_compactness", 0.0)),
                 )
 
                 res = segment_bacteria_afm(roi_img, pp)
@@ -1205,9 +1210,44 @@ class BatchController:
                 ax = fig.add_subplot(1, 1, 1)
                 ax.imshow(roi_img, cmap="gray")
                 ax.set_axis_off()
-                contours = measure.find_contours(mask.astype(np.float32), 0.5)
-                for c in contours:
-                    ax.plot(c[:, 1], c[:, 0], linewidth=1.0, color='red')
+                
+                # Render only contours (red), no fill
+                from skimage.segmentation import find_boundaries
+                if labels.max() > 0:
+                    # boundary mask for all labels
+                    bounds = find_boundaries(labels, mode="thick")
+                    # plot semi-transparent red over boundaries? 
+                    # Actually, matplotlib plot is better for vectors, but find_boundaries gives raster.
+                    # Let's use contour finding for vector smoothness if possible, OR raster overlay.
+                    # User suggested: "bound = segmentation.find_boundaries(labels, mode='outer')"
+                    
+                    # PREFERRED USER METHOD:
+                    # overlay_rgb[bound] = [255, 0, 0] 
+                    # But we are using matplotlib here to save.
+                    # Let's stick to matplotlib contours for consistency with previous step if it works well,
+                    # OR switch to direct array manipulation as user hinted.
+                    # "Teď už máš labels... Do render části... dej princip: background=šedotón, kontury=červené"
+                    
+                    contours = measure.find_contours(mask.astype(np.float32), 0.5)
+                    # This only finds the outer mask options.
+                    # For instance segmentation, we need contours of EACH label or find_boundaries.
+                    
+                    # Better approach for instance segmentation overlay:
+                    # Loop uniquely labels or find_boundaries.
+                    # Since we want "detect-all", showing boundaries between touching cells is crucial.
+                    # simple mask contours won't show internal lines.
+                    
+                    # 1. Plot edges of the label limits
+                    bnd = find_boundaries(labels, mode='outer')
+                    # Create a red overlay with alpha
+                    # We can use ax.imshow with a masked array
+                    
+                    # Overlay red pixels where boundary is True
+                    # Create RGBA buffer
+                    overlay_layer = np.zeros(roi_img.shape + (4,), dtype=np.float32)
+                    overlay_layer[bnd] = [1.0, 0.0, 0.0, 1.0] # Red, opaque
+                    ax.imshow(overlay_layer)
+
                 fig.tight_layout(pad=0)
                 fig.savefig(overlay_path, dpi=220)
                 plt.close(fig)
@@ -1347,10 +1387,16 @@ class BatchController:
             min_perimeter_px=int(afm_params.get("min_perimeter_px", 60)),
             min_eccentricity=float(afm_params.get("min_eccentricity", 0.70)),
             min_solidity=float(afm_params.get("min_solidity", 0.50)),
+            # Watershed detect-all
+            dist_sigma=float(afm_params.get("dist_sigma", 1.0)),
+            seed_percentile=float(afm_params.get("seed_percentile", 75.0)),
+            peak_min_distance=int(afm_params.get("peak_min_distance", 6)),
+            watershed_compactness=float(afm_params.get("watershed_compactness", 0.0)),
         )
 
         res = segment_bacteria_afm(roi_img, pp)
         mask = res["mask"]
+        labels = res["labels"]
 
         # render overlay with red contours
         fig = plt.figure(figsize=(6, 6))
@@ -1358,9 +1404,13 @@ class BatchController:
         ax.imshow(roi_img, cmap="gray")
         ax.set_axis_off()
         
-        contours = measure.find_contours(mask.astype(np.float32), 0.5)
-        for c in contours:
-            ax.plot(c[:, 1], c[:, 0], linewidth=1.0, color='red')
+        # Instance boundaries
+        from skimage.segmentation import find_boundaries
+        if labels.max() > 0:
+            bnd = find_boundaries(labels, mode='outer')
+            overlay_layer = np.zeros(roi_img.shape + (4,), dtype=np.float32)
+            overlay_layer[bnd] = [1.0, 0.0, 0.0, 1.0]
+            ax.imshow(overlay_layer)
             
         fig.tight_layout(pad=0)
         

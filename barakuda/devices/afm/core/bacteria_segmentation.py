@@ -21,6 +21,12 @@ class AfmBacteriaSegParams:
     peak_min_distance_px: int = 6
     low_mask_factor: float = 0.45   # mask = den > (otsu * factor)
     max_markers: int = 5000
+    
+    # Watershed detect-all
+    dist_sigma: float = 1.0            # vyhlazení distance mapy
+    seed_percentile: float = 75.0      # procentil pro seed threshold (nižší => víc seedů)
+    peak_min_distance: int = 6         # min vzdálenost seedů (nižší => víc objektů)
+    watershed_compactness: float = 0.0 # 0 = klasika, >0 trochu “zpevní” tvary
         # Contour-first segmentation (edge -> close -> fill -> contours)
     use_contours: bool = True          # default: použijeme nový přístup
     edge_sigma: float = 1.2            # rozmazání před hranami
@@ -43,8 +49,119 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
     return x
 
 
+    return x
+
+
+def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams):
+    """
+    Detect-all watershed segmentation for dense bacterial fields.
+
+    Returns:
+      labels (int32): instance labels 1..N
+      mask (bool): labels>0
+      debug (dict)
+    """
+    import numpy as np
+    from scipy import ndimage as ndi
+    from skimage import filters, exposure, morphology, measure, segmentation, feature
+
+    # --- ensure grayscale 2D ---
+    if img.ndim == 3:
+        img = (img[..., 0].astype(np.float32) * 0.299 +
+               img[..., 1].astype(np.float32) * 0.587 +
+               img[..., 2].astype(np.float32) * 0.114)
+
+    img01 = _normalize01(img)
+    if params.invert:
+        img01 = 1.0 - img01
+
+    # 1) Background subtraction (flatten illumination / height drift)
+    bg = ndi.gaussian_filter(img01, sigma=float(params.bg_sigma))
+    flat = img01 - bg
+    flat = exposure.rescale_intensity(flat, in_range="image", out_range=(0.0, 1.0))
+
+    # 2) Gentle denoise (not too much; bacteria edges matter)
+    den = ndi.gaussian_filter(flat, sigma=float(params.smooth_sigma))
+
+    # 3) Threshold to get "bacteria mask"
+    thr = filters.threshold_otsu(den)
+    thr_low = thr * float(params.low_mask_factor)
+    base_mask = den > thr_low
+
+    # cleanup: remove speckles + fill small holes
+    base_mask = morphology.remove_small_objects(base_mask, min_size=int(params.min_area_px))
+    base_mask = morphology.remove_small_holes(base_mask, area_threshold=int(params.hole_area_px))
+
+    # 4) Distance transform inside mask
+    dist = ndi.distance_transform_edt(base_mask)
+    if float(params.dist_sigma) > 0:
+        dist = ndi.gaussian_filter(dist, sigma=float(params.dist_sigma))
+
+    # 5) Seeds (markers) from distance peaks
+    # Use percentile threshold to control number of seeds
+    dist_vals = dist[base_mask]
+    if dist_vals.size == 0:
+        out = np.zeros_like(dist, dtype=np.int32)
+        return out, (out > 0), {"reason": "empty_mask"}
+
+    seed_thr = np.percentile(dist_vals, float(params.seed_percentile))
+    peaks = feature.peak_local_max(
+        dist,
+        min_distance=int(params.peak_min_distance),
+        threshold_abs=float(seed_thr),
+        labels=base_mask,
+        exclude_border=False,
+    )
+
+    markers = np.zeros_like(dist, dtype=np.int32)
+    for i, (r, c) in enumerate(peaks, start=1):
+        markers[r, c] = i
+
+    n_markers = int(markers.max())
+    if n_markers < 2:
+        # fallback: at least label connected components
+        labels = measure.label(base_mask)
+        labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
+        labels = measure.label(labels, background=0)
+        mask = labels > 0
+        debug = {
+            "thr_otsu": float(thr),
+            "thr_low": float(thr_low),
+            "mask_coverage": float(base_mask.mean()),
+            "n_markers": n_markers,
+            "mode": "cc_fallback",
+        }
+        return labels.astype(np.int32), mask, debug
+
+    # 6) Watershed on negative distance (basins grow from peaks)
+    labels = segmentation.watershed(
+        -dist,
+        markers,
+        mask=base_mask,
+        compactness=float(getattr(params, "watershed_compactness", 0.0)),
+    )
+
+    # 7) Remove small instances and reindex 1..N
+    labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
+    labels = measure.label(labels, background=0)
+
+    mask = labels > 0
+    debug = {
+        "thr_otsu": float(thr),
+        "thr_low": float(thr_low),
+        "mask_coverage": float(base_mask.mean()),
+        "n_markers": int(np.max(markers)),
+        "count": int(labels.max()),
+        "mode": "watershed",
+    }
+    return labels.astype(np.int32), mask, debug
+
+
 def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
-        # Prefer contour-first for dense bacterial fields (better UX: closed contours)
+    # Default = detect-all watershed (best for dense bacterial carpet)
+    labels, mask, dbg = segment_bacteria_watershed_afm(img, params)
+
+    # Prefer contour-first for dense bacterial fields (better UX: closed contours)
     if getattr(params, "use_contours", False):
         labels, mask, dbg = segment_bacteria_contours_afm(img, params)
         # dál ať běží stejný export/props jako doposud
