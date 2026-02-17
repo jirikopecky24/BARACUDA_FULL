@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Callable
 import csv
 import json
 import time
+import numpy as np
 
 from PyQt6.QtWidgets import QApplication
 
@@ -1282,4 +1283,4 @@ class BatchController:
             progress_fn(i, total, p.name, pct)
 
         self._log("Run Batch done ✅")
-```
+
