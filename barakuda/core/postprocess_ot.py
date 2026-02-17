@@ -413,33 +413,59 @@ def postprocess_trajectory_csv_inplace(
                     w.writerow(["fc_y_hz", f"{cal.fc_y_hz:.12g}"])
 
                 # Histograms: x,y,r in um (simple deterministic bins)
-                def _write_hist(path, data_um):
+                def _write_hist(csv_path: Path, png_path: Path, data_um: np.ndarray, title: str) -> None:
                     data_um = np.asarray(data_um, dtype=np.float64)
                     data_um = data_um[np.isfinite(data_um)]
                     if data_um.size < 16:
                         return
-                    # Freedman–Diaconis is great, but deterministic & robust:
-                    # use 100 bins spanning [p0.5, p99.5] to avoid outliers
+
+                    # deterministic bins: 100 bins in [p0.5, p99.5]
                     lo = float(np.percentile(data_um, 0.5))
                     hi = float(np.percentile(data_um, 99.5))
                     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
                         return
+
                     bins = 100
                     hist, edges = np.histogram(data_um, bins=bins, range=(lo, hi))
                     centers = 0.5 * (edges[:-1] + edges[1:])
+
+                    # --- CSV ---
                     import csv as _csv
-                    with path.open("w", encoding="utf-8", newline="") as f:
+                    with csv_path.open("w", encoding="utf-8", newline="") as f:
                         w = _csv.writer(f)
                         w.writerow(["bin_center_um", "count"])
                         for c, h in zip(centers, hist):
                             w.writerow([f"{float(c):.12g}", str(int(h))])
 
+                    # --- PNG ---
+                    try:
+                        import matplotlib
+                        matplotlib.use("Agg")
+                        import matplotlib.pyplot as plt
+
+                        fig = plt.figure(figsize=(7, 4))
+                        ax = fig.add_subplot(1, 1, 1)
+                        ax.plot(centers, hist)
+                        ax.set_xlabel("position [µm]")
+                        ax.set_ylabel("count")
+                        ax.set_title(title)
+                        fig.tight_layout()
+                        fig.savefig(png_path, dpi=160)
+                        plt.close(fig)
+                    except Exception:
+                        pass
+
                 hx = out_dir / f"{base}_hist_x.csv"
                 hy = out_dir / f"{base}_hist_y.csv"
                 hr = out_dir / f"{base}_hist_r.csv"
-                _write_hist(hx, x_um)
-                _write_hist(hy, y_um)
-                _write_hist(hr, np.sqrt(x_um * x_um + y_um * y_um))
+
+                hx_png = out_dir / f"{base}_hist_x.png"
+                hy_png = out_dir / f"{base}_hist_y.png"
+                hr_png = out_dir / f"{base}_hist_r.png"
+
+                _write_hist(hx, hx_png, x_um, "Histogram X")
+                _write_hist(hy, hy_png, y_um, "Histogram Y")
+                _write_hist(hr, hr_png, np.sqrt(x_um * x_um + y_um * y_um), "Histogram R")
 
                 summary.setdefault("calibration", {})
                 summary["calibration"] = {
