@@ -83,9 +83,11 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     den = ndi.gaussian_filter(flat, sigma=float(params.smooth_sigma))
 
     # 3) Threshold to get "bacteria mask"
-    thr = filters.threshold_otsu(den)
-    thr_low = thr * float(params.low_mask_factor)
-    base_mask = den > thr_low
+    # Robust threshold based on percentile instead of mean scaling
+    threshold = np.percentile(den, 65)
+    base_mask = den > threshold
+    thr_low = threshold # compatibility with debug dict
+    thr = threshold     # compatibility with debug dict
 
     # cleanup: remove speckles + fill small holes
     base_mask = morphology.remove_small_objects(base_mask, min_size=int(params.min_area_px))
@@ -177,75 +179,77 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         img01 = 1.0 - img01
 
     # --- background flattening ---
-    bg = ndi.gaussian_filter(img01, sigma=float(params.bg_sigma))
-    flat = img01 - bg
-    flat = exposure.rescale_intensity(flat, in_range="image", out_range=(0.0, 1.0))
+    # Only if not already segmented
+    if labels is None:
+        bg = ndi.gaussian_filter(img01, sigma=float(params.bg_sigma))
+        flat = img01 - bg
+        flat = exposure.rescale_intensity(flat, in_range="image", out_range=(0.0, 1.0))
 
-    # --- denoise ---
-    den = ndi.gaussian_filter(flat, sigma=float(params.smooth_sigma))
+        # --- denoise ---
+        den = ndi.gaussian_filter(flat, sigma=float(params.smooth_sigma))
+        
+        # ------------------------------------------------------------
+        # Marker-based watershed (LoG seeds)  ✅ správně pro dense field
+        # ------------------------------------------------------------
+        
+        # base mask: not "den > otsu" (too aggressive), but a lower mask to constrain watershed
+        thr_otsu = float(filters.threshold_otsu(den))
+        thr_low = float(thr_otsu * float(params.low_mask_factor))
+        base_mask = den > thr_low
 
-    # ------------------------------------------------------------
-    # Marker-based watershed (LoG seeds)  ✅ správně pro dense field
-    # ------------------------------------------------------------
+        # clean base mask slightly (avoid speckles)
+        base_mask = morphology.remove_small_objects(base_mask, min_size=max(20, int(params.min_area_px // 6)))
+        base_mask = morphology.remove_small_holes(base_mask, area_threshold=max(30, int(params.min_area_px // 6)))
 
-    # base mask: not "den > otsu" (too aggressive), but a lower mask to constrain watershed
-    thr_otsu = float(filters.threshold_otsu(den))
-    thr_low = float(thr_otsu * float(params.low_mask_factor))
-    base_mask = den > thr_low
+        # LoG response: peaks ~ centers of rod-like objects / local maxima structures
+        # Use LoG on den (already flattened), then find local maxima as markers.
+        log_resp = -ndi.gaussian_laplace(den, sigma=float(params.log_sigma))
+        # normalize response for stability
+        log_resp = (log_resp - np.nanmin(log_resp)) / (np.nanmax(log_resp) - np.nanmin(log_resp) + 1e-12)
 
-    # clean base mask slightly (avoid speckles)
-    base_mask = morphology.remove_small_objects(base_mask, min_size=max(20, int(params.min_area_px // 6)))
-    base_mask = morphology.remove_small_holes(base_mask, area_threshold=max(30, int(params.min_area_px // 6)))
+        # peak picking only inside base mask
+        peaks = feature.peak_local_max(
+            log_resp,
+            min_distance=int(params.peak_min_distance_px),
+            threshold_abs=float(np.percentile(log_resp[base_mask], 85)) if np.any(base_mask) else 0.0,
+            labels=base_mask.astype(np.uint8),
+            num_peaks=int(params.max_markers),
+        )
 
-    # LoG response: peaks ~ centers of rod-like objects / local maxima structures
-    # Use LoG on den (already flattened), then find local maxima as markers.
-    log_resp = -ndi.gaussian_laplace(den, sigma=float(params.log_sigma))
-    # normalize response for stability
-    log_resp = (log_resp - np.nanmin(log_resp)) / (np.nanmax(log_resp) - np.nanmin(log_resp) + 1e-12)
+        markers = np.zeros_like(den, dtype=np.int32)
+        for i, (r, c) in enumerate(peaks, start=1):
+            markers[r, c] = i
 
-    # peak picking only inside base mask
-    peaks = feature.peak_local_max(
-        log_resp,
-        min_distance=int(params.peak_min_distance_px),
-        threshold_abs=float(np.percentile(log_resp[base_mask], 85)) if np.any(base_mask) else 0.0,
-        labels=base_mask.astype(np.uint8),
-        num_peaks=int(params.max_markers),
-    )
+        # If no markers found, fall back to a very conservative connected-components mask
+        if markers.max() < 2:
+            # conservative fallback: higher threshold + morphology
+            mask = den > thr_otsu
+            mask = morphology.remove_small_objects(mask, min_size=int(params.min_area_px))
+            mask = morphology.remove_small_holes(mask, area_threshold=int(params.hole_area_px) if int(params.hole_area_px) > 0 else int(2 * params.min_area_px))
+            mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
+            labels = measure.label(mask)
+        else:
+            # 1) Watershed vrací "instance labels" (každý objekt má své číslo)
+            grad = filters.sobel(den)
+            labels = segmentation.watershed(grad, markers, mask=base_mask)
 
-    markers = np.zeros_like(den, dtype=np.int32)
-    for i, (r, c) in enumerate(peaks, start=1):
-        markers[r, c] = i
+            # 2) Odstraníme malé oblasti, ale POZOR:
+            #    remove_small_objects umí pracovat i s int label mapou.
+            labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
 
-    # If no markers found, fall back to a very conservative connected-components mask
-    if markers.max() < 2:
-        # conservative fallback: higher threshold + morphology
-        mask = den > thr_otsu
-        mask = morphology.remove_small_objects(mask, min_size=int(params.min_area_px))
-        mask = morphology.remove_small_holes(mask, area_threshold=int(params.hole_area_px) if int(params.hole_area_px) > 0 else int(2 * params.min_area_px))
-        mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
-        labels = measure.label(mask)
-    else:
-        # 1) Watershed vrací "instance labels" (každý objekt má své číslo)
-        grad = filters.sobel(den)
-        labels = segmentation.watershed(grad, markers, mask=base_mask)
+            # 3) Reindex – přečísluje labely na 1..N (zůstává instance segmentation)
+            labels = measure.label(labels, background=0)
 
-        # 2) Odstraníme malé oblasti, ale POZOR:
-        #    remove_small_objects umí pracovat i s int label mapou.
-        labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
-
-        # 3) Reindex – přečísluje labely na 1..N (zůstává instance segmentation)
-        labels = measure.label(labels, background=0)
-
-        # 4) Maska je jen derivát (True/False), ale labels si necháváme!
-        mask = labels > 0
+            # 4) Maska je jen derivát (True/False), ale labels si necháváme!
+            mask = labels > 0
 
         # !!! DŮLEŽITÉ !!!
         # Closing tady neděláme, protože by spojoval blízké bakterie do jedné.
 
-    # Optional closing to ensure "solid" bacteria shapes
-    if int(params.closing_radius_px) > 0:
-        mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
-        labels = measure.label(mask)
+        # Optional closing to ensure "solid" bacteria shapes
+        if int(params.closing_radius_px) > 0:
+            mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
+            labels = measure.label(mask)
 
     props = measure.regionprops(labels)
     objects: list[dict[str, Any]] = []
@@ -283,9 +287,9 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         "debug": dbg,
         "count_bacteria": count,
         "coverage_mask": coverage,
-        "threshold_otsu": thr_otsu,
-        "threshold_low": thr_low,
-        "markers_found": int(markers.max()),
+        "threshold_otsu": float(dbg.get("thr_otsu", 0.0)),
+        "threshold_low": float(dbg.get("thr_low", 0.0)),
+        "markers_found": int(dbg.get("n_markers", markers.max() if "markers" in locals() else 0)),
         "area_frequencies": {"n_bins": int(params.area_bins), "bins": bins_out},
     }
 
