@@ -1171,6 +1171,17 @@ class BatchController:
                     peak_min_distance_px=int(afm_params.get("peak_min_distance_px", 6)),
                     low_mask_factor=float(afm_params.get("low_mask_factor", 0.65)),
                     max_markers=int(afm_params.get("max_markers", 5000)),
+                    # Contour-first params
+                    use_contours=bool(afm_params.get("use_contours", True)),
+                    edge_sigma=float(afm_params.get("edge_sigma", 1.2)),
+                    canny_low=float(afm_params.get("canny_low", 0.05)),
+                    canny_high=float(afm_params.get("canny_high", 0.20)),
+                    edge_dilate_px=int(afm_params.get("edge_dilate_px", 1)),
+                    close_radius_px=int(afm_params.get("close_radius_px", 2)),
+                    fill_holes_area_px=int(afm_params.get("fill_holes_area_px", 300)),
+                    min_perimeter_px=int(afm_params.get("min_perimeter_px", 60)),
+                    min_eccentricity=float(afm_params.get("min_eccentricity", 0.70)),
+                    min_solidity=float(afm_params.get("min_solidity", 0.50)),
                 )
 
                 res = segment_bacteria_afm(roi_img, pp)
@@ -1196,7 +1207,7 @@ class BatchController:
                 ax.set_axis_off()
                 contours = measure.find_contours(mask.astype(np.float32), 0.5)
                 for c in contours:
-                    ax.plot(c[:, 1], c[:, 0], linewidth=1.2)
+                    ax.plot(c[:, 1], c[:, 0], linewidth=1.0, color='red')
                 fig.tight_layout(pad=0)
                 fig.savefig(overlay_path, dpi=220)
                 plt.close(fig)

@@ -19,8 +19,19 @@ class AfmBacteriaSegParams:
     # Marker-based watershed (LoG seeds)
     log_sigma: float = 2.0
     peak_min_distance_px: int = 6
-    low_mask_factor: float = 0.65   # mask = den > (otsu * factor)
+    low_mask_factor: float = 0.45   # mask = den > (otsu * factor)
     max_markers: int = 5000
+        # Contour-first segmentation (edge -> close -> fill -> contours)
+    use_contours: bool = True          # default: použijeme nový přístup
+    edge_sigma: float = 1.2            # rozmazání před hranami
+    canny_low: float = 0.05            # dolní práh (0..1)
+    canny_high: float = 0.20           # horní práh (0..1)
+    edge_dilate_px: int = 1            # ztloustnutí hran (pomáhá uzavřít)
+    close_radius_px: int = 2           # closing pro uzavření smyček
+    fill_holes_area_px: int = 300      # vyplnit malé díry
+    min_perimeter_px: int = 60         # vyhodit malé rozpadlé kontury
+    min_eccentricity: float = 0.70     # tyčinky mají vyšší excentricitu
+    min_solidity: float = 0.50         # vyhodit hodně “děravé” tvary
 
 
 def _normalize01(img: np.ndarray) -> np.ndarray:
@@ -33,6 +44,11 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
 
 
 def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
+        # Prefer contour-first for dense bacterial fields (better UX: closed contours)
+    if getattr(params, "use_contours", False):
+        labels, mask, dbg = segment_bacteria_contours_afm(img, params)
+        # dál ať běží stejný export/props jako doposud
+        # (jen si do summary přidej dbg)
     from scipy import ndimage as ndi
     from skimage import exposure, filters, morphology, measure, segmentation, feature
 
@@ -71,7 +87,7 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
     peaks = feature.peak_local_max(
         log_resp,
         min_distance=int(params.peak_min_distance_px),
-        threshold_abs=float(np.percentile(log_resp[base_mask], 70)) if np.any(base_mask) else 0.0,
+        threshold_abs=float(np.percentile(log_resp[base_mask], 85)) if np.any(base_mask) else 0.0,
         labels=base_mask.astype(np.uint8),
         num_peaks=int(params.max_markers),
     )
@@ -89,17 +105,22 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
         labels = measure.label(mask)
     else:
-        # Watershed on gradient (best practice: use gradient to follow ridges/boundaries)
+        # 1) Watershed vrací "instance labels" (každý objekt má své číslo)
         grad = filters.sobel(den)
         labels = segmentation.watershed(grad, markers, mask=base_mask)
 
-        # Post-filter: remove tiny fragments & relabel
-        # (watershed sometimes creates tiny regions)
+        # 2) Odstraníme malé oblasti, ale POZOR:
+        #    remove_small_objects umí pracovat i s int label mapou.
         labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
-        labels = measure.label(labels > 0)
 
-        # Reconstruct final mask from labels
+        # 3) Reindex – přečísluje labely na 1..N (zůstává instance segmentation)
+        labels = measure.label(labels, background=0)
+
+        # 4) Maska je jen derivát (True/False), ale labels si necháváme!
         mask = labels > 0
+
+        # !!! DŮLEŽITÉ !!!
+        # Closing tady neděláme, protože by spojoval blízké bakterie do jedné.
 
     # Optional closing to ensure "solid" bacteria shapes
     if int(params.closing_radius_px) > 0:
@@ -139,6 +160,7 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         } for i in range(hist.size)]
 
     summary = {
+        "debug": dbg,
         "count_bacteria": count,
         "coverage_mask": coverage,
         "threshold_otsu": thr_otsu,
@@ -159,3 +181,93 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
     }
 
     return {"mask": mask, "labels": labels, "objects": objects, "summary": summary, "audit": audit}
+def segment_bacteria_contours_afm(img: np.ndarray, params: AfmBacteriaSegParams):
+    """
+    Contour-first segmentation:
+    1) normalize + background subtract + denoise
+    2) Canny edges
+    3) dilate + closing (make loops)
+    4) fill holes -> binary mask
+    5) label + filter by shape (area/perimeter/eccentricity/solidity)
+    Returns: labels (int), mask (bool), debug dict
+    """
+    from scipy import ndimage as ndi
+    from skimage import exposure, filters, morphology, measure, feature
+
+    img01 = _normalize01(img)
+    if params.invert:
+        img01 = 1.0 - img01
+
+    # background flatten (stejně jako dřív)
+    bg = ndi.gaussian_filter(img01, sigma=float(params.bg_sigma))
+    flat = img01 - bg
+    flat = exposure.rescale_intensity(flat, in_range="image", out_range=(0.0, 1.0))
+
+    # denoise
+    den = ndi.gaussian_filter(flat, sigma=float(params.edge_sigma))
+
+    # edges
+    edges = feature.canny(
+        den,
+        sigma=0.0,  # už jsme rozmazali přes edge_sigma
+        low_threshold=float(params.canny_low),
+        high_threshold=float(params.canny_high),
+    )
+
+    # make edges thicker + close gaps => more closed loops
+    if int(params.edge_dilate_px) > 0:
+        edges = morphology.binary_dilation(edges, morphology.disk(int(params.edge_dilate_px)))
+
+    if int(params.close_radius_px) > 0:
+        edges = morphology.binary_closing(edges, morphology.disk(int(params.close_radius_px)))
+
+    # fill holes inside closed loops -> candidate objects
+    filled = ndi.binary_fill_holes(edges)
+
+    # remove tiny speckles
+    filled = morphology.remove_small_objects(filled, min_size=int(params.min_area_px))
+
+    # fill small holes inside objects
+    filled = morphology.remove_small_holes(filled, area_threshold=int(params.fill_holes_area_px))
+
+    # label objects
+    labels = measure.label(filled)
+
+    # shape filtering
+    keep = np.zeros(labels.max() + 1, dtype=bool)
+    props = measure.regionprops(labels)
+
+    for p in props:
+        area = float(p.area)
+        perim = float(p.perimeter) if hasattr(p, "perimeter") else 0.0
+        ecc = float(getattr(p, "eccentricity", 0.0))
+        sol = float(getattr(p, "solidity", 0.0))
+
+        if area < float(params.min_area_px):
+            continue
+        if perim < float(params.min_perimeter_px):
+            continue
+        if ecc < float(params.min_eccentricity):
+            continue
+        if sol < float(params.min_solidity):
+            continue
+
+        keep[p.label] = True
+
+    # build filtered labels
+    out = np.zeros_like(labels, dtype=np.int32)
+    new_id = 0
+    for lab in range(1, labels.max() + 1):
+        if keep[lab]:
+            new_id += 1
+            out[labels == lab] = new_id
+
+    mask = out > 0
+
+    debug = {
+        "edges_coverage": float(edges.mean()),
+        "filled_coverage": float(filled.mean()),
+        "kept_objects": int(new_id),
+    }
+    return out, mask, debug
+
