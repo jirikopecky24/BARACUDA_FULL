@@ -377,15 +377,18 @@ class ShellMainWindow(QMainWindow):
 
     def _on_run_batch(self) -> None:
         if not self.batch.preview_done:
-            self.log_panel.log("Run Batch blocked: Preview Gate has not passed.")
-            return
+            # Optical Tweezers require Preview Gate PASS (hard rule).
+            # AFM does NOT use Preview Gate.
+            if self._active_device_id == "optical_tweezers":
+                self.log_panel.log("Run Batch blocked: Preview Gate has not passed.")
+                return
         if self._device_panel is None:
             self.log_panel.log("Run Batch: no active panel.")
             return
 
         roi = self.preview.get_roi_rect()
-        if roi is None and self._active_device_id == "optical_tweezers":
-            self.log_panel.log("Run Batch: ROI is required for Optical Tweezers.")
+        if roi is None and self._active_device_id in ("optical_tweezers", "afm"):
+            self.log_panel.log("Run Batch: ROI is required.")
             return
 
         # disable RUN on the panel if it exists
@@ -401,13 +404,38 @@ class ShellMainWindow(QMainWindow):
                 if hasattr(self._device_panel, "set_batch_progress"):
                     self._device_panel.set_batch_progress(done, total, filename, pct)  # type: ignore[attr-defined]
 
-            self.batch.run_batch(
-                device_id=self._active_device_id,
-                device_panel=self._device_panel,
-                roi_rect=roi if roi is not None else (0, 0, 0, 0),
-                dataset_set_status_fn=self.dataset.set_status,
-                progress_fn=progress_fn,
-            )
+            if self._active_device_id == "afm":
+                params = {}
+                try:
+                    params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
+                except Exception:
+                    params = {}
+
+                def progress_fn_afm(done: int, total: int, filename: str = "", pct: int = 0) -> None:
+                    self.log_panel.log(f"AFM progress: {done}/{total} {pct}%" + (f" ({filename})" if filename else ""))
+                    if hasattr(self._device_panel, "set_batch_progress"):
+                        self._device_panel.set_batch_progress(done, total, filename, pct)  # type: ignore[attr-defined]
+
+                paths = self.dataset.get_selected_paths()
+                if not paths:
+                    self.log_panel.log("AFM RUN: no selected files.")
+                    return
+
+                self.batch.run_afm_batch(
+                    file_paths=paths,
+                    roi_rect=roi,
+                    afm_params=params,
+                    dataset_set_status_fn=self.dataset.set_status,
+                    progress_fn=progress_fn_afm,
+                )
+            else:
+                self.batch.run_batch(
+                    device_id=self._active_device_id,
+                    device_panel=self._device_panel,
+                    roi_rect=roi if roi is not None else (0, 0, 0, 0),
+                    dataset_set_status_fn=self.dataset.set_status,
+                    progress_fn=progress_fn,
+                )
         except Exception as e:
             self.log_panel.log(f"Run Batch ERROR: {e!r}")
         finally:

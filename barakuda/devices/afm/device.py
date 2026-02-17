@@ -1,27 +1,80 @@
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
-
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox
 from barakuda.devices.base import DeviceSpec
 
 
-class AfmPlaceholderPanel(QWidget):
+class AfmPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        title = QLabel("AFM (placeholder)")
+
+        title = QLabel("AFM — Bacteria Segmentation")
         title.setStyleSheet("font-weight: 600;")
         layout.addWidget(title)
-        layout.addWidget(QLabel(
-            "AFM modul zatím není implementovaný.\n\n"
-            "Architektura už ho podporuje: sem přijde AFM panel + pipeline kroky."
-        ))
+
+        form = QFormLayout()
+
+        self.cb_separate = QCheckBox("Separate touching objects (watershed)")
+        self.cb_separate.setChecked(True)
+        form.addRow(self.cb_separate)
+
+        self.cb_invert = QCheckBox("Invert (bacteria are dark)")
+        self.cb_invert.setChecked(False)
+        form.addRow(self.cb_invert)
+
+        self.sp_bg = QDoubleSpinBox()
+        self.sp_bg.setRange(0.1, 1000.0)
+        self.sp_bg.setDecimals(2)
+        self.sp_bg.setValue(12.0)
+        form.addRow("Background sigma", self.sp_bg)
+
+        self.sp_smooth = QDoubleSpinBox()
+        self.sp_smooth.setRange(0.0, 50.0)
+        self.sp_smooth.setDecimals(2)
+        self.sp_smooth.setValue(1.0)
+        form.addRow("Smooth sigma", self.sp_smooth)
+
+        self.sp_min_area = QSpinBox()
+        self.sp_min_area.setRange(1, 10_000_000)
+        self.sp_min_area.setValue(120)
+        form.addRow("Min area (px)", self.sp_min_area)
+
+        self.sp_close = QSpinBox()
+        self.sp_close.setRange(0, 50)
+        self.sp_close.setValue(2)
+        form.addRow("Closing radius (px)", self.sp_close)
+
+        self.sp_holes = QSpinBox()
+        self.sp_holes.setRange(0, 10_000_000)
+        self.sp_holes.setValue(240)
+        form.addRow("Fill holes area (px)", self.sp_holes)
+
+        self.sp_bins = QSpinBox()
+        self.sp_bins.setRange(5, 200)
+        self.sp_bins.setValue(20)
+        form.addRow("Area bins (freq)", self.sp_bins)
+
+        layout.addLayout(form)
+        layout.addWidget(QLabel("ROI z Preview se použije jako výpočetní oblast."))
         layout.addStretch(1)
+
+    def get_afm_params(self) -> dict:
+        return {
+            "separate": bool(self.cb_separate.isChecked()),
+            "invert": bool(self.cb_invert.isChecked()),
+            "bg_sigma": float(self.sp_bg.value()),
+            "smooth_sigma": float(self.sp_smooth.value()),
+            "min_area_px": int(self.sp_min_area.value()),
+            "closing_radius_px": int(self.sp_close.value()),
+            "hole_area_px": int(self.sp_holes.value()),
+            "area_bins": int(self.sp_bins.value()),
+        }
 
 
 def get_device_spec() -> DeviceSpec:
     return DeviceSpec(
         device_id="afm",
         display_name="AFM",
-        create_panel=lambda: AfmPlaceholderPanel(),
+        create_panel=lambda: AfmPanel(),
     )

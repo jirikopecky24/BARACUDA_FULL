@@ -1100,3 +1100,186 @@ class BatchController:
             QApplication.processEvents()
 
         self._log("Run Batch done ✅")
+
+    def run_afm_batch(
+        self,
+        file_paths: list[Path],
+        roi_rect: tuple[int, int, int, int],
+        afm_params: dict,
+        dataset_set_status_fn: Callable[[Path, str], None],
+        progress_fn: Callable[[int, int, str, int], None],
+    ) -> None:
+        import csv
+        import json
+        import numpy as np
+        import imageio.v3 as iio
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from skimage.color import label2rgb
+        from skimage import measure
+
+        from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams, segment_bacteria_afm
+
+        total = len(file_paths)
+        progress_fn(0, total, "", 0)
+
+        # ROI
+        x, y, w, h = roi_rect
+
+        for i, p in enumerate(file_paths, start=1):
+            try:
+                dataset_set_status_fn(p, "running")
+
+                img = iio.imread(p)
+                if img.ndim == 3:
+                    img = img[..., 0]
+                img = np.asarray(img, dtype=np.float32)
+
+                H, W = int(img.shape[0]), int(img.shape[1])
+                # clamp ROI
+                x0 = max(0, min(int(x), W - 1))
+                y0 = max(0, min(int(y), H - 1))
+                w0 = max(1, min(int(w), W - x0))
+                h0 = max(1, min(int(h), H - y0))
+
+                roi_img = img[y0:y0 + h0, x0:x0 + w0]
+
+                cfg = {
+                    "device": "afm",
+                    "method": "BACTERIA_SEGMENT",
+                    "roi_rect": [x0, y0, w0, h0],
+                    "params": afm_params,
+                }
+
+                run = self.run_manager.create_run(input_path=p, config=cfg)
+                run_dir = run.run_dir
+                stem = p.stem
+
+                pp = AfmBacteriaSegParams(
+                    bg_sigma=float(afm_params.get("bg_sigma", 12.0)),
+                    smooth_sigma=float(afm_params.get("smooth_sigma", 1.0)),
+                    min_area_px=int(afm_params.get("min_area_px", 120)),
+                    closing_radius_px=int(afm_params.get("closing_radius_px", 2)),
+                    hole_area_px=int(afm_params.get("hole_area_px", 240)),
+                    separate=bool(afm_params.get("separate", True)),
+                    invert=bool(afm_params.get("invert", False)),
+                    area_bins=int(afm_params.get("area_bins", 20)),
+                )
+
+                res = segment_bacteria_afm(roi_img, pp)
+                mask = res["mask"]
+                labels = res["labels"]
+
+                # ---- artifacts ----
+                mask_path = run_dir / f"{stem}_mask.png"
+                labels_path = run_dir / f"{stem}_labels.png"
+                overlay_path = run_dir / f"{stem}_overlay.png"
+                objects_csv = run_dir / f"{stem}_objects.csv"
+                summary_json = run_dir / f"{stem}_summary.json"
+                area_hist_png = run_dir / f"{stem}_area_hist.png"
+
+                iio.imwrite(mask_path, (mask.astype(np.uint8) * 255))
+                labels_rgb = (label2rgb(labels, bg_label=0) * 255).astype(np.uint8)
+                iio.imwrite(labels_path, labels_rgb)
+
+                # overlay with smooth contours (subpixel) -> no blocky squares
+                fig = plt.figure(figsize=(6, 6))
+                ax = fig.add_subplot(1, 1, 1)
+                ax.imshow(roi_img, cmap="gray")
+                ax.set_axis_off()
+                contours = measure.find_contours(mask.astype(np.float32), 0.5)
+                for c in contours:
+                    ax.plot(c[:, 1], c[:, 0], linewidth=1.2)
+                fig.tight_layout(pad=0)
+                fig.savefig(overlay_path, dpi=220)
+                plt.close(fig)
+
+                # objects.csv
+                with objects_csv.open("w", encoding="utf-8", newline="") as f:
+                    wcsv = csv.writer(f)
+                    wcsv.writerow(["label", "area_px", "centroid_x_px", "centroid_y_px", "perimeter_px", "eccentricity", "solidity"])
+                    for o in res["objects"]:
+                        wcsv.writerow([
+                            o["label"], o["area_px"],
+                            f"{o['centroid_x_px']:.6f}", f"{o['centroid_y_px']:.6f}",
+                            f"{o['perimeter_px']:.6f}", f"{o['eccentricity']:.6f}", f"{o['solidity']:.6f}",
+                        ])
+
+                # summary.json (audit-first + ROI)
+                payload = {
+                    "summary": res["summary"],
+                    "audit": res["audit"],
+                    "roi_rect": [x0, y0, w0, h0],
+                    "source_image": p.name,
+                }
+                summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                # frequencies plot (četnosti)
+                bins = res["summary"]["area_frequencies"]["bins"]
+                if bins:
+                    xs = [0.5 * (b["bin_lo"] + b["bin_hi"]) for b in bins]
+                    ys = [b["count"] for b in bins]
+                    fig = plt.figure(figsize=(7, 4))
+                    ax = fig.add_subplot(1, 1, 1)
+                    ax.plot(xs, ys)
+                    ax.set_xlabel("area [px]")
+                    ax.set_ylabel("count")
+                    ax.set_title(f"Area frequencies (n={res['summary']['count_bacteria']})")
+                    fig.tight_layout()
+                    fig.savefig(area_hist_png, dpi=180)
+                    plt.close(fig)
+
+                # bundle results.csv
+                results_csv = run_dir / f"{stem}_results.csv"
+                with results_csv.open("w", encoding="utf-8", newline="") as out:
+                    out.write("# [Metadata]\n")
+                    out.write("key,value\n")
+                    out.write(f"device,afm\n")
+                    out.write(f"method,BACTERIA_SEGMENT\n")
+                    out.write(f"roi_rect,{json.dumps([x0,y0,w0,h0])}\n")
+                    out.write(f"count_bacteria,{res['summary']['count_bacteria']}\n")
+                    out.write("\n# [Summary]\n")
+                    out.write(json.dumps(res["summary"], ensure_ascii=False, indent=2))
+                    out.write("\n\n# [Objects]\n")
+                    out.write(objects_csv.read_text(encoding="utf-8"))
+
+                # bundle results.xlsx (Metadata + Summary + Objects)
+                try:
+                    from openpyxl import Workbook
+                    wb = Workbook()
+                    ws_m = wb.active
+                    ws_m.title = "Metadata"
+                    ws_m.append(["key", "value"])
+                    ws_m.append(["device", "afm"])
+                    ws_m.append(["method", "BACTERIA_SEGMENT"])
+                    ws_m.append(["roi_rect", json.dumps([x0, y0, w0, h0])])
+                    for k, v in res["audit"]["params"].items():
+                        ws_m.append([f"param.{k}", str(v)])
+
+                    ws_s = wb.create_sheet("Summary")
+                    ws_s.append(["key", "value"])
+                    for k, v in res["summary"].items():
+                        ws_s.append([k, json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)])
+
+                    ws_o = wb.create_sheet("Objects")
+                    with objects_csv.open("r", encoding="utf-8") as f:
+                        for line in f.read().splitlines():
+                            ws_o.append(line.split(","))
+
+                    wb.save(run_dir / f"{stem}_results.xlsx")
+                except Exception as e:
+                    self._log(f"WARN: AFM XLSX export failed ({p.name}): {e!r}")
+
+                dataset_set_status_fn(p, "done")
+                self._log(f"OK AFM: {p.name} -> {run.run_id} (count={res['summary']['count_bacteria']})")
+
+            except Exception as e:
+                dataset_set_status_fn(p, "failed")
+                self._log(f"ERROR AFM: {p.name}: {e!r}")
+
+            pct = int(round(100.0 * i / max(1, total)))
+            progress_fn(i, total, p.name, pct)
+
+        self._log("Run Batch done ✅")
+```
