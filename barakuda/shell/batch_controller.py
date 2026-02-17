@@ -7,6 +7,13 @@ from typing import Any, Dict, Optional, Callable
 import csv
 import json
 import time
+import numpy as np
+import imageio.v3 as iio
+from skimage.color import label2rgb
+from skimage import measure
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from PyQt6.QtWidgets import QApplication
 
@@ -1088,8 +1095,8 @@ class BatchController:
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
 
-                dataset_set_status_fn(file_path, "done")
-                self._log(f"OK: {file_path.name} -> {result.run_id}")
+                except Exception as e:
+                    self._log(f"WARN: XLSX export failed ({file_path.name}): {e!r}")
 
             except Exception as e:
                 dataset_set_status_fn(file_path, "failed")
@@ -1098,5 +1105,158 @@ class BatchController:
             done += 1
             progress_fn(done, len(ok_paths), file_path.name, 100)
             QApplication.processEvents()
+
+    def run_afm_batch(
+        self,
+        file_paths: list[Path],
+        method: str,
+        params: dict,
+        dataset_set_status_fn,
+        progress_fn,
+    ) -> None:
+        from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams, segment_bacteria_afm
+
+        total = len(file_paths)
+        done = 0
+
+        for p in file_paths:
+            try:
+                img = iio.imread(p)
+                if img.ndim == 3:
+                    img = img[..., 0]
+                img = np.asarray(img, dtype=np.float32)
+
+                cfg = {
+                    "device": "afm",
+                    "method": method,
+                    "params": params,
+                }
+                result = self.run_manager.create_run(input_path=p, config=cfg)
+                run_dir = result.run_dir
+                stem = p.stem
+
+                if method != "BACTERIA_SEGMENT":
+                    raise ValueError(f"Unknown AFM method: {method}")
+
+                pp = AfmBacteriaSegParams(
+                    bg_sigma=float(params.get("bg_sigma", 12.0)),
+                    smooth_sigma=float(params.get("smooth_sigma", 1.0)),
+                    min_area_px=int(params.get("min_area_px", 120)),
+                    closing_radius_px=int(params.get("closing_radius_px", 2)),
+                    hole_area_px=int(params.get("hole_area_px", 240)),
+                    separate=bool(params.get("separate", True)),
+                    invert=bool(params.get("invert", False)),
+                    area_bins=int(params.get("area_bins", 20)),
+                )
+
+                res = segment_bacteria_afm(img, pp)
+
+                mask = res["mask"]
+                labels = res["labels"]
+
+                # ---- save artifacts ----
+                mask_path = run_dir / f"{stem}_mask.png"
+                labels_path = run_dir / f"{stem}_labels.png"
+                overlay_path = run_dir / f"{stem}_overlay.png"
+                objects_csv = run_dir / f"{stem}_objects.csv"
+                summary_json = run_dir / f"{stem}_summary.json"
+                area_hist_png = run_dir / f"{stem}_area_hist.png"
+
+                iio.imwrite(mask_path, (mask.astype(np.uint8) * 255))
+                labels_rgb = (label2rgb(labels, bg_label=0) * 255).astype(np.uint8)
+                iio.imwrite(labels_path, labels_rgb)
+
+                # overlay with smooth contours
+                fig = plt.figure(figsize=(6, 6))
+                ax = fig.add_subplot(1, 1, 1)
+                ax.imshow(img, cmap="gray")
+                ax.set_axis_off()
+                contours = measure.find_contours(mask.astype(np.float32), 0.5)
+                for c in contours:
+                    ax.plot(c[:, 1], c[:, 0], linewidth=1.2)
+                fig.tight_layout(pad=0)
+                fig.savefig(overlay_path, dpi=220)
+                plt.close(fig)
+
+                # objects.csv
+                with objects_csv.open("w", encoding="utf-8", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(["label", "area_px", "centroid_x_px", "centroid_y_px", "perimeter_px", "eccentricity", "solidity"])
+                    for o in res["objects"]:
+                        w.writerow([
+                            o["label"], o["area_px"],
+                            f"{o['centroid_x_px']:.6f}", f"{o['centroid_y_px']:.6f}",
+                            f"{o['perimeter_px']:.6f}", f"{o['eccentricity']:.6f}", f"{o['solidity']:.6f}",
+                        ])
+
+                # summary.json (audit-first)
+                summary_payload = {"summary": res["summary"], "audit": res["audit"]}
+                summary_json.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                # frequencies plot
+                bins = res["summary"]["area_frequencies"]["bins"]
+                if bins:
+                    xs = [0.5 * (b["bin_lo"] + b["bin_hi"]) for b in bins]
+                    ys = [b["count"] for b in bins]
+                    fig = plt.figure(figsize=(7, 4))
+                    ax = fig.add_subplot(1, 1, 1)
+                    ax.plot(xs, ys)
+                    ax.set_xlabel("area [px]")
+                    ax.set_ylabel("count")
+                    ax.set_title(f"Area frequencies (n={res['summary']['count_bacteria']})")
+                    fig.tight_layout()
+                    fig.savefig(area_hist_png, dpi=180)
+                    plt.close(fig)
+
+                # ---- bundle results.csv + results.xlsx ----
+                results_csv = run_dir / f"{stem}_results.csv"
+                with results_csv.open("w", encoding="utf-8", newline="") as out:
+                    out.write("# [Metadata]\n")
+                    out.write("key,value\n")
+                    out.write(f"device,afm\n")
+                    out.write(f"method,{method}\n")
+                    out.write(f"count_bacteria,{res['summary']['count_bacteria']}\n")
+                    out.write("\n# [Summary]\n")
+                    out.write(json.dumps(res["summary"], ensure_ascii=False, indent=2))
+                    out.write("\n\n# [Objects]\n")
+                    out.write(objects_csv.read_text(encoding="utf-8"))
+
+                # xlsx: Metadata + Summary + Objects
+                try:
+                    from openpyxl import Workbook
+                    wb = Workbook()
+
+                    ws_m = wb.active
+                    ws_m.title = "Metadata"
+                    ws_m.append(["key", "value"])
+                    ws_m.append(["device", "afm"])
+                    ws_m.append(["method", method])
+                    for k, v in res["audit"]["params"].items():
+                        ws_m.append([f"param.{k}", str(v)])
+
+                    ws_s = wb.create_sheet("Summary")
+                    ws_s.append(["key", "value"])
+                    for k, v in res["summary"].items():
+                        ws_s.append([k, json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)])
+
+                    ws_o = wb.create_sheet("Objects")
+                    # copy csv into sheet
+                    with objects_csv.open("r", encoding="utf-8") as f:
+                        for line in f.read().splitlines():
+                            ws_o.append(line.split(","))
+
+                    wb.save(run_dir / f"{stem}_results.xlsx")
+                except Exception as e:
+                    self._log(f"WARN: AFM XLSX export failed ({p.name}): {e!r}")
+
+                dataset_set_status_fn(p, "done")
+                self._log(f"OK AFM: {p.name} -> {result.run_id} (count={res['summary']['count_bacteria']})")
+
+            except Exception as e:
+                dataset_set_status_fn(p, "failed")
+                self._log(f"ERROR AFM: {p.name}: {e!r}")
+
+            done += 1
+            progress_fn(done, total, p.name)
 
         self._log("Run Batch done ✅")

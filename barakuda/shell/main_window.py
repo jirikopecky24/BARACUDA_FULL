@@ -221,6 +221,12 @@ class ShellMainWindow(QMainWindow):
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
+        if self._active_device_id == "afm":
+            try:
+                self._device_panel.run_clicked.connect(self._on_run_afm)  # type: ignore[attr-defined]
+            except Exception as e:
+                self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
+
         self.log_panel.log(f"Device selected: {spec.display_name}")
 
         # Top-bar method selector (device-specific)
@@ -249,6 +255,16 @@ class ShellMainWindow(QMainWindow):
                     pass
                 self.method_combo.currentIndexChanged.connect(_on_method_changed)
 
+            finally:
+                self.method_combo.blockSignals(False)
+
+        elif self._active_device_id == "afm":
+            self.method_combo.blockSignals(True)
+            try:
+                self.method_combo.clear()
+                self.method_combo.addItem("BACTERIA_SEGMENT", "BACTERIA_SEGMENT")
+                self.method_combo.setCurrentIndex(0)
+                self.method_combo.setVisible(True)
             finally:
                 self.method_combo.blockSignals(False)
         else:
@@ -426,3 +442,41 @@ class ShellMainWindow(QMainWindow):
                     self.preview.set_after_from_file(after_path)
                 except Exception:
                     pass
+
+    def _on_run_afm(self) -> None:
+        if self._device_panel is None:
+            self.log_panel.log("AFM RUN: no active panel.")
+            return
+
+        paths = self.dataset.get_selected_paths()
+        if not paths:
+            self.log_panel.log("AFM RUN: no selected files.")
+            return
+
+        # Mark as running
+        for p in paths:
+            self.dataset.set_status(p, "running")
+
+        method = str(self.method_combo.currentData() or "BACTERIA_SEGMENT")
+
+        try:
+            params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
+
+            def progress_fn(done: int, total: int, filename: str = "") -> None:
+                pct = int(round(100.0 * done / max(1, total)))
+                self.log_panel.log(f"AFM progress: {done}/{total} {pct}%" + (f" ({filename})" if filename else ""))
+                if hasattr(self._device_panel, "set_progress"):
+                    self._device_panel.set_progress(pct)  # type: ignore[attr-defined]
+
+            self.batch.run_afm_batch(
+                file_paths=paths,
+                method=method,
+                params=params,
+                dataset_set_status_fn=self.dataset.set_status,
+                progress_fn=progress_fn,
+            )
+
+        except Exception as e:
+            self.log_panel.log(f"AFM RUN ERROR: {e!r}")
+            for p in paths:
+                self.dataset.set_status(p, "failed")
