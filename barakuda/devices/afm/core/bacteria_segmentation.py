@@ -66,10 +66,9 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     from skimage import filters, exposure, morphology, measure, segmentation, feature
 
     # --- ensure grayscale 2D ---
+    # --- ensure grayscale 2D ---
     if img.ndim == 3:
-        img = (img[..., 0].astype(np.float32) * 0.299 +
-               img[..., 1].astype(np.float32) * 0.587 +
-               img[..., 2].astype(np.float32) * 0.114)
+        img = img[..., 0]
 
     img01 = _normalize01(img)
     if params.invert:
@@ -142,7 +141,8 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     )
 
     # 7) Remove small instances and reindex 1..N
-    labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
+    if labels.max() > 1:
+        labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
     labels = measure.label(labels, background=0)
 
     mask = labels > 0
@@ -154,6 +154,9 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
         "count": int(labels.max()),
         "mode": "watershed",
     }
+    debug["n_markers"] = int(markers.max()) if "markers" in locals() else 0
+    debug["labels_max"] = int(labels.max()) if labels is not None else 0
+    
     return labels.astype(np.int32), mask, debug
 
 
