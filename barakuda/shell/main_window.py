@@ -221,6 +221,14 @@ class ShellMainWindow(QMainWindow):
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
+        elif self._active_device_id == "afm":
+            try:
+                # Wire the Run button from AfmPanel
+                if hasattr(self._device_panel, "run_batch_clicked"):
+                    self._device_panel.run_batch_clicked.connect(self._on_run_batch)  # type: ignore[attr-defined]
+            except Exception as e:
+                self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
+
         self.log_panel.log(f"Device selected: {spec.display_name}")
 
         # Top-bar method selector (device-specific)
@@ -376,6 +384,48 @@ class ShellMainWindow(QMainWindow):
     # ---------------- run batch ----------------
 
     def _on_run_batch(self) -> None:
+        self.log_panel.log(f"RUN pressed for device: {self._active_device_id}")
+
+        if self._active_device_id == "afm":
+            roi = self.preview.get_roi_rect()
+            if roi is None:
+                self.log_panel.log("AFM RUN: ROI is required.")
+                return
+
+            paths = self.dataset.get_selected_paths()
+            if not paths:
+                self.log_panel.log("AFM RUN: no selected files.")
+                return
+
+            params = {}
+            try:
+                params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+            # Disable UI if possible
+            if hasattr(self._device_panel, 'set_batch_running'):
+                 self._device_panel.set_batch_running(True) # type: ignore[attr-defined]
+
+            def progress_fn_afm(done: int, total: int, filename: str = "", pct: int = 0) -> None:
+                self.log_panel.log(f"AFM progress: {done}/{total} {pct}%" + (f" ({filename})" if filename else ""))
+                if hasattr(self._device_panel, "set_batch_progress"):
+                    self._device_panel.set_batch_progress(done, total, filename, pct)  # type: ignore[attr-defined]
+
+            try:
+                self.batch.run_afm_batch(
+                    file_paths=paths,
+                    roi_rect=roi,
+                    afm_params=params,
+                    dataset_set_status_fn=self.dataset.set_status,
+                    progress_fn=progress_fn_afm,
+                )
+            except Exception as e:
+                self.log_panel.log(f"AFM Batch ERROR: {e!r}")
+            finally:
+                if hasattr(self._device_panel, 'set_batch_running'):
+                     self._device_panel.set_batch_running(False) # type: ignore[attr-defined]
+            return
         if not self.batch.preview_done:
             # Optical Tweezers require Preview Gate PASS (hard rule).
             # AFM does NOT use Preview Gate.

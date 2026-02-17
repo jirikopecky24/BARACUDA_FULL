@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton
 from barakuda.devices.base import DeviceSpec
 
 
 class AfmPanel(QWidget):
+    run_batch_clicked = pyqtSignal()
+
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
@@ -57,6 +60,11 @@ class AfmPanel(QWidget):
 
         layout.addLayout(form)
         layout.addWidget(QLabel("ROI z Preview se použije jako výpočetní oblast."))
+        
+        self.btn_run = QPushButton("Spustit AFM Batch")
+        self.btn_run.clicked.connect(self.run_batch_clicked.emit)
+        layout.addWidget(self.btn_run)
+        
         layout.addStretch(1)
 
     def get_afm_params(self) -> dict:
