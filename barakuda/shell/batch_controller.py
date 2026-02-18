@@ -1132,7 +1132,8 @@ class BatchController:
             try:
                 dataset_set_status_fn(p, "running")
 
-                img = iio.imread(p)
+                img_orig = iio.imread(p)
+                img = img_orig
                 if img.ndim == 3:
                     if img.shape[-1] >= 3:
                         img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
@@ -1148,6 +1149,7 @@ class BatchController:
                 h0 = max(1, min(int(h), H - y0))
 
                 roi_img = img[y0:y0 + h0, x0:x0 + w0]
+                roi_img_orig = img_orig[y0:y0 + h0, x0:x0 + w0]
 
                 cfg = {
                     "device": "afm",
@@ -1178,52 +1180,71 @@ class BatchController:
                 labels_rgb = (label2rgb(labels, bg_label=0) * 255).astype(np.uint8)
                 iio.imwrite(labels_path, labels_rgb)
 
-                # overlay with smooth contours (subpixel) -> no blocky squares
-                fig = plt.figure(figsize=(6, 6))
-                ax = fig.add_subplot(1, 1, 1)
-                ax.imshow(roi_img, cmap="gray")
-                ax.set_axis_off()
-                
-                # Render only contours (red), no fill
-                from skimage.segmentation import find_boundaries
-                if labels.max() > 0:
-                    # boundary mask for all labels
-                    bounds = find_boundaries(labels, mode="thick")
-                    # plot semi-transparent red over boundaries? 
-                    # Actually, matplotlib plot is better for vectors, but find_boundaries gives raster.
-                    # Let's use contour finding for vector smoothness if possible, OR raster overlay.
-                    # User suggested: "bound = segmentation.find_boundaries(labels, mode='outer')"
-                    
-                    # PREFERRED USER METHOD:
-                    # overlay_rgb[bound] = [255, 0, 0] 
-                    # But we are using matplotlib here to save.
-                    # Let's stick to matplotlib contours for consistency with previous step if it works well,
-                    # OR switch to direct array manipulation as user hinted.
-                    # "Teď už máš labels... Do render části... dej princip: background=šedotón, kontury=červené"
-                    
-                    contours = measure.find_contours(mask.astype(np.float32), 0.5)
-                    # This only finds the outer mask options.
-                    # For instance segmentation, we need contours of EACH label or find_boundaries.
-                    
-                    # Better approach for instance segmentation overlay:
-                    # Loop uniquely labels or find_boundaries.
-                    # Since we want "detect-all", showing boundaries between touching cells is crucial.
-                    # simple mask contours won't show internal lines.
-                    
-                    # 1. Plot edges of the label limits
-                    bnd = find_boundaries(labels, mode='outer')
-                    # Create a red overlay with alpha
-                    # We can use ax.imshow with a masked array
-                    
-                    # Overlay red pixels where boundary is True
-                    # Create RGBA buffer
-                    overlay_layer = np.zeros(roi_img.shape + (4,), dtype=np.float32)
-                    overlay_layer[bnd] = [1.0, 0.0, 0.0, 1.0] # Red, opaque
-                    ax.imshow(overlay_layer)
+                if getattr(pp, "save_overlay", True):
+                    # 1. Prepare base RGB image
+                    # roi_img can be (H,W) or (H,W,3) or (H,W,4)
+                    base_h, base_w = roi_img_orig.shape[:2]
+                    if roi_img_orig.ndim == 2:
+                        # Grayscale -> RGB
+                        rgb = np.stack([roi_img_orig]*3, axis=-1)
+                    elif roi_img_orig.ndim == 3:
+                        if roi_img_orig.shape[2] == 4:
+                            rgb = roi_img_orig[..., :3] # RGBA -> RGB
+                        else:
+                            rgb = roi_img_orig # RGB
+                    else:
+                        # Fallback for safe handling
+                        rgb = np.zeros((base_h, base_w, 3), dtype=roi_img_orig.dtype)
 
-                fig.tight_layout(pad=0)
-                fig.savefig(overlay_path, dpi=220)
-                plt.close(fig)
+                    # Ensure float for blending or uint8 for saving? 
+                    # Let's work in uint8 if input is uint8, or float if float.
+                    # Usually iio.imread returns uint8.
+                    if rgb.dtype != np.uint8:
+                        # normalize to 0..255
+                        rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-9) * 255.0
+                        rgb = rgb.astype(np.uint8)
+
+                    overlay = rgb.copy()
+
+                    # 2. Prepare boundaries
+                    # Find boundaries from labels (cleaner) or mask
+                    from skimage.segmentation import find_boundaries
+                    if labels.max() > 0:
+                        bounds = find_boundaries(labels, mode='outer')
+                    else:
+                        bounds = find_boundaries(mask, mode='outer')
+                    
+                    # 3. Alpha blend mask (red tint) + Solid boundaries
+                    # Alpha blend: 0.2 alpha for mask area
+                    # mask is boolean-like
+                    mask_bool = (mask > 0)
+                    
+                    # We want red tint on mask_bool
+                    # target = (1-alpha)*orig + alpha*red
+                    alpha = 0.2
+                    # Create red layer
+                    # We can do this efficiently using boolean indexing
+                    
+                    # Apply semi-transparent red fill
+                    # overlay[mask_bool] = overlay[mask_bool] * (1-alpha) + np.array([255, 0, 0]) * alpha
+                    # Beware of dtypes.
+                    
+                    overlay_float = overlay.astype(np.float32)
+                    red_color = np.array([255.0, 0.0, 0.0])
+                    
+                    # Vectorized blend for mask area
+                    # Expand mask to (H,W,1) for broadcasting
+                    m_exp = mask_bool[..., None]
+                    overlay_float = np.where(m_exp, overlay_float * (1 - alpha) + red_color * alpha, overlay_float)
+                    
+                    # 4. Solid red boundaries
+                    # boundaries is (H,W) bool
+                    b_exp = bounds[..., None]
+                    overlay_float = np.where(b_exp, red_color, overlay_float)
+                    
+                    # 5. Save
+                    overlay_u8 = np.clip(overlay_float, 0, 255).astype(np.uint8)
+                    iio.imwrite(overlay_path, overlay_u8)
 
                 # objects.csv
                 with objects_csv.open("w", encoding="utf-8", newline="") as f:
@@ -1325,7 +1346,8 @@ class BatchController:
             segment_bacteria_afm,
         )
 
-        img = iio.imread(file_path)
+        img_orig = iio.imread(file_path)
+        img = img_orig
         
         # ensure 2D grayscale for segmentation (PNG can be RGB)
         # ensure 2D grayscale for segmentation (PNG can be RGB)
@@ -1340,6 +1362,7 @@ class BatchController:
         # crop ROI (x, y, w, h)
         x, y, w, h = roi_rect
         roi_img = img[y:y+h, x:x+w]
+        roi_img_orig = img_orig[y:y+h, x:x+w]
 
         pp = self._build_afm_seg_params(afm_params)
 
@@ -1350,7 +1373,11 @@ class BatchController:
         # render overlay with red contours
         fig = plt.figure(figsize=(6, 6))
         ax = fig.add_subplot(1, 1, 1)
-        ax.imshow(roi_img, cmap="gray")
+        
+        if roi_img_orig.ndim == 2:
+            ax.imshow(roi_img_orig, cmap="gray")
+        else:
+            ax.imshow(roi_img_orig)
         ax.set_axis_off()
         
         # Instance boundaries
@@ -1396,6 +1423,8 @@ class BatchController:
             separate=_b("separate", True),
             invert=_b("invert", False),
             area_bins=_i("area_bins", 20),
+            height_aware=_b("height_aware", True),
+            save_overlay=_b("save_overlay", True),
             # Marker-based watershed params (LoG seeds)
             log_sigma=_f("log_sigma", 2.0),
             peak_min_distance_px=_i("peak_min_distance_px", 6),
