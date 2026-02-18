@@ -13,7 +13,9 @@ class AfmBacteriaSegParams:
     closing_radius_px: int = 2
     hole_area_px: int = 240
     separate: bool = True
+    height_aware: bool = True
     invert: bool = False
+    save_overlay: bool = True
     area_bins: int = 20
 
     # Marker-based watershed (LoG seeds)
@@ -75,11 +77,13 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
 
     # --- ensure grayscale 2D ---
     # --- ensure grayscale 2D ---
+    img = np.asarray(img)
     if img.ndim == 3:
+        # standard luminance
         if img.shape[-1] >= 3:
-            img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+             img = img[..., :3].mean(axis=2)
         else:
-            img = img[..., 0]
+             img = img[..., 0]
 
     img01 = _normalize01(img)
     if params.invert:
@@ -94,97 +98,118 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     den = ndi.gaussian_filter(flat, sigma=float(params.smooth_sigma))
 
     # 3) Threshold to get "bacteria mask"
-    # Robust threshold based on percentile instead of mean scaling
-    threshold = np.percentile(den, 65)
-    base_mask = den > threshold
-    thr_low = threshold # compatibility with debug dict
-    thr = threshold     # compatibility with debug dict
+    if getattr(params, "height_aware", True):
+        # NEW LOGIC (StdDev relative threshold)
+        # Background was already calculated above: bg = gaussian(img01, ...)
+        
+        # height_rel = data - bg. 
+        # Note: 'flat' at line 94 is (img01 - bg), but line 95 rescales it.
+        # We use raw difference for physical-like thresholding.
+        height_rel = img01 - bg
+        
+        # User requested: mask = height_rel > (k * std(height_rel))
+        # k = low_mask_factor (defaults to 0.0 in profile = strict > 0)
+        
+        std_val = np.std(height_rel)
+        k = float(params.low_mask_factor) 
+        
+        threshold = k * std_val
+        base_mask = height_rel > threshold
+        
+        thr = threshold
+        thr_low = threshold
+        
+        # 4a) Morphology Clean (Closing)
+        # User: "morphology clean"
+        # AFM specific closing to connect fragmented parts or smoothing
+        c_rad = int(getattr(params, "closing_radius_px", 2))
+        if c_rad > 0:
+            base_mask = morphology.binary_closing(base_mask, morphology.disk(c_rad))
+        
+    else:
+        # Legacy mode
+        threshold = np.percentile(den, 65)
+        base_mask = den > threshold
+        thr_low = threshold 
+        thr = threshold
 
-    # cleanup: remove speckles + fill small holes
+    # cleanup: remove speckles + fill small holes ON BOOLEAN MASK
+    # This avoids "Only one label was provided" warning from skier remove_small_objects on int array
     base_mask = morphology.remove_small_objects(base_mask, min_size=int(params.min_area_px))
     base_mask = morphology.remove_small_holes(base_mask, area_threshold=int(params.hole_area_px))
 
-    # 4) If separate=False, skip watershed and just label the base_mask
-    if not getattr(params, "separate", True):
+    # Check which logic to use
+    # Check which logic to use
+    do_separate = bool(getattr(params, "separate", True))
+    
+    n_markers = 0
+    if do_separate:
+        # --- SAFE watershed block ---
+        try:
+            # 4) Distance transform inside mask
+            dist = ndi.distance_transform_edt(base_mask)
+            if float(params.dist_sigma) > 0:
+                dist = ndi.gaussian_filter(dist, sigma=float(params.dist_sigma))
+
+            # 5) Seeds (markers)
+            # peak_local_max with indices=False returns a boolean mask of peaks
+            local_maxi = feature.peak_local_max(
+                dist,
+                indices=False,
+                min_distance=int(params.peak_min_distance),
+                labels=base_mask,
+                exclude_border=False
+            )
+            
+            # Label the markers
+            # ndi.label returns (labeled_array, num_features). We want the array.
+            markers = ndi.label(local_maxi)[0]
+            n_markers = int(markers.max())
+
+            # 6) Watershed
+            labels = segmentation.watershed(
+                -dist,
+                markers,
+                mask=base_mask,
+                compactness=float(getattr(params, "watershed_compactness", 0.0))
+            )
+            
+            # 7) Remove small instances + Keep instances
+            if labels.max() > 1:
+                labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
+            elif labels.max() == 1:
+                # Avoid "Only one label" warning
+                tmp_mask = labels > 0
+                tmp_mask = morphology.remove_small_objects(tmp_mask, min_size=int(params.min_area_px))
+                labels = measure.label(tmp_mask)
+
+            # ✅ IMPORTANT: keep watershed instances
+            # measure.label(labels) would treat all non-zero pixels as one binary mask and destroy instances.
+            labels = segmentation.relabel_sequential(labels)[0]
+            
+        except Exception:
+            # fallback to simple mask if watershed fails
+            labels = measure.label(base_mask)
+            labels = segmentation.relabel_sequential(labels)[0]
+            n_markers = 0
+    else:
+        # 🔵 Stable mode – no watershed (Connected Components)
+        # We use measure.label to get distinct objects from the mask
         labels = measure.label(base_mask)
-        if labels.max() > 0:
-            labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
-            labels = measure.label(labels, background=0)
+        n_markers = 0
         
-        mask = labels > 0
-        debug = {
-            "thr_otsu": float(thr),
-            "thr_low": float(thr_low),
-            "mask_coverage": float(base_mask.mean()),
-            "count": int(labels.max()),
-            "mode": "cc_no_watershed",
-        }
-        return labels.astype(np.int32), mask, debug
-
-    # 5) Distance transform inside mask
-    dist = ndi.distance_transform_edt(base_mask)
-    if float(params.dist_sigma) > 0:
-        dist = ndi.gaussian_filter(dist, sigma=float(params.dist_sigma))
-
-    # 6) Seeds (markers) from distance peaks
-    # Use percentile threshold to control number of seeds
-    dist_vals = dist[base_mask]
-    if dist_vals.size == 0:
-        out = np.zeros_like(dist, dtype=np.int32)
-        return out, (out > 0), {"reason": "empty_mask"}
-
-    seed_thr = np.percentile(dist_vals, float(params.seed_percentile))
-    peaks = feature.peak_local_max(
-        dist,
-        min_distance=int(params.peak_min_distance),
-        threshold_abs=float(seed_thr),
-        labels=base_mask,
-        exclude_border=False,
-    )
-
-    markers = np.zeros_like(dist, dtype=np.int32)
-    for i, (r, c) in enumerate(peaks, start=1):
-        markers[r, c] = i
-
-    n_markers = int(markers.max())
-    if n_markers < 2:
-        # fallback: at least label connected components
-        labels = measure.label(base_mask)
-        labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
-        labels = measure.label(labels, background=0)
-        mask = labels > 0
-        debug = {
-            "thr_otsu": float(thr),
-            "thr_low": float(thr_low),
-            "mask_coverage": float(base_mask.mean()),
-            "n_markers": n_markers,
-            "mode": "cc_fallback",
-        }
-        return labels.astype(np.int32), mask, debug
-
-    # 7) Watershed on negative distance (basins grow from peaks)
-    labels = segmentation.watershed(
-        -dist,
-        markers,
-        mask=base_mask,
-        compactness=float(getattr(params, "watershed_compactness", 0.0)),
-    )
-
-    # 8) Remove small instances and reindex 1..N
-    if labels.max() > 1:
-        labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
-    labels = measure.label(labels, background=0)
+    labels = labels.astype(np.int32)
 
     mask = labels > 0
     debug = {
         "thr_otsu": float(thr),
         "thr_low": float(thr_low),
         "mask_coverage": float(base_mask.mean()),
-        "n_markers": int(np.max(markers)),
+        "n_markers": n_markers,
         "count": int(labels.max()),
-        "mode": "watershed",
+        "mode": "watershed" if do_separate else "cc_no_watershed",
     }
-    debug["n_markers"] = int(markers.max()) if "markers" in locals() else 0
+    # debug["n_markers"] is already set above safely
     debug["labels_max"] = int(labels.max()) if labels is not None else 0
     
     return labels.astype(np.int32), mask, debug
