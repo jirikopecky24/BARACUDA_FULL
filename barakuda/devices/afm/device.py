@@ -261,45 +261,45 @@ class AfmPanel(QWidget):
         self.apply_afm_defaults()
 
     def apply_afm_defaults(self):
-        # 🔵 AFM DEFAULT PROFILE — BIBLE v3.0 (AFM Stable)
-        self.cb_height_aware.setChecked(True)     # AFM height normalization = ON
-        self.cb_separate.setChecked(True)         # Separate touching objects = ON
-        self.cb_save_overlay.setChecked(True)     # Save overlay = ON
-        self.cb_invert.setChecked(False)          # Invert = OFF
-        self.cb_use_contours.setChecked(False)    # Enforce height/watershed path (no contour-first)
+        # ===============================
+        # AFM DEFAULT PROFILE (Stable Manual Tuned Version)
+        # ===============================
 
-        # Main smoothing / background handling
-        self.sp_bg.setValue(12.0)                 # Background sigma
-        self.sp_smooth.setValue(1.2)              # Smooth sigma
-        self.sp_edge_sigma.setValue(1.0)          # Edge sigma
+        # Core toggles
+        self.cb_height_aware.setChecked(False)
+        self.cb_separate.setChecked(True)
+        self.cb_save_overlay.setChecked(True)
+        self.cb_invert.setChecked(False)
+        self.cb_use_contours.setChecked(False)
 
-        # Hidden Canny (kept stable, not part of BIBLE defaults)
+        # Background & smoothing
+        self.sp_bg.setValue(4.0)
+        self.sp_smooth.setValue(0.2)
+        self.sp_edge_sigma.setValue(0.5)
+
+        # Canny (hidden but keep consistent)
         self.sp_canny_low.setValue(0.05)
         self.sp_canny_high.setValue(0.20)
 
-        # Hidden duplicate close/fill (kept stable, not exposed)
+        # Hidden internal closing/fill (leave stable)
         self.sp_close_radius.setValue(2)
         self.sp_fill_holes.setValue(300)
 
-        # Morphology / filtering
-        self.sp_min_perim.setValue(10)            # Min perimeter
-        self.sp_min_ecc.setValue(0.05)            # Min eccentricity
-        self.sp_min_sol.setValue(0.20)            # Min solidity
+        # Shape filters
+        self.sp_min_perim.setValue(20)
+        self.sp_min_ecc.setValue(0.05)
+        self.sp_min_sol.setValue(0.35)
 
-        # LoG / peaks / separation
-        self.sp_log_sigma.setValue(1.4)           # LoG sigma
-        self.sp_peak_dist.setValue(5)             # Peak min distance
+        # Watershed parameters
+        self.sp_log_sigma.setValue(1.8)
+        self.sp_peak_dist.setValue(12)
+        self.sp_low_factor.setValue(0.45)  # keep internal threshold stable
 
-        # Height-threshold factor (hidden but USED in segmentation)
-        # BIBLE říká, že maska používá height threshold přes low_mask_factor,
-        # takže nedáváme 0.0 (to by threshold prakticky vypnulo).
-        self.sp_low_factor.setValue(0.45)
-
-        # Area + cleanup
-        self.sp_min_area.setValue(40)             # Min area
-        self.sp_close.setValue(1)                 # Closing radius
-        self.sp_holes.setValue(80)                # Fill holes area
-        self.sp_bins.setValue(20)                 # Area bins
+        # Object filtering
+        self.sp_min_area.setValue(40)
+        self.sp_close.setValue(1)
+        self.sp_holes.setValue(50)
+        self.sp_bins.setValue(20)
 
     def get_afm_params(self) -> dict:
         return {
