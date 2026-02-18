@@ -1214,28 +1214,14 @@ class BatchController:
                     else:
                         bounds = find_boundaries(mask, mode='outer')
                     
-                    # 3. Alpha blend mask (red tint) + Solid boundaries
-                    # Alpha blend: 0.2 alpha for mask area
-                    # mask is boolean-like
-                    mask_bool = (mask > 0)
-                    
-                    # We want red tint on mask_bool
-                    # target = (1-alpha)*orig + alpha*red
-                    alpha = 0.2
-                    # Create red layer
-                    # We can do this efficiently using boolean indexing
-                    
-                    # Apply semi-transparent red fill
-                    # overlay[mask_bool] = overlay[mask_bool] * (1-alpha) + np.array([255, 0, 0]) * alpha
-                    # Beware of dtypes.
-                    
                     overlay_float = overlay.astype(np.float32)
                     red_color = np.array([255.0, 0.0, 0.0])
                     
-                    # Vectorized blend for mask area
-                    # Expand mask to (H,W,1) for broadcasting
-                    m_exp = mask_bool[..., None]
-                    overlay_float = np.where(m_exp, overlay_float * (1 - alpha) + red_color * alpha, overlay_float)
+                    # 3. Alpha blend mask (DISABLED per user request)
+                    # We only want boundaries.
+                    # mask_bool = (mask > 0)
+                    # m_exp = mask_bool[..., None]
+                    # overlay_float = np.where(m_exp, overlay_float * (1 - alpha) + red_color * alpha, overlay_float)
                     
                     # 4. Solid red boundaries
                     # boundaries is (H,W) bool
