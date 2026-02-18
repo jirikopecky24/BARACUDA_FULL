@@ -61,6 +61,14 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
       mask (bool): labels>0
       debug (dict)
     """
+    print(
+        "[AFM SEG PARAMS]",
+        "use_watershed=", getattr(params, "use_watershed", None),
+        "log_sigma=", getattr(params, "log_sigma", None),
+        "peak_min_distance=", getattr(params, "peak_min_distance", None),
+        "low_mask_factor=", getattr(params, "low_mask_factor", None),
+        "min_area_px=", getattr(params, "min_area_px", None),
+    )
     import numpy as np
     from scipy import ndimage as ndi
     from skimage import filters, exposure, morphology, measure, segmentation, feature
