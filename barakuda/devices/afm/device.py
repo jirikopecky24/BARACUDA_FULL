@@ -161,6 +161,7 @@ class AfmPanel(QWidget):
             "min_solidity": float(self.sp_min_sol.value()),
             "log_sigma": float(self.sp_log_sigma.value()),
             "peak_min_distance_px": int(self.sp_peak_dist.value()),
+            "peak_min_distance": int(self.sp_peak_dist.value()),
             "low_mask_factor": float(self.sp_low_factor.value()),
             "min_area_px": int(self.sp_min_area.value()),
             "closing_radius_px": int(self.sp_close.value()),

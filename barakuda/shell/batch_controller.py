@@ -1134,7 +1134,10 @@ class BatchController:
 
                 img = iio.imread(p)
                 if img.ndim == 3:
-                    img = img[..., 0]
+                    if img.shape[-1] >= 3:
+                        img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+                    else:
+                        img = img[..., 0]
                 img = np.asarray(img, dtype=np.float32)
 
                 H, W = int(img.shape[0]), int(img.shape[1])
@@ -1157,37 +1160,7 @@ class BatchController:
                 run_dir = run.run_dir
                 stem = p.stem
 
-                pp = AfmBacteriaSegParams(
-                    bg_sigma=float(afm_params.get("bg_sigma", 12.0)),
-                    smooth_sigma=float(afm_params.get("smooth_sigma", 1.0)),
-                    min_area_px=int(afm_params.get("min_area_px", 120)),
-                    closing_radius_px=int(afm_params.get("closing_radius_px", 2)),
-                    hole_area_px=int(afm_params.get("hole_area_px", 240)),
-                    separate=bool(afm_params.get("separate", True)),
-                    invert=bool(afm_params.get("invert", False)),
-                    area_bins=int(afm_params.get("area_bins", 20)),
-                    # Marker-based watershed params (LoG seeds)
-                    log_sigma=float(afm_params.get("log_sigma", 2.0)),
-                    peak_min_distance_px=int(afm_params.get("peak_min_distance_px", 6)),
-                    low_mask_factor=float(afm_params.get("low_mask_factor", 0.65)),
-                    max_markers=int(afm_params.get("max_markers", 5000)),
-                    # Contour-first params
-                    use_contours=bool(afm_params.get("use_contours", True)),
-                    edge_sigma=float(afm_params.get("edge_sigma", 1.2)),
-                    canny_low=float(afm_params.get("canny_low", 0.05)),
-                    canny_high=float(afm_params.get("canny_high", 0.20)),
-                    edge_dilate_px=int(afm_params.get("edge_dilate_px", 1)),
-                    close_radius_px=int(afm_params.get("close_radius_px", 2)),
-                    fill_holes_area_px=int(afm_params.get("fill_holes_area_px", 300)),
-                    min_perimeter_px=int(afm_params.get("min_perimeter_px", 60)),
-                    min_eccentricity=float(afm_params.get("min_eccentricity", 0.70)),
-                    min_solidity=float(afm_params.get("min_solidity", 0.50)),
-                    # Watershed detect-all
-                    dist_sigma=float(afm_params.get("dist_sigma", 1.0)),
-                    seed_percentile=float(afm_params.get("seed_percentile", 75.0)),
-                    peak_min_distance=int(afm_params.get("peak_min_distance", 6)),
-                    watershed_compactness=float(afm_params.get("watershed_compactness", 0.0)),
-                )
+                pp = self._build_afm_seg_params(afm_params)
 
                 res = segment_bacteria_afm(roi_img, pp)
                 mask = res["mask"]
@@ -1355,44 +1328,20 @@ class BatchController:
         img = iio.imread(file_path)
         
         # ensure 2D grayscale for segmentation (PNG can be RGB)
+        # ensure 2D grayscale for segmentation (PNG can be RGB)
         if img.ndim == 3:
-            # simple luminance-ish conversion without extra deps
-            img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+            if img.shape[-1] >= 3:
+                # simple luminance-ish conversion without extra deps
+                img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+            else:
+                img = img[..., 0]
             img = img.astype(np.float32)
 
         # crop ROI (x, y, w, h)
         x, y, w, h = roi_rect
         roi_img = img[y:y+h, x:x+w]
 
-        pp = AfmBacteriaSegParams(
-            bg_sigma=float(afm_params.get("bg_sigma", 12.0)),
-            smooth_sigma=float(afm_params.get("smooth_sigma", 1.0)),
-            min_area_px=int(afm_params.get("min_area_px", 120)),
-            closing_radius_px=int(afm_params.get("closing_radius_px", 2)),
-            hole_area_px=int(afm_params.get("hole_area_px", 240)),
-            separate=bool(afm_params.get("separate", True)),
-            invert=bool(afm_params.get("invert", False)),
-            area_bins=int(afm_params.get("area_bins", 20)),
-            log_sigma=float(afm_params.get("log_sigma", 2.0)),
-            peak_min_distance_px=int(afm_params.get("peak_min_distance_px", 6)),
-            low_mask_factor=float(afm_params.get("low_mask_factor", 0.65)),
-            max_markers=int(afm_params.get("max_markers", 5000)),
-            use_contours=bool(afm_params.get("use_contours", True)),
-            edge_sigma=float(afm_params.get("edge_sigma", 1.2)),
-            canny_low=float(afm_params.get("canny_low", 0.05)),
-            canny_high=float(afm_params.get("canny_high", 0.20)),
-            edge_dilate_px=int(afm_params.get("edge_dilate_px", 1)),
-            close_radius_px=int(afm_params.get("close_radius_px", 2)),
-            fill_holes_area_px=int(afm_params.get("fill_holes_area_px", 300)),
-            min_perimeter_px=int(afm_params.get("min_perimeter_px", 60)),
-            min_eccentricity=float(afm_params.get("min_eccentricity", 0.70)),
-            min_solidity=float(afm_params.get("min_solidity", 0.50)),
-            # Watershed detect-all
-            dist_sigma=float(afm_params.get("dist_sigma", 1.0)),
-            seed_percentile=float(afm_params.get("seed_percentile", 75.0)),
-            peak_min_distance=int(afm_params.get("peak_min_distance", 6)),
-            watershed_compactness=float(afm_params.get("watershed_compactness", 0.0)),
-        )
+        pp = self._build_afm_seg_params(afm_params)
 
         res = segment_bacteria_afm(roi_img, pp)
         mask = res["mask"]
@@ -1425,3 +1374,51 @@ class BatchController:
         # return RGB
         return overlay_rgba[:, :, :3]
 
+    def _build_afm_seg_params(self, afm_params: dict):
+        from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams
+
+        # Helper to safely get float/int
+        def _f(key, default):
+            return float(afm_params.get(key, default))
+        
+        def _i(key, default):
+            return int(afm_params.get(key, default))
+        
+        def _b(key, default):
+            return bool(afm_params.get(key, default))
+
+        return AfmBacteriaSegParams(
+            bg_sigma=_f("bg_sigma", 12.0),
+            smooth_sigma=_f("smooth_sigma", 1.0),
+            min_area_px=_i("min_area_px", 120),
+            closing_radius_px=_i("closing_radius_px", 2),
+            hole_area_px=_i("hole_area_px", 240),
+            separate=_b("separate", True),
+            invert=_b("invert", False),
+            area_bins=_i("area_bins", 20),
+            # Marker-based watershed params (LoG seeds)
+            log_sigma=_f("log_sigma", 2.0),
+            peak_min_distance_px=_i("peak_min_distance_px", 6),
+            low_mask_factor=_f("low_mask_factor", 0.65),
+            max_markers=_i("max_markers", 5000),
+            # Contour-first params
+            use_contours=_b("use_contours", True),
+            edge_sigma=_f("edge_sigma", 1.2),
+            canny_low=_f("canny_low", 0.05),
+            canny_high=_f("canny_high", 0.20),
+            edge_dilate_px=_i("edge_dilate_px", 1),
+            close_radius_px=_i("close_radius_px", 2),
+            fill_holes_area_px=_i("fill_holes_area_px", 300),
+            min_perimeter_px=_i("min_perimeter_px", 60),
+            min_eccentricity=_f("min_eccentricity", 0.70),
+            min_solidity=_f("min_solidity", 0.50),
+            # Watershed detect-all
+            dist_sigma=_f("dist_sigma", 1.0),
+            seed_percentile=_f("seed_percentile", 75.0),
+            # Fallback logic for peak_min_distance
+            # If "peak_min_distance" is present, use it. 
+            # If not, check "peak_min_distance_px". 
+            # If neither, default to 6.
+            peak_min_distance=_i("peak_min_distance", afm_params.get("peak_min_distance_px", 6)),
+            watershed_compactness=_f("watershed_compactness", 0.0),
+        )

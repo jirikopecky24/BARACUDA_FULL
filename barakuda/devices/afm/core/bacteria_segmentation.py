@@ -63,7 +63,7 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     """
     print(
         "[AFM SEG PARAMS]",
-        "use_watershed=", getattr(params, "use_watershed", None),
+        "separate=", getattr(params, "separate", None),
         "log_sigma=", getattr(params, "log_sigma", None),
         "peak_min_distance=", getattr(params, "peak_min_distance", None),
         "low_mask_factor=", getattr(params, "low_mask_factor", None),
@@ -76,7 +76,10 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     # --- ensure grayscale 2D ---
     # --- ensure grayscale 2D ---
     if img.ndim == 3:
-        img = img[..., 0]
+        if img.shape[-1] >= 3:
+            img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+        else:
+            img = img[..., 0]
 
     img01 = _normalize01(img)
     if params.invert:
@@ -101,12 +104,29 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     base_mask = morphology.remove_small_objects(base_mask, min_size=int(params.min_area_px))
     base_mask = morphology.remove_small_holes(base_mask, area_threshold=int(params.hole_area_px))
 
-    # 4) Distance transform inside mask
+    # 4) If separate=False, skip watershed and just label the base_mask
+    if not getattr(params, "separate", True):
+        labels = measure.label(base_mask)
+        if labels.max() > 0:
+            labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
+            labels = measure.label(labels, background=0)
+        
+        mask = labels > 0
+        debug = {
+            "thr_otsu": float(thr),
+            "thr_low": float(thr_low),
+            "mask_coverage": float(base_mask.mean()),
+            "count": int(labels.max()),
+            "mode": "cc_no_watershed",
+        }
+        return labels.astype(np.int32), mask, debug
+
+    # 5) Distance transform inside mask
     dist = ndi.distance_transform_edt(base_mask)
     if float(params.dist_sigma) > 0:
         dist = ndi.gaussian_filter(dist, sigma=float(params.dist_sigma))
 
-    # 5) Seeds (markers) from distance peaks
+    # 6) Seeds (markers) from distance peaks
     # Use percentile threshold to control number of seeds
     dist_vals = dist[base_mask]
     if dist_vals.size == 0:
@@ -142,7 +162,7 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
         }
         return labels.astype(np.int32), mask, debug
 
-    # 6) Watershed on negative distance (basins grow from peaks)
+    # 7) Watershed on negative distance (basins grow from peaks)
     labels = segmentation.watershed(
         -dist,
         markers,
@@ -150,7 +170,7 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
         compactness=float(getattr(params, "watershed_compactness", 0.0)),
     )
 
-    # 7) Remove small instances and reindex 1..N
+    # 8) Remove small instances and reindex 1..N
     if labels.max() > 1:
         labels = morphology.remove_small_objects(labels, min_size=int(params.min_area_px))
     labels = measure.label(labels, background=0)
