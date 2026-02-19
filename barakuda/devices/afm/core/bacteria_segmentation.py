@@ -94,9 +94,22 @@ def compute_bacteria_edge_outline_afm(img: np.ndarray, region_mask: np.ndarray, 
     from skimage.segmentation import find_boundaries
     from skimage import restoration
 
-    # --- mask prep (for stable boundary) ---
-    m = np.asarray(region_mask).astype(bool)
+    # --- input prep ---
+    # Supports:
+    #  - bool mask (union)
+    #  - int label image (instance segmentation) -> per-object boundaries (desired "kanálek" look)
+    src = np.asarray(region_mask)
 
+    if src.dtype.kind in ("i", "u") and src.ndim == 2 and int(np.max(src)) > 0:
+        lab = src.astype(np.int32, copy=False)
+        m = lab > 0
+        # per-object boundaries (between different labels and background)
+        boundary = find_boundaries(lab, mode="outer")
+    else:
+        m = src.astype(bool)
+        boundary = find_boundaries(m, mode="outer")
+
+    # --- mask cleanup for stable geometry (applied to m, not to boundary) ---
     close_r = int(getattr(params, "closing_radius", 1))
     if close_r > 0:
         m = morphology.binary_closing(m, morphology.disk(close_r))
@@ -111,8 +124,9 @@ def compute_bacteria_edge_outline_afm(img: np.ndarray, region_mask: np.ndarray, 
         m = morphology.binary_closing(m, morphology.disk(rs))
         m = morphology.binary_opening(m, morphology.disk(1))
 
-    # strict boundary (1px)
-    boundary = find_boundaries(m, mode="outer")
+    # NOTE:
+    # boundary is computed above (either instance or union boundary).
+    # m is used below for ring/inclusive mode restriction.
 
     mode = str(getattr(params, "outline_mode", "inclusive")).strip().lower()
 
@@ -564,13 +578,13 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         },
     }
 
-    # Overlay outline should match exported mask.
-    # If rods_only is enabled, compute outline from rod_mask (rod-only overlay).
-    outline_mask = mask
-    if bool(getattr(params, "rods_only", False)) and (rod_mask is not None):
-        outline_mask = rod_mask
+    # Use instance labels for per-object outlines (matches desired "kanálek" geometry).
+    # In rod-only mode, use rod_labels so overlay corresponds to rod_mask export.
+    outline_src = labels
+    if bool(getattr(params, "rods_only", False)) and (rod_labels is not None):
+        outline_src = rod_labels
 
-    edge = compute_bacteria_edge_outline_afm(img, outline_mask, params)
+    edge = compute_bacteria_edge_outline_afm(img, outline_src, params)
 
     return {
         "mask": mask,
