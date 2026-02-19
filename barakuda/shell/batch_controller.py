@@ -1216,9 +1216,37 @@ class BatchController:
 
                     overlay = rgb.copy()
 
-                    if edge_mask is not None:
-                        overlay[edge_mask] = (255, 255, 0)
-                    
+                    # --- Ellipse-only overlay (ROD-FIT) ---
+                    from skimage import draw, morphology
+                    ell = np.zeros((overlay.shape[0], overlay.shape[1]), dtype=bool)
+
+                    rod_table = res.get("rod_table", None)
+
+                    if bool(getattr(pp, "rods_only", False)) and isinstance(rod_table, dict) and ("label" in rod_table):
+                        n = len(rod_table["label"])
+                        for k in range(n):
+                            cy = float(rod_table["centroid_y"][k])
+                            cx = float(rod_table["centroid_x"][k])
+                            maj = float(rod_table["major_axis_px"][k])
+                            mino = float(rod_table["minor_axis_px"][k])
+                            ang = float(rod_table["orientation_rad"][k])
+
+                            rr = max(1, int(round(maj / 2.0)))
+                            cc = max(1, int(round(mino / 2.0)))
+
+                            pr, pc = draw.ellipse_perimeter(
+                                int(round(cy)), int(round(cx)),
+                                rr, cc,
+                                orientation=-ang,
+                                shape=ell.shape,
+                            )
+                            ell[pr, pc] = True
+
+                    t = int(getattr(pp, "edge_thickness_px", 2))
+                    if t > 1:
+                        ell = morphology.binary_dilation(ell, morphology.disk(t - 1))
+
+                    overlay[ell] = (255, 255, 0)
                     iio.imwrite(overlay_path, overlay)
 
                 # objects.csv
@@ -1383,57 +1411,22 @@ class BatchController:
 
         overlay = base.copy()
 
-        # --- Ellipse-only overlay (publication style) ---
-        from skimage import draw, morphology, measure
+        # --- Ellipse-only overlay (ROD-FIT) ---
+        from skimage import draw, morphology
+        ell = np.zeros((overlay.shape[0], overlay.shape[1]), dtype=bool)
 
-        Hh, Ww = overlay.shape[0], overlay.shape[1]
-        ell = np.zeros((Hh, Ww), dtype=bool)
-        
-        # Need labels for fallback
-        labels = res.get("labels", None)
+        rod_table = res.get("rod_table", None)
+        rod_labels = res.get("rod_labels", None)
 
-        # Prefer rod_table if rods_only is enabled (already filtered for downstream fitting)
-        if bool(getattr(pp, "rods_only", False)) and res.get("rod_table", None):
-            for r in res.get("rod_table").get("label", []): # Iterate via index? No, rod_table is dict of arrays!
-                 # Wait, rod_table structure in bacteria_segmentation.py is:
-                 # "label": props2["label"], "area_px": ...
-                 # So it's a dict of ndarrays.
-                 pass
-
-        # Re-reading user request: 
-        # "for r in res['rod_table']:" -> implies list of dicts? 
-        # BUT bacteria_segmentation.py returns dict of arrays!
-        # "rod_table" in segment_bacteria_afm:
-        # rod_table = { "label": ..., "centroid_y": ... } -> param columns are arrays.
-        # The user provided snippet assumes row-based iteration or list of dicts.
-        
-        # Let's check how rod_table is constructed in bacteria_segmentation.py line 501:
-        # rod_table = { "label": props2["label"], ... } -> Dict[str, np.ndarray]
-        
-        # So "for r in res['rod_table']" will iterate over KEYS ("label", "area_px"...). That's wrong if user code implies row access.
-        # User snippet:
-        #   for r in res["rod_table"]:
-        #       cy = float(r["centroid_y"])
-        # This implies r is a dict-like row.
-        
-        # Checking implementation of rod_table export in batch_controller.py (previous task):
-        #   n_rods = len(rod_table["label"])
-        #   for k in range(n_rods): ...
-        
-        # So rod_table IS scalar-struct-of-arrays (dict of cols).
-        # The user's snippet "for r in res['rod_table']" is likely pseudo-code or mistakenly assumes list-of-dicts.
-        
-        # I MUST FIX the iteration logic to work with the actual data structure.
-        
-        rt = res.get("rod_table", None)
-        if bool(getattr(pp, "rods_only", False)) and rt is not None:
-            n_rods = len(rt["label"])
-            for k in range(n_rods):
-                cy = float(rt["centroid_y"][k])
-                cx = float(rt["centroid_x"][k])
-                maj = float(rt["major_axis_px"][k])
-                mino = float(rt["minor_axis_px"][k])
-                ang = float(rt["orientation_rad"][k])
+        # Prefer rod_table if rods_only is enabled and table exists
+        if bool(getattr(pp, "rods_only", False)) and isinstance(rod_table, dict) and ("label" in rod_table):
+            n = len(rod_table["label"])
+            for k in range(n):
+                cy = float(rod_table["centroid_y"][k])
+                cx = float(rod_table["centroid_x"][k])
+                maj = float(rod_table["major_axis_px"][k])
+                mino = float(rod_table["minor_axis_px"][k])
+                ang = float(rod_table["orientation_rad"][k])
 
                 rr = max(1, int(round(maj / 2.0)))
                 cc = max(1, int(round(mino / 2.0)))
@@ -1441,34 +1434,22 @@ class BatchController:
                 pr, pc = draw.ellipse_perimeter(
                     int(round(cy)), int(round(cx)),
                     rr, cc,
-                    orientation=ang,
+                    orientation=-ang,  # <-- IMPORTANT for image coord convention
                     shape=ell.shape,
                 )
                 ell[pr, pc] = True
-        elif labels is not None:
-             # fallback: all objects -> regionprops on labels
-             props = measure.regionprops(labels)
-             for p in props:
-                 cy, cx = p.centroid
-                 rr = max(1, int(round(float(p.major_axis_length) / 2.0)))
-                 cc = max(1, int(round(float(p.minor_axis_length) / 2.0)))
-                 ang = float(getattr(p, "orientation", 0.0))
 
-                 pr, pc = draw.ellipse_perimeter(
-                     int(round(cy)), int(round(cx)),
-                     rr, cc,
-                     orientation=ang,
-                     shape=ell.shape,
-                 )
-                 ell[pr, pc] = True
+        # Fallback: if rods_only off, you can optionally draw ellipses for all labels.
+        elif rod_labels is not None:
+            # (Optional) keep empty for rod-fit. If you want all objects: compute props and draw.
+            pass
 
-        # thickness control (uses existing UI: Outline thickness (px))
+        # thickness via existing UI param (Outline thickness)
         t = int(getattr(pp, "edge_thickness_px", 2))
         if t > 1:
             ell = morphology.binary_dilation(ell, morphology.disk(t - 1))
 
         overlay[ell] = (255, 255, 0)
-
         return overlay
 
     def _build_afm_seg_params(self, afm_params: dict):
