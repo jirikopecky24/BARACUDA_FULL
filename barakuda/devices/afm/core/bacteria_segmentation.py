@@ -62,7 +62,8 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
     return x
 
 
-def compute_bacteria_edge_outline_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
+
+def compute_bacteria_edge_outline_afm(img: np.ndarray, params: AfmBacteriaSegParams, mask: np.ndarray = None) -> dict[str, Any]:
     """Compute a SORA-style bacterial edge outline map (audit-stable).
 
     Outputs:
@@ -70,84 +71,43 @@ def compute_bacteria_edge_outline_afm(img: np.ndarray, params: AfmBacteriaSegPar
       - edge_rgb:  uint8 (H,W,3)       black background with yellow (#FFFF00) edges
       - debug: dict                    coverage + intermediate stats
     """
-    from scipy import ndimage as ndi
-    from skimage import exposure, feature, morphology, restoration
+    if mask is None:
+        # Avoid circular import by runtime import if needed, or rely on namespace.
+        # But segment_bacteria_afm is defined below. 
+        # Circular logic: segment_bacteria_afm calls US.
+        # So if mask is None, we must call segment_bacteria_afm TO GET THE MASK.
+        # But we must tell segment_bacteria_afm NOT to call us back, OR rely on it calling us with mask != None.
+        # The latter works: segment_bacteria_afm computes mask, calls us (mask=...), we return.
+        # So here we just recurse once.
+        # Make sure segment_bacteria_afm is available.
+        # It's in the same module, so 'segment_bacteria_afm' name refers to the function object (via closure/module scope).
+        
+        # HOWEVER, segment_bacteria_afm returns edges too.
+        # If we call segment_bacteria_afm, it runs the logic below (via inner call).
+        res = segment_bacteria_afm(img, params)
+        return {"edge_mask": res["edge_mask"], "edge_rgb": res.get("edge_rgb"), "debug": res.get("edge_debug")}
 
-    # ensure grayscale 2D float in [0,1]
-    x = np.asarray(img)
-    if x.ndim == 3:
-        if x.shape[-1] >= 3:
-            x = x[..., 0].astype(np.float32) * 0.299 + x[..., 1].astype(np.float32) * 0.587 + x[..., 2].astype(np.float32) * 0.114
-        else:
-            x = x[..., 0]
-    x01 = _normalize01(x)
+    from skimage import morphology
 
-    if getattr(params, "invert", False):
-        x01 = 1.0 - x01
+    # outline from region mask (clean object boundary)
+    region_mask = mask
 
-    # Local contrast enhancement (CLAHE)
-    try:
-        x_ce = exposure.equalize_adapthist(
-            x01,
-            clip_limit=float(getattr(params, "clahe_clip", 2.0)),
-            kernel_size=(int(getattr(params, "clahe_tile", 8)), int(getattr(params, "clahe_tile", 8))),
-        ).astype(np.float32)
-    except Exception:
-        x_ce = x01.astype(np.float32)
+    # boundary = mask XOR eroded(mask)
+    eroded = morphology.binary_erosion(region_mask, morphology.disk(1))
+    boundary = region_mask & (~eroded)
 
-    # Non-local means denoise (OpenCV-like strength -> float h)
-    # OpenCV h=12 on uint8 roughly corresponds to ~12/255 on [0,1]
-    h = float(getattr(params, "nlm_strength", 12.0)) / 255.0
-    try:
-        x_dn = restoration.denoise_nl_means(
-            x_ce,
-            h=h,
-            fast_mode=True,
-            patch_size=5,
-            patch_distance=6,
-            channel_axis=None,
-        ).astype(np.float32)
-    except Exception:
-        x_dn = x_ce.astype(np.float32)
+    # ensure single stroke
+    skel = morphology.skeletonize(boundary)
 
-    # Canny edges
-    edges = feature.canny(
-        x_dn,
-        sigma=float(getattr(params, "edge_canny_sigma", 1.2)),
-        low_threshold=float(getattr(params, "edge_canny_low", 0.10)),
-        high_threshold=float(getattr(params, "edge_canny_high", 0.30)),
-    )
-
-    # Link broken edges (closing)
-    r = int(getattr(params, "edge_link_radius_px", 1))
-    if r > 0:
-        edges = morphology.binary_closing(edges, morphology.disk(r))
-
-    # Skeletonize to ensure single-stroke (handles doubled edges)
-    skel = morphology.skeletonize(edges)
-
-    # Remove short fragments (on skeleton)
-    min_len = int(getattr(params, "edge_min_fragment_px", 10))
-    if min_len > 1:
-        skel = morphology.remove_small_objects(skel, min_size=min_len)
-
-    # Thicken to ~2-3 px (dilate skeleton)
-    t = int(getattr(params, "edge_thickness_px", 1))
-    if t > 0:
-        out_edges = morphology.binary_dilation(skel, morphology.disk(t))
-    else:
-        out_edges = skel
+    # final thickness 2–3 px
+    out_edges = morphology.binary_dilation(skel, morphology.disk(1))
 
     # RGB on black background, yellow edges
     rgb = np.zeros((*out_edges.shape, 3), dtype=np.uint8)
     rgb[out_edges] = (255, 255, 0)
 
     debug = {
-        "clahe_clip": float(getattr(params, "clahe_clip", 2.0)),
-        "clahe_tile": int(getattr(params, "clahe_tile", 8)),
-        "nlm_h_float": float(h),
         "edges_coverage": float(out_edges.mean()),
-        "raw_edges_coverage": float(edges.mean()),
         "skeleton_coverage": float(skel.mean()),
     }
     return {"edge_mask": out_edges, "edge_rgb": rgb, "debug": debug}
@@ -456,7 +416,7 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         },
     }
 
-    edge = compute_bacteria_edge_outline_afm(img, params)
+    edge = compute_bacteria_edge_outline_afm(img, params, mask=mask)
 
     return {
         "mask": mask,
