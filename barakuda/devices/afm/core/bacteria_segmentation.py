@@ -564,7 +564,13 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         },
     }
 
-    edge = compute_bacteria_edge_outline_afm(img, mask, params)
+    # Overlay outline should match exported mask.
+    # If rods_only is enabled, compute outline from rod_mask (rod-only overlay).
+    outline_mask = mask
+    if bool(getattr(params, "rods_only", False)) and (rod_mask is not None):
+        outline_mask = rod_mask
+
+    edge = compute_bacteria_edge_outline_afm(img, outline_mask, params)
 
     return {
         "mask": mask,
