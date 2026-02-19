@@ -127,6 +127,14 @@ class AfmPanel(QWidget):
         self.sp_peak_dist.setValue(6)
         form.addRow("Peak min distance (px)", self.sp_peak_dist)
 
+        # Watershed compactness (shape regularization)
+        self.sp_compactness = QDoubleSpinBox()
+        self.sp_compactness.setRange(0.0, 0.20)
+        self.sp_compactness.setDecimals(3)
+        self.sp_compactness.setSingleStep(0.005)
+        self.sp_compactness.setValue(0.020)
+        form.addRow("Watershed compactness", self.sp_compactness)
+
         # Hidden global threshold factor
         self.sp_low_factor = QDoubleSpinBox()
         self.sp_low_factor.setRange(0.0, 1.00) # Allow 0.0
@@ -214,6 +222,7 @@ class AfmPanel(QWidget):
         # Watershed parameters
         self.sp_log_sigma.setValue(1.8)
         self.sp_peak_dist.setValue(12)
+        self.sp_compactness.setValue(0.020)
         self.sp_low_factor.setValue(0.45)  # keep internal threshold stable
 
         # Object filtering
@@ -289,6 +298,12 @@ class AfmPanel(QWidget):
             "Minimum distance between detected local maxima (watershed markers).\n"
             "Higher = fewer seeds (less splitting), lower = more seeds (more splitting / possible map-like result)."
         )
+        self.sp_compactness.setToolTip(
+            "Watershed compactness (tvarová regularizace při watershed).\n"
+            "Zvyšuje geometrickou pravidelnost a hladkost objektů (méně zubaté kontury).\n"
+            "Vyšší hodnota = hladší/symetričtější tvary, ale může mírně potlačit jemné detaily.\n"
+            "Jednotky: bezrozměrné (0.0–0.2). Doporučení: 0.015–0.030 pro publikovatelný vzhled."
+        )
 
         # Post-processing / cleanup
         self.sp_min_area.setToolTip(
@@ -330,6 +345,7 @@ class AfmPanel(QWidget):
             "min_solidity": float(self.sp_min_sol.value()),
             "log_sigma": float(self.sp_log_sigma.value()),
             "peak_min_distance_px": int(self.sp_peak_dist.value()),
+            "watershed_compactness": float(self.sp_compactness.value()),
             "peak_min_distance": int(self.sp_peak_dist.value()),
             "low_mask_factor": float(self.sp_low_factor.value()),
             "min_area_px": int(self.sp_min_area.value()),

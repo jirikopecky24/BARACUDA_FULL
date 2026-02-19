@@ -244,7 +244,12 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
             n_markers = int(markers.max())
 
             # Watershed
-            labels = segmentation.watershed(-dist_smooth, markers, mask=base_mask)
+            labels = segmentation.watershed(
+                -dist_smooth, 
+                markers, 
+                mask=base_mask,
+                compactness=float(getattr(params, "watershed_compactness", 0.0))
+            )
             
             # 7) Remove small instances + Keep instances
             if labels.max() > 1:
