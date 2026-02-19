@@ -52,6 +52,10 @@ class AfmBacteriaSegParams:
     edge_min_fragment_px: int = 10    # Remove edge fragments shorter than this (px on skeleton)
     edge_thickness_px: int = 1        # Dilation radius after skeletonization (1 => ~2-3 px thickness)
 
+    # Outline-only smoothing (visualization, in px). Improves symmetry / reduces jagged contours.
+    # 0 = off
+    outline_smoothing_radius_px: int = 2
+
 
 def _normalize01(img: np.ndarray) -> np.ndarray:
     x = np.asarray(img, dtype=np.float32)
@@ -86,10 +90,13 @@ def compute_bacteria_edge_outline_afm(region_mask: np.ndarray, params: AfmBacter
     if fill_area > 0:
         m = morphology.remove_small_holes(m, area_threshold=fill_area)
 
-    # NEW: gentle shape smoothing to reduce jagged / warped outlines
-    # opening removes tiny spurs, closing reconnects small gaps (kept very small to avoid merging)
-    m = morphology.binary_opening(m, morphology.disk(1))
-    m = morphology.binary_closing(m, morphology.disk(1))
+    # NEW: outline-only smoothing (rounding). Keeps coverage but makes contours more symmetric.
+    rs = int(getattr(params, "outline_smoothing_radius_px", 2))
+    if rs > 0:
+        # Closing with a slightly larger disk rounds concavities and bridges tiny notches,
+        # then a light opening removes small spurs. This is applied ONLY to outline generation.
+        m = morphology.binary_closing(m, morphology.disk(rs))
+        m = morphology.binary_opening(m, morphology.disk(1))
 
     # Continuous outer boundaries (1px)
     boundary = find_boundaries(m, mode="outer")
