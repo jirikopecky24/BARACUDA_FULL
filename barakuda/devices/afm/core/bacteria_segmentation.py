@@ -204,33 +204,29 @@ def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams
     if do_separate:
         # --- SAFE watershed block ---
         try:
-            # 4) Distance transform inside mask
+            # 4) Improved Watershed Separation
+            # (Less aggressive smoothing -> better separation of touching bacteria)
             dist = ndi.distance_transform_edt(base_mask)
-            if float(params.dist_sigma) > 0:
-                dist = ndi.gaussian_filter(dist, sigma=float(params.dist_sigma))
-
-            # 5) Seeds (markers)
-            # peak_local_max with indices=False returns a boolean mask of peaks
-            local_maxi = feature.peak_local_max(
-                dist,
-                indices=False,
-                min_distance=int(params.peak_min_distance),
-                labels=base_mask,
-                exclude_border=False
-            )
             
-            # Label the markers
-            # ndi.label returns (labeled_array, num_features). We want the array.
-            markers = ndi.label(local_maxi)[0]
+            # Sigma 0.8 is generally good for bacterial shapes in AFM
+            dist_smooth = ndi.gaussian_filter(dist, sigma=0.8)
+
+            # Find peaks (markers)
+            coords = feature.peak_local_max(
+                dist_smooth,
+                min_distance=int(getattr(params, "peak_min_distance", 12)),
+                labels=base_mask
+            )
+
+            # Create markers array
+            markers = np.zeros_like(dist, dtype=int)
+            for i, (r, c) in enumerate(coords, start=1):
+                markers[r, c] = i
+            
             n_markers = int(markers.max())
 
-            # 6) Watershed
-            labels = segmentation.watershed(
-                -dist,
-                markers,
-                mask=base_mask,
-                compactness=float(getattr(params, "watershed_compactness", 0.0))
-            )
+            # Watershed
+            labels = segmentation.watershed(-dist_smooth, markers, mask=base_mask)
             
             # 7) Remove small instances + Keep instances
             if labels.max() > 1:
