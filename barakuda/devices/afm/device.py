@@ -135,6 +135,20 @@ class AfmPanel(QWidget):
         self.sp_compactness.setValue(0.020)
         form.addRow("Watershed compactness", self.sp_compactness)
 
+        # Outline smoothing radius (px) — visualization-only geometric regularization
+        self.sp_outline_smooth = QSpinBox()
+        self.sp_outline_smooth.setRange(0, 6)
+        self.sp_outline_smooth.setSingleStep(1)
+        self.sp_outline_smooth.setValue(2)
+        form.addRow("Outline smoothing radius (px)", self.sp_outline_smooth)
+
+        # Outline thickness (px) — controls visible stroke thickness
+        self.sp_outline_thick = QSpinBox()
+        self.sp_outline_thick.setRange(0, 3)  # 0 = thinnest (1px boundary), 2 = ~2–3px
+        self.sp_outline_thick.setSingleStep(1)
+        self.sp_outline_thick.setValue(2)
+        form.addRow("Outline thickness (px)", self.sp_outline_thick)
+
         # Hidden global threshold factor
         self.sp_low_factor = QDoubleSpinBox()
         self.sp_low_factor.setRange(0.0, 1.00) # Allow 0.0
@@ -191,20 +205,20 @@ class AfmPanel(QWidget):
 
     def apply_afm_defaults(self):
         # ===============================
-        # AFM DEFAULT PROFILE (Stable Manual Tuned Version)
+        # AFM DEFAULT PROFILE (Publication - Stable Manual Tuned Version)
         # ===============================
 
-        # Core toggles
-        self.cb_height_aware.setChecked(False)
-        self.cb_separate.setChecked(True)
-        self.cb_save_overlay.setChecked(True)
-        self.cb_invert.setChecked(False)
+        # Core toggles (Publication profile)
+        self.cb_height_aware.setChecked(False)       # AFM height normalization OFF
+        self.cb_separate.setChecked(True)            # Separate touching objects ON
+        self.cb_save_overlay.setChecked(True)        # Save overlay ON
+        self.cb_invert.setChecked(False)             # Invert OFF
         self.cb_use_contours.setChecked(False)
 
-        # Background & smoothing
+        # Core sigmas
         self.sp_bg.setValue(4.0)
-        self.sp_smooth.setValue(0.2)
-        self.sp_edge_sigma.setValue(0.5)
+        self.sp_smooth.setValue(0.20)
+        self.sp_edge_sigma.setValue(1.30)        # sweet spot 1.2–1.4
 
         # Canny (hidden but keep consistent)
         self.sp_canny_low.setValue(0.05)
@@ -214,22 +228,26 @@ class AfmPanel(QWidget):
         self.sp_close_radius.setValue(2)
         self.sp_fill_holes.setValue(300)
 
-        # Shape filters
-        self.sp_min_perim.setValue(20)
+        # Filters (high coverage but not pure noise)
+        self.sp_min_perim.setValue(10)
         self.sp_min_ecc.setValue(0.05)
         self.sp_min_sol.setValue(0.35)
 
-        # Watershed parameters
-        self.sp_log_sigma.setValue(1.8)
-        self.sp_peak_dist.setValue(12)
-        self.sp_compactness.setValue(0.020)
-        self.sp_low_factor.setValue(0.45)  # keep internal threshold stable
+        # Detection / separation
+        self.sp_log_sigma.setValue(1.60)         # 1.5–1.8 (publication-friendly)
+        self.sp_peak_dist.setValue(3)
+        self.sp_compactness.setValue(0.030)      # geometric / print-ready
+        self.sp_low_factor.setValue(0.45)        # keep internal threshold stable
 
-        # Object filtering
-        self.sp_min_area.setValue(40)
+        # Object filtering / Mask stabilization
+        self.sp_min_area.setValue(15)
         self.sp_close.setValue(1)
-        self.sp_holes.setValue(50)
+        self.sp_holes.setValue(80) 
         self.sp_bins.setValue(20)
+
+        # Outline design controls
+        self.sp_outline_smooth.setValue(2)
+        self.sp_outline_thick.setValue(2)
 
     def apply_afm_tooltips(self):
         # ==============================
@@ -304,6 +322,20 @@ class AfmPanel(QWidget):
             "Vyšší hodnota = hladší/symetričtější tvary, ale může mírně potlačit jemné detaily.\n"
             "Jednotky: bezrozměrné (0.0–0.2). Doporučení: 0.015–0.030 pro publikovatelný vzhled."
         )
+        self.sp_outline_smooth.setToolTip(
+            "Outline smoothing radius (px).\n"
+            "Použije se pouze pro vykreslení obrysu (ne měření).\n"
+            "Vyšší hodnota = symetričtější, hladší kontury (publikovatelný vzhled), "
+            "ale může mírně zaoblovat jemné detaily.\n"
+            "0 = vypnuto. Doporučeno: 2."
+        )
+
+        self.sp_outline_thick.setToolTip(
+            "Outline thickness (px).\n"
+            "Řídí tloušťku žluté kontury ve výstupu.\n"
+            "0 = nejtenčí (cca 1px), 1 = tenké, 2 = ~2–3px (doporučeno pro tisk), 3 = tlusté.\n"
+            "Doporučeno: 2."
+        )
 
         # Post-processing / cleanup
         self.sp_min_area.setToolTip(
@@ -352,6 +384,8 @@ class AfmPanel(QWidget):
             "closing_radius_px": int(self.sp_close.value()),
             "hole_area_px": int(self.sp_holes.value()),
             "area_bins": int(self.sp_bins.value()),
+            "outline_smoothing_radius_px": int(self.sp_outline_smooth.value()),
+            "edge_thickness_px": int(self.sp_outline_thick.value()),
         }
 
 def get_device_spec() -> DeviceSpec:
