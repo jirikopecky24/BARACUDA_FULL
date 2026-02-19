@@ -163,26 +163,27 @@ class AfmPanel(QWidget):
         self.sp_outline_ring.setValue(2)
         form.addRow("Outline ring radius (px)", self.sp_outline_ring)
 
+        # Advanced overlay edge controls (kept for compatibility / audit, hidden from UI)
         self.sp_outline_edge_sigma = QDoubleSpinBox()
         self.sp_outline_edge_sigma.setRange(0.5, 3.0)
         self.sp_outline_edge_sigma.setDecimals(2)
         self.sp_outline_edge_sigma.setSingleStep(0.1)
         self.sp_outline_edge_sigma.setValue(1.2)
-        form.addRow("Outline edge sigma (px)", self.sp_outline_edge_sigma)
+        self.sp_outline_edge_sigma.hide()
 
         self.sp_outline_canny_low = QDoubleSpinBox()
         self.sp_outline_canny_low.setRange(0.01, 0.49)
         self.sp_outline_canny_low.setDecimals(2)
         self.sp_outline_canny_low.setSingleStep(0.01)
         self.sp_outline_canny_low.setValue(0.10)
-        form.addRow("Outline canny low", self.sp_outline_canny_low)
+        self.sp_outline_canny_low.hide()
 
         self.sp_outline_canny_high = QDoubleSpinBox()
         self.sp_outline_canny_high.setRange(0.05, 0.95)
         self.sp_outline_canny_high.setDecimals(2)
         self.sp_outline_canny_high.setSingleStep(0.01)
         self.sp_outline_canny_high.setValue(0.30)
-        form.addRow("Outline canny high", self.sp_outline_canny_high)
+        self.sp_outline_canny_high.hide()
 
         # Rod-only filtering (for fitting)
         self.cb_rods_only = QCheckBox("Rods only (long bacteria)")
@@ -234,16 +235,11 @@ class AfmPanel(QWidget):
         self.sp_holes.setValue(240)
         form.addRow("Fill holes area (px)", self.sp_holes)
 
+        # Histogram bins are not needed for rod-fit workflow (kept for compatibility, hidden)
         self.sp_bins = QSpinBox()
         self.sp_bins.setRange(5, 200)
         self.sp_bins.setValue(20)
-        # form.addRow("Area bins (freq)", self.sp_bins) # User didn't ask to remove this, but didn't list in "Keep". 
-        # But listed in Defaults: "Area bins = 20". So keep it, but maybe hide if not important?
-        # User says "Smazat z UI ... Canny ... Edge dilate ... druhy fill/close".
-        # It doesn't say remove Bins. I'll keep it visible or hide if "UI čisté a přehledné" is priority?
-        # "smazat z UI" implies removing from view. 
-        # "Area bins" is for histogram. Useful. I'll keep it.
-        form.addRow("Area bins (freq)", self.sp_bins)
+        self.sp_bins.hide()
 
 
 
