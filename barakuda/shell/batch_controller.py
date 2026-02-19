@@ -1373,9 +1373,18 @@ class BatchController:
         import imageio.v2 as iio
         import numpy as np
 
-        from barakuda.devices.afm.core.bacteria_segmentation import segment_bacteria_afm
+        from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
+        from barakuda.devices.afm.io.brucker_spm import read_channel
 
-        img_orig = iio.imread(file_path)
+        if file_path.lower().endswith(".spm"):
+            # Bruker SPM load
+            img, ch = read_channel(file_path, prefer_name_contains="Height")
+            # img is float32 usually
+            img_orig = img
+        else:
+            # Standard image load
+            img_orig = iio.imread(file_path)
+            
         img = img_orig
 
         # ensure 2D grayscale for segmentation (PNG can be RGB)
@@ -1391,11 +1400,8 @@ class BatchController:
         roi_img = img[y:y + h, x:x + w]
         roi_img_orig = img_orig[y:y + h, x:x + w]
 
-        pp = self._build_afm_seg_params(afm_params)
-        res = segment_bacteria_afm(roi_img, pp)
-        edge = res.get("edge_mask", None)
-
         # base RGB (uint8)
+        # Verify base construction for SPM (float32) or standard (uint8/16)
         if roi_img_orig.ndim == 2:
             base = np.stack([roi_img_orig] * 3, axis=-1)
         else:
@@ -1409,6 +1415,44 @@ class BatchController:
             else:
                 base = base.astype(np.uint8)
 
+        # Build V2 params
+        # Mapping old UI params to new V2 params where possible
+        
+        def _f(key, default): return float(afm_params.get(key, default))
+        def _i(key, default): return int(afm_params.get(key, default))
+        def _b(key, default): return bool(afm_params.get(key, default))
+        def _s(key, default): return str(afm_params.get(key, default))
+
+        p_v2 = AfmV2Params(
+            backend=_s("backend", "classic"),
+            invert=_b("invert", False),
+            clip_p_low=0.1,   # Fixed defaults or exposable? User didn't ask to expose clip
+            clip_p_high=99.9,
+            smooth_sigma=_f("smooth_sigma", 1.0),
+            log_sigma=_f("log_sigma", 1.6),
+            min_area_px=_i("min_area_px", 10),
+            separate_watershed=_b("separate", True),
+            peak_min_distance_px=_i("peak_min_distance_px", 2),
+            watershed_compactness=_f("watershed_compactness", 0.03),
+            
+            # Cellpose
+            cp_model="cyto3", # default
+            cp_diameter=_f("cp_diameter", 0.0),
+            cp_flow_threshold=_f("cp_flow_threshold", 0.4),
+            cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
+
+            # Rods
+            rods_only=_b("rods_only", True),
+            rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
+            rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
+            rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
+            
+            ellipse_thickness_px=_i("edge_thickness_px", 2),
+        )
+
+        res = run_afm_v2(roi_img, p_v2)
+        # v2 returns: {"norm": ..., "labels": ..., "audit": ..., "rod_labels": ..., "rod_table": ...}
+
         overlay = base.copy()
 
         # --- Ellipse-only overlay (ROD-FIT) ---
@@ -1419,7 +1463,11 @@ class BatchController:
         rod_labels = res.get("rod_labels", None)
 
         # Prefer rod_table if rods_only is enabled and table exists
-        if bool(getattr(pp, "rods_only", False)) and isinstance(rod_table, dict) and ("label" in rod_table):
+        rod_table = res.get("rod_table", None)
+        rod_labels = res.get("rod_labels", None)
+        
+        # Prefer rod_table if rods_only is enabled and table exists (v2 always returns it if rods_only=True)
+        if p_v2.rods_only and isinstance(rod_table, dict) and ("label" in rod_table):
             n = len(rod_table["label"])
             for k in range(n):
                 cy = float(rod_table["centroid_y"][k])
@@ -1445,7 +1493,7 @@ class BatchController:
             pass
 
         # thickness via existing UI param (Outline thickness)
-        t = int(getattr(pp, "edge_thickness_px", 2))
+        t = int(p_v2.ellipse_thickness_px)
         if t > 1:
             ell = morphology.binary_dilation(ell, morphology.disk(t - 1))
 

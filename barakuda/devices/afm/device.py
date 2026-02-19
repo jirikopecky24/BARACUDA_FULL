@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox
 from barakuda.devices.base import DeviceSpec
+from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE
 
 
 class AfmPanel(QWidget):
@@ -250,6 +251,41 @@ class AfmPanel(QWidget):
         self.btn_reset.clicked.connect(self.apply_afm_defaults)
         layout.addWidget(self.btn_reset)
         
+        # --- Backend Selection ---
+        layout.addSpacing(10)
+        form_backend = QFormLayout()
+        self.cb_backend = QComboBox()
+        self.cb_backend.addItem("Classic (Watershed)", "classic")
+        if _HAS_CELLPOSE:
+            self.cb_backend.addItem("Cellpose (Deep Learning)", "cellpose")
+        else:
+            self.cb_backend.addItem("Cellpose (Not Installed)", "classic")
+            self.cb_backend.model().item(1).setEnabled(False)
+            
+        self.cb_backend.currentTextChanged.connect(self._on_backend_changed)
+        form_backend.addRow("Backend", self.cb_backend)
+        
+        self.sp_cp_diam = QDoubleSpinBox()
+        self.sp_cp_diam.setRange(0.0, 500.0)
+        self.sp_cp_diam.setValue(0.0)
+        self.sp_cp_diam.setSpecialValueText("Auto")
+        form_backend.addRow("Cellpose Diameter (px)", self.sp_cp_diam)
+        
+        self.sp_cp_flow = QDoubleSpinBox()
+        self.sp_cp_flow.setRange(0.0, 3.0)
+        self.sp_cp_flow.setSingleStep(0.1)
+        self.sp_cp_flow.setValue(0.4)
+        form_backend.addRow("Flow Threshold", self.sp_cp_flow)
+        
+        self.sp_cp_prob = QDoubleSpinBox()
+        self.sp_cp_prob.setRange(-6.0, 6.0)
+        self.sp_cp_prob.setSingleStep(0.1)
+        self.sp_cp_prob.setValue(0.0)
+        form_backend.addRow("Cellprob Threshold", self.sp_cp_prob)
+        
+        layout.addLayout(form_backend)
+        layout.addSpacing(10)
+
         self.btn_run = QPushButton("Spustit AFM Batch")
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         layout.addWidget(self.btn_run)
@@ -259,6 +295,19 @@ class AfmPanel(QWidget):
         # Apple Defaults immediately
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
+        
+        # Init visibility
+        self._on_backend_changed()
+
+    def _on_backend_changed(self):
+        is_cp = (self.cb_backend.currentData() == "cellpose")
+        self.sp_cp_diam.setVisible(is_cp)
+        self.sp_cp_flow.setVisible(is_cp)
+        self.sp_cp_prob.setVisible(is_cp)
+        
+        # Hide classic specific params if cellpose? 
+        # For now we keep them visible as they might be used for pre-processing (smooth/bg)
+        # or stick to "minimal changes" as requested.
 
     def apply_afm_defaults(self):
         # ===============================
@@ -311,7 +360,14 @@ class AfmPanel(QWidget):
         self.sp_outline_ring.setValue(2)
         self.sp_outline_edge_sigma.setValue(1.3)
         self.sp_outline_canny_low.setValue(0.08)
+        self.sp_outline_canny_low.setValue(0.08)
         self.sp_outline_canny_high.setValue(0.24)
+        
+        # Cellpose defaults
+        self.cb_backend.setCurrentIndex(0) # Classic
+        self.sp_cp_diam.setValue(0.0)
+        self.sp_cp_flow.setValue(0.4)
+        self.sp_cp_prob.setValue(-0.5)
 
     def apply_afm_tooltips(self):
         # ==============================
@@ -464,7 +520,33 @@ class AfmPanel(QWidget):
             "Area bins [count].\n"
             "Number of bins used for area histogram in exported statistics."
         )
+        
+        self.cb_backend.setToolTip(
+            "Segmentation Backend.\n"
+            "Classic: Fast, parameter-based (Watershed).\n"
+            "Cellpose: Slower, deep learning based (requires 'cellpose' installed)."
+        )
+        self.sp_cp_diam.setToolTip(
+            "Cellpose Diameter [px].\n"
+            "Approximate size of bacteria.\n"
+            "0 = Auto (slower, but adaptive)."
+            "If you know the size, set it to avoid rescaling artifacts."
+        )
+        self.sp_cp_flow.setToolTip(
+            "Flow threshold.\n"
+            "Controls how strictly masks must follow flow dynamics.\n"
+            "Lower = more strict (fewer FPs), Higher = more generous (more TPs).\n"
+            "Default ~ 0.4."
+        )
+        self.sp_cp_prob.setToolTip(
+            "Cellprob threshold.\n"
+            "Threshold for cell probability output.\n"
+            "Lower (e.g. -1.0) = more sensitive (larger masks), Higher (e.g. 1.0) = stricter.\n"
+            "Default 0.0 or -1.0."
+        )
 
+
+        
     def get_afm_params(self) -> dict:
         return {
             "height_aware": bool(self.cb_height_aware.isChecked()),
@@ -503,6 +585,10 @@ class AfmPanel(QWidget):
             "rods_min_major_axis_px": float(self.sp_rods_min_major.value()),
             "rods_min_aspect_ratio": float(self.sp_rods_min_ar.value()),
             "rods_min_eccentricity": float(self.sp_rods_min_ecc.value()),
+            "backend": str(self.cb_backend.currentData()),
+            "cp_diameter": float(self.sp_cp_diam.value()),
+            "cp_flow_threshold": float(self.sp_cp_flow.value()),
+            "cp_cellprob_threshold": float(self.sp_cp_prob.value()),
         }
 
 def get_device_spec() -> DeviceSpec:

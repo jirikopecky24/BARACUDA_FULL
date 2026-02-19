@@ -69,7 +69,7 @@ class DatasetPanel(QWidget):
             self,
             "Select data files",
             "",
-            "Data files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.csv *.txt *.mp4 *.avi);;All files (*.*)",
+            "Data files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.csv *.txt *.mp4 *.avi *.spm);;All files (*.*)",
         )
         if not files:
             return
