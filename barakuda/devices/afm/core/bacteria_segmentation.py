@@ -64,53 +64,48 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
 
 
 def compute_bacteria_edge_outline_afm(region_mask: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
-    """Compute SORA-like single-stroke outlines from a region segmentation mask.
+    """Compute continuous SORA-like outlines from region segmentation mask.
 
-    This is audit-stable and visually consistent:
-      - outline is derived from the segmentation mask (no noisy internal edges)
-      - single-stroke + thickness ~2-3 px
-      - black background + yellow (#FFFF00) is created downstream/export
+    Key idea:
+      - use skimage.segmentation.find_boundaries to get continuous contours
+      - avoid skeletonization + fragment filtering (that was breaking the result)
+      - control thickness by dilation to ~2–3 px
     """
-    from skimage import morphology
     import numpy as np
+    from skimage import morphology
+    from skimage.segmentation import find_boundaries
 
     m = np.asarray(region_mask).astype(bool)
 
-    # 1) Clean the mask a bit to avoid ragged boundaries / tiny gaps
-    # (closing radius comes from existing AFM params in UI)
+    # Optional cleanup to stabilize boundaries
     close_r = int(getattr(params, "closing_radius", 1))
     if close_r > 0:
         m = morphology.binary_closing(m, morphology.disk(close_r))
 
-    # fill small holes (already in UI as fill_holes_area)
     fill_area = int(getattr(params, "fill_holes_area", 50))
     if fill_area > 0:
         m = morphology.remove_small_holes(m, area_threshold=fill_area)
 
-    # 2) Boundary = mask - eroded(mask)  (clean one-pixel-ish outline)
-    er = morphology.binary_erosion(m, morphology.disk(1))
-    boundary = m & (~er)
+    # Continuous outer boundaries
+    boundary = find_boundaries(m, mode="outer")
 
-    # 3) Force single-stroke (handles double boundaries on thick edges)
-    skel = morphology.skeletonize(boundary)
+    # Link tiny gaps in contour (very light)
+    link_r = int(getattr(params, "edge_link_radius_px", 1))
+    if link_r > 0:
+        boundary = morphology.binary_closing(boundary, morphology.disk(link_r))
 
-    # 4) Remove very short fragments (helps prevent speckle)
-    min_len = int(getattr(params, "edge_min_fragment_px", 10))
-    if min_len > 1:
-        skel = morphology.remove_small_objects(skel, min_size=min_len)
-
-    # 5) Thicken to ~2–3 px (1 => usually ~2-3 px depending on raster)
+    # Thickness: 1 => usually ~2–3 px stroke
     t = int(getattr(params, "edge_thickness_px", 1))
     if t > 0:
-        out_edges = morphology.binary_dilation(skel, morphology.disk(t))
+        out_edges = morphology.binary_dilation(boundary, morphology.disk(t))
     else:
-        out_edges = skel
+        out_edges = boundary
 
     debug = {
-        "outline_from": "region_mask",
+        "outline_from": "region_mask_find_boundaries",
         "closing_radius": close_r,
         "fill_holes_area": fill_area,
-        "edge_min_fragment_px": min_len,
+        "edge_link_radius_px": link_r,
         "edge_thickness_px": t,
         "edges_coverage": float(out_edges.mean()),
     }
