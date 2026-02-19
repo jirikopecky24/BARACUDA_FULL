@@ -1375,12 +1375,99 @@ class BatchController:
 
         if base.dtype != np.uint8:
             bmin = float(np.nanmin(base))
-            bmax = float(np.nanmax(base))
-            base = ((base - bmin) / (bmax - bmin + 1e-9) * 255.0).astype(np.uint8)
+            bmax = float(np.max(base))
+            if bmax > bmin:
+                base = ((base - bmin) / (bmax - bmin) * 255.0).astype(np.uint8)
+            else:
+                base = base.astype(np.uint8)
 
         overlay = base.copy()
-        if edge is not None:
-            overlay[edge] = (255, 255, 0)
+
+        # --- Ellipse-only overlay (publication style) ---
+        from skimage import draw, morphology, measure
+
+        Hh, Ww = overlay.shape[0], overlay.shape[1]
+        ell = np.zeros((Hh, Ww), dtype=bool)
+        
+        # Need labels for fallback
+        labels = res.get("labels", None)
+
+        # Prefer rod_table if rods_only is enabled (already filtered for downstream fitting)
+        if bool(getattr(pp, "rods_only", False)) and res.get("rod_table", None):
+            for r in res.get("rod_table").get("label", []): # Iterate via index? No, rod_table is dict of arrays!
+                 # Wait, rod_table structure in bacteria_segmentation.py is:
+                 # "label": props2["label"], "area_px": ...
+                 # So it's a dict of ndarrays.
+                 pass
+
+        # Re-reading user request: 
+        # "for r in res['rod_table']:" -> implies list of dicts? 
+        # BUT bacteria_segmentation.py returns dict of arrays!
+        # "rod_table" in segment_bacteria_afm:
+        # rod_table = { "label": ..., "centroid_y": ... } -> param columns are arrays.
+        # The user provided snippet assumes row-based iteration or list of dicts.
+        
+        # Let's check how rod_table is constructed in bacteria_segmentation.py line 501:
+        # rod_table = { "label": props2["label"], ... } -> Dict[str, np.ndarray]
+        
+        # So "for r in res['rod_table']" will iterate over KEYS ("label", "area_px"...). That's wrong if user code implies row access.
+        # User snippet:
+        #   for r in res["rod_table"]:
+        #       cy = float(r["centroid_y"])
+        # This implies r is a dict-like row.
+        
+        # Checking implementation of rod_table export in batch_controller.py (previous task):
+        #   n_rods = len(rod_table["label"])
+        #   for k in range(n_rods): ...
+        
+        # So rod_table IS scalar-struct-of-arrays (dict of cols).
+        # The user's snippet "for r in res['rod_table']" is likely pseudo-code or mistakenly assumes list-of-dicts.
+        
+        # I MUST FIX the iteration logic to work with the actual data structure.
+        
+        rt = res.get("rod_table", None)
+        if bool(getattr(pp, "rods_only", False)) and rt is not None:
+            n_rods = len(rt["label"])
+            for k in range(n_rods):
+                cy = float(rt["centroid_y"][k])
+                cx = float(rt["centroid_x"][k])
+                maj = float(rt["major_axis_px"][k])
+                mino = float(rt["minor_axis_px"][k])
+                ang = float(rt["orientation_rad"][k])
+
+                rr = max(1, int(round(maj / 2.0)))
+                cc = max(1, int(round(mino / 2.0)))
+
+                pr, pc = draw.ellipse_perimeter(
+                    int(round(cy)), int(round(cx)),
+                    rr, cc,
+                    orientation=ang,
+                    shape=ell.shape,
+                )
+                ell[pr, pc] = True
+        elif labels is not None:
+             # fallback: all objects -> regionprops on labels
+             props = measure.regionprops(labels)
+             for p in props:
+                 cy, cx = p.centroid
+                 rr = max(1, int(round(float(p.major_axis_length) / 2.0)))
+                 cc = max(1, int(round(float(p.minor_axis_length) / 2.0)))
+                 ang = float(getattr(p, "orientation", 0.0))
+
+                 pr, pc = draw.ellipse_perimeter(
+                     int(round(cy)), int(round(cx)),
+                     rr, cc,
+                     orientation=ang,
+                     shape=ell.shape,
+                 )
+                 ell[pr, pc] = True
+
+        # thickness control (uses existing UI: Outline thickness (px))
+        t = int(getattr(pp, "edge_thickness_px", 2))
+        if t > 1:
+            ell = morphology.binary_dilation(ell, morphology.disk(t - 1))
+
+        overlay[ell] = (255, 255, 0)
 
         return overlay
 
