@@ -1232,6 +1232,33 @@ class BatchController:
                             f"{o['perimeter_px']:.6f}", f"{o['eccentricity']:.6f}", f"{o['solidity']:.6f}",
                         ])
 
+                # NEW: Rod-only export (for ellipse fitting)
+                rod_mask = res.get("rod_mask", None)
+                rod_table = res.get("rod_table", None)
+
+                if rod_mask is not None:
+                    iio.imwrite(run_dir / f"{stem}_rods_mask.png", (rod_mask.astype(np.uint8) * 255))
+                
+                if rod_table is not None:
+                    # CSV with ellipse-ready props
+                    rods_csv = run_dir / f"{stem}_rods_props.csv"
+                    with rods_csv.open("w", encoding="utf-8", newline="") as f:
+                        wcsv = csv.writer(f)
+                        # defined columns in bacteria_segmentation.py
+                        cols = ["label", "area_px", "centroid_x", "centroid_y", "orientation_rad", 
+                                "major_axis_px", "minor_axis_px", "aspect_ratio", "eccentricity", "solidity"]
+                        wcsv.writerow(cols)
+                        
+                        # len of arrays
+                        n_rods = len(rod_table["label"])
+                        for k in range(n_rods):
+                            # build row
+                            row = []
+                            for c in cols:
+                                val = rod_table[c][k]
+                                row.append(f"{val:.6f}" if isinstance(val, (float, np.floating)) else str(val))
+                            wcsv.writerow(row)
+
                 # summary.json (audit-first + ROI)
                 payload = {
                     "summary": res["summary"],
@@ -1406,4 +1433,19 @@ class BatchController:
             # If neither, default to 6.
             peak_min_distance=_i("peak_min_distance", afm_params.get("peak_min_distance_px", 6)),
             watershed_compactness=_f("watershed_compactness", 0.0),
+            
+            # Inclusive outline
+            outline_mode=str(afm_params.get("outline_mode", "inclusive")),
+            outline_ring_radius_px=_i("outline_ring_radius_px", 2),
+            outline_edge_sigma=_f("outline_edge_sigma", 1.2),
+            outline_canny_low=_f("outline_canny_low", 0.10),
+            outline_canny_high=_f("outline_canny_high", 0.30),
+            outline_smoothing_radius_px=_i("outline_smoothing_radius_px", 2),
+            edge_thickness_px=_i("edge_thickness_px", 2),
+            
+            # Rod-only
+            rods_only=_b("rods_only", False),
+            rods_min_major_axis_px=_f("rods_min_major_axis_px", 18.0),
+            rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 2.5),
+            rods_min_eccentricity=_f("rods_min_eccentricity", 0.85),
         )

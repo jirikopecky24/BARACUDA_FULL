@@ -66,6 +66,12 @@ class AfmBacteriaSegParams:
     outline_canny_high: float = 0.30         # 0..1
 
 
+    # Rod-only mode (keep only long rods for downstream fitting)
+    rods_only: bool = False
+    rods_min_major_axis_px: float = 18.0
+    rods_min_aspect_ratio: float = 2.5
+    rods_min_eccentricity: float = 0.85
+
 def _normalize01(img: np.ndarray) -> np.ndarray:
     x = np.asarray(img, dtype=np.float32)
     x = x - np.nanmin(x)
@@ -442,6 +448,69 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
             mask = morphology.closing(mask, morphology.disk(int(params.closing_radius_px)))
             labels = measure.label(mask)
 
+    from skimage.measure import regionprops_table
+    import numpy as np
+
+    rod_mask = None
+    rod_labels = None
+    rod_table = None
+
+    if bool(getattr(params, "rods_only", False)):
+        props = regionprops_table(
+            labels,
+            properties=("label", "area", "centroid", "orientation",
+                        "major_axis_length", "minor_axis_length",
+                        "eccentricity", "solidity")
+        )
+
+        # compute aspect ratio safely
+        major = np.asarray(props["major_axis_length"], dtype=float)
+        minor = np.asarray(props["minor_axis_length"], dtype=float)
+        aspect = major / np.maximum(minor, 1e-6)
+
+        min_major = float(getattr(params, "rods_min_major_axis_px", 18.0))
+        min_ar = float(getattr(params, "rods_min_aspect_ratio", 2.5))
+        min_ecc = float(getattr(params, "rods_min_eccentricity", 0.85))
+
+        keep = (major >= min_major) & (aspect >= min_ar) & (np.asarray(props["eccentricity"], float) >= min_ecc)
+
+        keep_labels = set(np.asarray(props["label"], int)[keep].tolist())
+
+        rod_labels = np.zeros_like(labels, dtype=np.int32)
+        if keep_labels:
+            # re-label sequentially for clean downstream
+            new_id = 1
+            for lab in sorted(keep_labels):
+                rod_labels[labels == lab] = new_id
+                new_id += 1
+
+        rod_mask = rod_labels > 0
+
+        # Build CSV-ready table (for fitting scripts)
+        # Use new labels indexing: we recompute props on rod_labels for consistent label IDs
+        props2 = regionprops_table(
+            rod_labels,
+            properties=("label", "area", "centroid", "orientation",
+                        "major_axis_length", "minor_axis_length",
+                        "eccentricity", "solidity")
+        )
+        major2 = np.asarray(props2["major_axis_length"], dtype=float)
+        minor2 = np.asarray(props2["minor_axis_length"], dtype=float)
+        aspect2 = major2 / np.maximum(minor2, 1e-6)
+
+        rod_table = {
+            "label": props2["label"],
+            "area_px": props2["area"],
+            "centroid_y": props2["centroid-0"],  # row
+            "centroid_x": props2["centroid-1"],  # col
+            "orientation_rad": props2["orientation"],
+            "major_axis_px": major2,
+            "minor_axis_px": minor2,
+            "aspect_ratio": aspect2,
+            "eccentricity": props2["eccentricity"],
+            "solidity": props2["solidity"],
+        }
+
     props = measure.regionprops(labels)
     objects: list[dict[str, Any]] = []
     for p in props:
@@ -505,6 +574,9 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         "audit": audit,
         "edge_mask": edge["edge_mask"],
         "edge_debug": edge["debug"],
+        "rod_mask": rod_mask,
+        "rod_labels": rod_labels,
+        "rod_table": rod_table,
     }
 def segment_bacteria_contours_afm(img: np.ndarray, params: AfmBacteriaSegParams):
     """

@@ -184,6 +184,32 @@ class AfmPanel(QWidget):
         self.sp_outline_canny_high.setValue(0.30)
         form.addRow("Outline canny high", self.sp_outline_canny_high)
 
+        # Rod-only filtering (for fitting)
+        self.cb_rods_only = QCheckBox("Rods only (long bacteria)")
+        self.cb_rods_only.setChecked(False)
+        form.addRow(self.cb_rods_only)
+
+        self.sp_rods_min_major = QDoubleSpinBox()
+        self.sp_rods_min_major.setRange(0.0, 500.0)
+        self.sp_rods_min_major.setValue(18.0)
+        form.addRow("Rods min major axis (px)", self.sp_rods_min_major)
+
+        self.sp_rods_min_ar = QDoubleSpinBox()
+        self.sp_rods_min_ar.setRange(1.0, 10.0)
+        self.sp_rods_min_ar.setDecimals(2)
+        self.sp_rods_min_ar.setSingleStep(0.1)
+        self.sp_rods_min_ar.setValue(2.5)
+        form.addRow("Rods min aspect ratio", self.sp_rods_min_ar)
+
+        self.sp_rods_min_ecc = QDoubleSpinBox()
+        self.sp_rods_min_ecc.setRange(0.0, 1.0)
+        self.sp_rods_min_ecc.setDecimals(2)
+        self.sp_rods_min_ecc.setSingleStep(0.05)
+        self.sp_rods_min_ecc.setValue(0.85)
+        form.addRow("Rods min eccentricity", self.sp_rods_min_ecc)
+
+        # Hidden global threshold factor
+
         # Hidden global threshold factor
         self.sp_low_factor = QDoubleSpinBox()
         self.sp_low_factor.setRange(0.0, 1.00) # Allow 0.0
@@ -404,6 +430,25 @@ class AfmPanel(QWidget):
             "Nižší = více hran (vyšší coverage). Typicky high ~ 3× low."
         )
 
+        # Rod-only tooltips
+        self.cb_rods_only.setToolTip(
+            "Rods only (long bacteria).\n"
+            "Filters output to keep only elongated rod-like shapes.\n"
+            "Useful for downstream ellipse fitting and orientation analysis."
+        )
+        self.sp_rods_min_major.setToolTip(
+            "Min major axis length [px].\n"
+            "Removes small/round objects shorter than this."
+        )
+        self.sp_rods_min_ar.setToolTip(
+            "Min aspect ratio (Major/Minor).\n"
+            "Removes round objects (AR ~ 1). Rods typically have AR > 2.5."
+        )
+        self.sp_rods_min_ecc.setToolTip(
+            "Min eccentricity [0–1].\n"
+            "Removes round objects (Ecc < 0.8). Rods ecc ~ 0.9+."
+        )
+
         # Post-processing / cleanup
         self.sp_min_area.setToolTip(
             "Min area [px²].\n"
@@ -458,6 +503,10 @@ class AfmPanel(QWidget):
             "outline_edge_sigma": float(self.sp_outline_edge_sigma.value()),
             "outline_canny_low": float(self.sp_outline_canny_low.value()),
             "outline_canny_high": float(self.sp_outline_canny_high.value()),
+            "rods_only": bool(self.cb_rods_only.isChecked()),
+            "rods_min_major_axis_px": float(self.sp_rods_min_major.value()),
+            "rods_min_aspect_ratio": float(self.sp_rods_min_ar.value()),
+            "rods_min_eccentricity": float(self.sp_rods_min_ecc.value()),
         }
 
 def get_device_spec() -> DeviceSpec:
