@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox
 from barakuda.devices.base import DeviceSpec
 
 
@@ -149,6 +149,41 @@ class AfmPanel(QWidget):
         self.sp_outline_thick.setValue(2)
         form.addRow("Outline thickness (px)", self.sp_outline_thick)
 
+        # Output / Export settings
+        # ...
+
+        # Outline mode (Strict / Inclusive)
+        self.cb_outline_mode = QComboBox()
+        self.cb_outline_mode.addItems(["inclusive", "strict"])
+        self.cb_outline_mode.setCurrentText("inclusive")
+        form.addRow("Outline mode", self.cb_outline_mode)
+
+        self.sp_outline_ring = QSpinBox()
+        self.sp_outline_ring.setRange(1, 6)
+        self.sp_outline_ring.setValue(2)
+        form.addRow("Outline ring radius (px)", self.sp_outline_ring)
+
+        self.sp_outline_edge_sigma = QDoubleSpinBox()
+        self.sp_outline_edge_sigma.setRange(0.5, 3.0)
+        self.sp_outline_edge_sigma.setDecimals(2)
+        self.sp_outline_edge_sigma.setSingleStep(0.1)
+        self.sp_outline_edge_sigma.setValue(1.2)
+        form.addRow("Outline edge sigma (px)", self.sp_outline_edge_sigma)
+
+        self.sp_outline_canny_low = QDoubleSpinBox()
+        self.sp_outline_canny_low.setRange(0.01, 0.49)
+        self.sp_outline_canny_low.setDecimals(2)
+        self.sp_outline_canny_low.setSingleStep(0.01)
+        self.sp_outline_canny_low.setValue(0.10)
+        form.addRow("Outline canny low", self.sp_outline_canny_low)
+
+        self.sp_outline_canny_high = QDoubleSpinBox()
+        self.sp_outline_canny_high.setRange(0.05, 0.95)
+        self.sp_outline_canny_high.setDecimals(2)
+        self.sp_outline_canny_high.setSingleStep(0.01)
+        self.sp_outline_canny_high.setValue(0.30)
+        form.addRow("Outline canny high", self.sp_outline_canny_high)
+
         # Hidden global threshold factor
         self.sp_low_factor = QDoubleSpinBox()
         self.sp_low_factor.setRange(0.0, 1.00) # Allow 0.0
@@ -249,6 +284,13 @@ class AfmPanel(QWidget):
         self.sp_outline_smooth.setValue(2)
         self.sp_outline_thick.setValue(2)
 
+        # Inclusive Outline (Publication)
+        self.cb_outline_mode.setCurrentText("inclusive")
+        self.sp_outline_ring.setValue(2)
+        self.sp_outline_edge_sigma.setValue(1.3)
+        self.sp_outline_canny_low.setValue(0.08)
+        self.sp_outline_canny_high.setValue(0.24)
+
     def apply_afm_tooltips(self):
         # ==============================
         # AFM PARAMETER TOOLTIPS (hover)
@@ -337,6 +379,31 @@ class AfmPanel(QWidget):
             "Doporučeno: 2."
         )
 
+        self.cb_outline_mode.setToolTip(
+            "Outline mode.\n"
+            "strict = obrys jen z masky (konzervativní).\n"
+            "inclusive = obrys z masky + dokreslení hran z intenzity, ale jen v prstenci okolo masky.\n"
+            "Inclusive je určený pro publikovatelný vizuál s maximálním pokrytím."
+        )
+        self.sp_outline_ring.setToolTip(
+            "Outline ring radius (px).\n"
+            "Šířka prstence okolo masky, kde se hledají extra hrany.\n"
+            "Vyšší = více doplněných bakterií, ale může přidat šum. Doporučeno 2–3."
+        )
+        self.sp_outline_edge_sigma.setToolTip(
+            "Outline edge sigma (px).\n"
+            "Vyhlazení pro Canny hrany v inclusive režimu.\n"
+            "Vyšší = hladší, symetričtější kontury (méně zubaté). Doporučeno 1.1–1.6."
+        )
+        self.sp_outline_canny_low.setToolTip(
+            "Canny low threshold (0–1).\n"
+            "Nižší = označí více hran (vyšší coverage), ale riziko šumu."
+        )
+        self.sp_outline_canny_high.setToolTip(
+            "Canny high threshold (0–1).\n"
+            "Nižší = více hran (vyšší coverage). Typicky high ~ 3× low."
+        )
+
         # Post-processing / cleanup
         self.sp_min_area.setToolTip(
             "Min area [px²].\n"
@@ -386,6 +453,11 @@ class AfmPanel(QWidget):
             "area_bins": int(self.sp_bins.value()),
             "outline_smoothing_radius_px": int(self.sp_outline_smooth.value()),
             "edge_thickness_px": int(self.sp_outline_thick.value()),
+            "outline_mode": str(self.cb_outline_mode.currentText()),
+            "outline_ring_radius_px": int(self.sp_outline_ring.value()),
+            "outline_edge_sigma": float(self.sp_outline_edge_sigma.value()),
+            "outline_canny_low": float(self.sp_outline_canny_low.value()),
+            "outline_canny_high": float(self.sp_outline_canny_high.value()),
         }
 
 def get_device_spec() -> DeviceSpec:

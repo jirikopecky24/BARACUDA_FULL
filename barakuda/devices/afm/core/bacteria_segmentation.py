@@ -56,6 +56,15 @@ class AfmBacteriaSegParams:
     # 0 = off
     outline_smoothing_radius_px: int = 2
 
+    # Outline rendering mode (audit-ready)
+    outline_mode: str = "inclusive"  # "strict" | "inclusive"
+
+    # Inclusive outline: detect extra edges from intensity, but ONLY in a ring around the mask
+    outline_ring_radius_px: int = 2          # ring half-width in px
+    outline_edge_sigma: float = 1.2          # Gaussian sigma for Canny (px)
+    outline_canny_low: float = 0.10          # 0..1
+    outline_canny_high: float = 0.30         # 0..1
+
 
 def _normalize01(img: np.ndarray) -> np.ndarray:
     x = np.asarray(img, dtype=np.float32)
@@ -67,21 +76,21 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
 
 
 
-def compute_bacteria_edge_outline_afm(region_mask: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
-    """Compute continuous SORA-like outlines from region segmentation mask.
+def compute_bacteria_edge_outline_afm(img: np.ndarray, region_mask: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
+    """Audit-ready outline generator.
 
-    Key idea:
-      - use skimage.segmentation.find_boundaries to get continuous contours
-      - avoid skeletonization + fragment filtering (that was breaking the result)
-      - control thickness by dilation to ~2–3 px
+    Modes:
+      - strict: outline only from (smoothed) region_mask boundary
+      - inclusive: strict boundary + extra intensity edges, but ONLY inside a thin ring around the mask
     """
     import numpy as np
-    from skimage import morphology
+    from skimage import morphology, exposure, feature
     from skimage.segmentation import find_boundaries
+    from skimage import restoration
 
+    # --- mask prep (for stable boundary) ---
     m = np.asarray(region_mask).astype(bool)
 
-    # Optional cleanup to stabilize boundaries
     close_r = int(getattr(params, "closing_radius", 1))
     if close_r > 0:
         m = morphology.binary_closing(m, morphology.disk(close_r))
@@ -90,42 +99,94 @@ def compute_bacteria_edge_outline_afm(region_mask: np.ndarray, params: AfmBacter
     if fill_area > 0:
         m = morphology.remove_small_holes(m, area_threshold=fill_area)
 
-    # NEW: outline-only smoothing (rounding). Keeps coverage but makes contours more symmetric.
+    # outline-only smoothing (geometric look)
     rs = int(getattr(params, "outline_smoothing_radius_px", 2))
     if rs > 0:
-        # Closing with a slightly larger disk rounds concavities and bridges tiny notches,
-        # then a light opening removes small spurs. This is applied ONLY to outline generation.
         m = morphology.binary_closing(m, morphology.disk(rs))
         m = morphology.binary_opening(m, morphology.disk(1))
 
-    # Continuous outer boundaries (1px)
+    # strict boundary (1px)
     boundary = find_boundaries(m, mode="outer")
 
-    # Link tiny gaps in contour (very light)
-    link_r = int(getattr(params, "edge_link_radius_px", 1))
-    if link_r > 0:
-        boundary = morphology.binary_closing(boundary, morphology.disk(link_r))
+    mode = str(getattr(params, "outline_mode", "inclusive")).strip().lower()
 
-    # Thickness control:
-    # - boundary itself is ~1 px (thin)
-    # - dilation radius 1 => ~2–3 px (thicker)
-    t = int(getattr(params, "edge_thickness_px", 1))
+    extra = np.zeros_like(boundary, dtype=bool)
 
+    if mode == "inclusive":
+        # --- build ring around the mask (limits where we look for extra edges) ---
+        ring_r = int(getattr(params, "outline_ring_radius_px", 2))
+        ring_r = max(1, ring_r)
+
+        dil = morphology.binary_dilation(m, morphology.disk(ring_r))
+        ero = morphology.binary_erosion(m, morphology.disk(ring_r))
+        ring = dil & (~ero)
+
+        # --- intensity prep (deterministic, mild; keeps auditability) ---
+        x = np.asarray(img)
+        if x.ndim == 3:
+            if x.shape[-1] >= 3:
+                x = x[..., 0].astype(np.float32) * 0.299 + x[..., 1].astype(np.float32) * 0.587 + x[..., 2].astype(np.float32) * 0.114
+            else:
+                x = x[..., 0]
+        x = np.asarray(x, dtype=np.float32)
+        # normalize 0..1
+        x = x - np.nanmin(x)
+        mx = np.nanmax(x)
+        if mx > 0:
+            x = x / mx
+
+        if getattr(params, "invert", False):
+            x = 1.0 - x
+
+        # CLAHE (mild, consistent)
+        try:
+            x = exposure.equalize_adapthist(x, clip_limit=2.0, kernel_size=(8, 8)).astype(np.float32)
+        except Exception:
+            pass
+
+        # light NLM to reduce AFM microtexture impact (fast_mode deterministic)
+        try:
+            x = restoration.denoise_nl_means(
+                x, h=(12.0 / 255.0), fast_mode=True, patch_size=5, patch_distance=6, channel_axis=None
+            ).astype(np.float32)
+        except Exception:
+            pass
+
+        # --- canny edges, then restrict to ring ---
+        sigma = float(getattr(params, "outline_edge_sigma", 1.2))
+        low = float(getattr(params, "outline_canny_low", 0.10))
+        high = float(getattr(params, "outline_canny_high", 0.30))
+
+        edges = feature.canny(x, sigma=sigma, low_threshold=low, high_threshold=high)
+        extra = edges & ring
+
+        # connect tiny gaps lightly (reuse edge_link_radius_px if present)
+        link_r = int(getattr(params, "edge_link_radius_px", 1))
+        if link_r > 0:
+            extra = morphology.binary_closing(extra, morphology.disk(link_r))
+
+    # combine strict boundary + extra ring edges
+    combined = boundary | extra
+
+    # thickness control (your existing convention)
+    t = int(getattr(params, "edge_thickness_px", 2))
     if t <= 0:
-        out_edges = boundary  # thinnest possible (recommended for your request)
+        out_edges = combined
     else:
-        # Make the default thinner: t=1 -> no extra thickening
-        # t=2 -> disk(1) => ~2–3 px
-        dil_r = max(0, t - 1)
-        out_edges = morphology.binary_dilation(boundary, morphology.disk(dil_r)) if dil_r > 0 else boundary
+        dil_r = max(0, t - 1)  # 2 => ~2–3 px
+        out_edges = morphology.binary_dilation(combined, morphology.disk(dil_r)) if dil_r > 0 else combined
 
     debug = {
-        "outline_from": "region_mask_find_boundaries",
+        "outline_mode": mode,
+        "outline_smoothing_radius_px": int(getattr(params, "outline_smoothing_radius_px", 2)),
+        "edge_thickness_px": int(getattr(params, "edge_thickness_px", 2)),
         "closing_radius": close_r,
         "fill_holes_area": fill_area,
-        "edge_link_radius_px": link_r,
-        "edge_thickness_px": t,
-        "edges_coverage": float(out_edges.mean()),
+        "outline_ring_radius_px": int(getattr(params, "outline_ring_radius_px", 2)),
+        "outline_edge_sigma": float(getattr(params, "outline_edge_sigma", 1.2)),
+        "outline_canny_low": float(getattr(params, "outline_canny_low", 0.10)),
+        "outline_canny_high": float(getattr(params, "outline_canny_high", 0.30)),
+        "coverage": float(out_edges.mean()),
     }
     return {"edge_mask": out_edges, "debug": debug}
 
@@ -434,7 +495,7 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         },
     }
 
-    edge = compute_bacteria_edge_outline_afm(mask, params)
+    edge = compute_bacteria_edge_outline_afm(img, mask, params)
 
     return {
         "mask": mask,
