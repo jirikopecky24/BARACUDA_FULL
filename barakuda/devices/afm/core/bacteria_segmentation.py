@@ -86,7 +86,12 @@ def compute_bacteria_edge_outline_afm(region_mask: np.ndarray, params: AfmBacter
     if fill_area > 0:
         m = morphology.remove_small_holes(m, area_threshold=fill_area)
 
-    # Continuous outer boundaries
+    # NEW: gentle shape smoothing to reduce jagged / warped outlines
+    # opening removes tiny spurs, closing reconnects small gaps (kept very small to avoid merging)
+    m = morphology.binary_opening(m, morphology.disk(1))
+    m = morphology.binary_closing(m, morphology.disk(1))
+
+    # Continuous outer boundaries (1px)
     boundary = find_boundaries(m, mode="outer")
 
     # Link tiny gaps in contour (very light)
@@ -94,12 +99,18 @@ def compute_bacteria_edge_outline_afm(region_mask: np.ndarray, params: AfmBacter
     if link_r > 0:
         boundary = morphology.binary_closing(boundary, morphology.disk(link_r))
 
-    # Thickness: 1 => usually ~2–3 px stroke
+    # Thickness control:
+    # - boundary itself is ~1 px (thin)
+    # - dilation radius 1 => ~2–3 px (thicker)
     t = int(getattr(params, "edge_thickness_px", 1))
-    if t > 0:
-        out_edges = morphology.binary_dilation(boundary, morphology.disk(t))
+
+    if t <= 0:
+        out_edges = boundary  # thinnest possible (recommended for your request)
     else:
-        out_edges = boundary
+        # Make the default thinner: t=1 -> no extra thickening
+        # t=2 -> disk(1) => ~2–3 px
+        dil_r = max(0, t - 1)
+        out_edges = morphology.binary_dilation(boundary, morphology.disk(dil_r)) if dil_r > 0 else boundary
 
     debug = {
         "outline_from": "region_mask_find_boundaries",
