@@ -63,54 +63,58 @@ def _normalize01(img: np.ndarray) -> np.ndarray:
 
 
 
-def compute_bacteria_edge_outline_afm(img: np.ndarray, params: AfmBacteriaSegParams, mask: np.ndarray = None) -> dict[str, Any]:
-    """Compute a SORA-style bacterial edge outline map (audit-stable).
+def compute_bacteria_edge_outline_afm(region_mask: np.ndarray, params: AfmBacteriaSegParams) -> dict[str, Any]:
+    """Compute SORA-like single-stroke outlines from a region segmentation mask.
 
-    Outputs:
-      - edge_mask: bool (H,W)          single-stroke edges (after skeletonize + dilation)
-      - edge_rgb:  uint8 (H,W,3)       black background with yellow (#FFFF00) edges
-      - debug: dict                    coverage + intermediate stats
+    This is audit-stable and visually consistent:
+      - outline is derived from the segmentation mask (no noisy internal edges)
+      - single-stroke + thickness ~2-3 px
+      - black background + yellow (#FFFF00) is created downstream/export
     """
-    if mask is None:
-        # Avoid circular import by runtime import if needed, or rely on namespace.
-        # But segment_bacteria_afm is defined below. 
-        # Circular logic: segment_bacteria_afm calls US.
-        # So if mask is None, we must call segment_bacteria_afm TO GET THE MASK.
-        # But we must tell segment_bacteria_afm NOT to call us back, OR rely on it calling us with mask != None.
-        # The latter works: segment_bacteria_afm computes mask, calls us (mask=...), we return.
-        # So here we just recurse once.
-        # Make sure segment_bacteria_afm is available.
-        # It's in the same module, so 'segment_bacteria_afm' name refers to the function object (via closure/module scope).
-        
-        # HOWEVER, segment_bacteria_afm returns edges too.
-        # If we call segment_bacteria_afm, it runs the logic below (via inner call).
-        res = segment_bacteria_afm(img, params)
-        return {"edge_mask": res["edge_mask"], "edge_rgb": res.get("edge_rgb"), "debug": res.get("edge_debug")}
-
     from skimage import morphology
+    import numpy as np
 
-    # outline from region mask (clean object boundary)
-    region_mask = mask
+    m = np.asarray(region_mask).astype(bool)
 
-    # boundary = mask XOR eroded(mask)
-    eroded = morphology.binary_erosion(region_mask, morphology.disk(1))
-    boundary = region_mask & (~eroded)
+    # 1) Clean the mask a bit to avoid ragged boundaries / tiny gaps
+    # (closing radius comes from existing AFM params in UI)
+    close_r = int(getattr(params, "closing_radius", 1))
+    if close_r > 0:
+        m = morphology.binary_closing(m, morphology.disk(close_r))
 
-    # ensure single stroke
+    # fill small holes (already in UI as fill_holes_area)
+    fill_area = int(getattr(params, "fill_holes_area", 50))
+    if fill_area > 0:
+        m = morphology.remove_small_holes(m, area_threshold=fill_area)
+
+    # 2) Boundary = mask - eroded(mask)  (clean one-pixel-ish outline)
+    er = morphology.binary_erosion(m, morphology.disk(1))
+    boundary = m & (~er)
+
+    # 3) Force single-stroke (handles double boundaries on thick edges)
     skel = morphology.skeletonize(boundary)
 
-    # final thickness 2–3 px
-    out_edges = morphology.binary_dilation(skel, morphology.disk(1))
+    # 4) Remove very short fragments (helps prevent speckle)
+    min_len = int(getattr(params, "edge_min_fragment_px", 10))
+    if min_len > 1:
+        skel = morphology.remove_small_objects(skel, min_size=min_len)
 
-    # RGB on black background, yellow edges
-    rgb = np.zeros((*out_edges.shape, 3), dtype=np.uint8)
-    rgb[out_edges] = (255, 255, 0)
+    # 5) Thicken to ~2–3 px (1 => usually ~2-3 px depending on raster)
+    t = int(getattr(params, "edge_thickness_px", 1))
+    if t > 0:
+        out_edges = morphology.binary_dilation(skel, morphology.disk(t))
+    else:
+        out_edges = skel
 
     debug = {
+        "outline_from": "region_mask",
+        "closing_radius": close_r,
+        "fill_holes_area": fill_area,
+        "edge_min_fragment_px": min_len,
+        "edge_thickness_px": t,
         "edges_coverage": float(out_edges.mean()),
-        "skeleton_coverage": float(skel.mean()),
     }
-    return {"edge_mask": out_edges, "edge_rgb": rgb, "debug": debug}
+    return {"edge_mask": out_edges, "debug": debug}
 
 
 def segment_bacteria_watershed_afm(img: np.ndarray, params: AfmBacteriaSegParams):
@@ -416,7 +420,7 @@ def segment_bacteria_afm(img: np.ndarray, params: AfmBacteriaSegParams) -> dict[
         },
     }
 
-    edge = compute_bacteria_edge_outline_afm(img, params, mask=mask)
+    edge = compute_bacteria_edge_outline_afm(mask, params)
 
     return {
         "mask": mask,
