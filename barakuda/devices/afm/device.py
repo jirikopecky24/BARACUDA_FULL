@@ -162,87 +162,7 @@ class AfmPanel(QWidget):
         # "Area bins" is for histogram. Useful. I'll keep it.
         form.addRow("Area bins (freq)", self.sp_bins)
 
-        # ==============================
-        # AFM PARAMETER TOOLTIPS
-        # ==============================
 
-        self.cb_height_aware.setToolTip(
-            "Applies AFM height normalization (row leveling + background subtraction + clipping). "
-            "Recommended for physically meaningful segmentation."
-        )
-
-        self.cb_separate.setToolTip(
-            "Uses watershed-based instance separation. "
-            "Enables splitting of touching bacteria into individual objects."
-        )
-
-        self.cb_save_overlay.setToolTip(
-            "Saves segmentation contours overlaid on the RGB preview image."
-        )
-
-        self.cb_invert.setToolTip(
-            "Inverts intensity before segmentation. "
-            "Use only if bacteria appear darker than background."
-        )
-
-        self.sp_bg.setToolTip(
-            "Gaussian sigma for background estimation (px). "
-            "Higher values remove large-scale surface trends."
-        )
-
-        self.sp_smooth.setToolTip(
-            "Gaussian smoothing of AFM height data (px). "
-            "Reduces high-frequency noise before segmentation."
-        )
-
-        self.sp_edge_sigma.setToolTip(
-            "Sigma for edge detection filtering (px). "
-            "Lower values detect fine structures; higher values smooth edges."
-        )
-
-        self.sp_min_perim.setToolTip(
-            "Minimum object perimeter (px). "
-            "Removes small fragmented detections."
-        )
-
-        self.sp_min_ecc.setToolTip(
-            "Minimum eccentricity (0–1). "
-            "Filters out nearly circular or irregular objects."
-        )
-
-        self.sp_min_sol.setToolTip(
-            "Minimum solidity (0–1). "
-            "Removes highly concave or fragmented regions."
-        )
-
-        self.sp_log_sigma.setToolTip(
-            "Laplacian-of-Gaussian scale (px). "
-            "Controls seed detection sensitivity for watershed."
-        )
-
-        self.sp_peak_dist.setToolTip(
-            "Minimum distance between local maxima (px). "
-            "Higher values reduce over-segmentation."
-        )
-
-        self.sp_min_area.setToolTip(
-            "Minimum object area (px²). "
-            "Removes small noise components."
-        )
-
-        self.sp_close.setToolTip(
-            "Morphological closing radius (px). "
-            "Connects nearby fragmented regions."
-        )
-
-        self.sp_holes.setToolTip(
-            "Maximum hole area to fill (px²). "
-            "Fills small gaps inside segmented bacteria."
-        )
-
-        self.sp_bins.setToolTip(
-            "Number of histogram bins for area distribution."
-        )
 
         layout.addLayout(form)
         layout.addWidget(QLabel("ROI z Preview se použije jako výpočetní oblast."))
@@ -259,6 +179,7 @@ class AfmPanel(QWidget):
         
         # Apple Defaults immediately
         self.apply_afm_defaults()
+        self.apply_afm_tooltips()
 
     def apply_afm_defaults(self):
         # ===============================
@@ -300,6 +221,94 @@ class AfmPanel(QWidget):
         self.sp_close.setValue(1)
         self.sp_holes.setValue(50)
         self.sp_bins.setValue(20)
+
+    def apply_afm_tooltips(self):
+        # ==============================
+        # AFM PARAMETER TOOLTIPS (hover)
+        # ==============================
+
+        # Checkboxes
+        self.cb_height_aware.setToolTip(
+            "AFM height normalization: row leveling + background subtraction + percentile clipping.\n"
+            "Use ON for more stable, comparable segmentation across datasets."
+        )
+        self.cb_separate.setToolTip(
+            "Separate touching objects (watershed).\n"
+            "ON = tries to split touching bacteria into instances.\n"
+            "OFF = returns a single connected mask (no instance separation)."
+        )
+        self.cb_save_overlay.setToolTip(
+            "Save overlay image with red contours drawn on the preview (RGB) image."
+        )
+        self.cb_invert.setToolTip(
+            "Invert intensity assumption.\n"
+            "Use only if bacteria appear DARK relative to background in the processed image."
+        )
+
+        # Sigma parameters
+        self.sp_bg.setToolTip(
+            "Background sigma [px].\n"
+            "Controls how aggressively large-scale surface trends are removed.\n"
+            "Higher = more background removal (flattening), lower = keeps more long-scale structure."
+        )
+        self.sp_smooth.setToolTip(
+            "Smooth sigma [px].\n"
+            "Gaussian smoothing before segmentation.\n"
+            "Higher = less noise but can merge nearby objects; lower = sharper details but more false detections."
+        )
+        self.sp_edge_sigma.setToolTip(
+            "Edge sigma [px].\n"
+            "Scale used for edge/gradient emphasis.\n"
+            "Lower = more sensitive to fine edges (may pick texture), higher = smoother edges."
+        )
+
+        # Shape filters
+        self.sp_min_perim.setToolTip(
+            "Min perimeter [px].\n"
+            "Rejects objects with small boundary length (removes fragments / tiny detections)."
+        )
+        self.sp_min_ecc.setToolTip(
+            "Min eccentricity [0–1].\n"
+            "0 = circle-like, 1 = very elongated.\n"
+            "Higher values keep elongated shapes and reject round/irregular noise."
+        )
+        self.sp_min_sol.setToolTip(
+            "Min solidity [0–1].\n"
+            "Solidity = area / convex hull area.\n"
+            "Higher rejects concave/fragmented shapes; lower keeps more irregular shapes."
+        )
+
+        # Watershed / marker control
+        self.sp_log_sigma.setToolTip(
+            "LoG sigma [px].\n"
+            "Scale for Laplacian-of-Gaussian used to find marker candidates.\n"
+            "Higher = fewer markers (less over-segmentation), lower = more markers (risk of over-segmentation)."
+        )
+        self.sp_peak_dist.setToolTip(
+            "Peak min distance [px].\n"
+            "Minimum distance between detected local maxima (watershed markers).\n"
+            "Higher = fewer seeds (less splitting), lower = more seeds (more splitting / possible map-like result)."
+        )
+
+        # Post-processing / cleanup
+        self.sp_min_area.setToolTip(
+            "Min area [px²].\n"
+            "Rejects small objects (noise). Increase if you see many tiny detections."
+        )
+        self.sp_close.setToolTip(
+            "Closing radius [px].\n"
+            "Morphological closing to connect small gaps and smooth boundaries.\n"
+            "Higher can merge neighbors; use small values (0–2) for bacteria."
+        )
+        self.sp_holes.setToolTip(
+            "Fill holes area [px²].\n"
+            "Fills small holes inside objects up to this area.\n"
+            "Increase if bacteria have unwanted internal holes."
+        )
+        self.sp_bins.setToolTip(
+            "Area bins [count].\n"
+            "Number of bins used for area histogram in exported statistics."
+        )
 
     def get_afm_params(self) -> dict:
         return {
