@@ -1167,10 +1167,13 @@ class BatchController:
                 res = segment_bacteria_afm(roi_img, pp)
                 mask = res["mask"]
                 labels = res["labels"]
+                edge_mask = res.get("edge_mask", None)
 
                 # ---- artifacts ----
                 mask_path = run_dir / f"{stem}_mask.png"
                 labels_path = run_dir / f"{stem}_labels.png"
+                edge_mask_path = run_dir / f"{stem}_edge_mask.png"
+                edge_map_path = run_dir / f"{stem}_edge_map.png"
                 overlay_path = run_dir / f"{stem}_overlay.png"
                 objects_csv = run_dir / f"{stem}_objects.csv"
                 summary_json = run_dir / f"{stem}_summary.json"
@@ -1179,6 +1182,13 @@ class BatchController:
                 iio.imwrite(mask_path, (mask.astype(np.uint8) * 255))
                 labels_rgb = (label2rgb(labels, bg_label=0) * 255).astype(np.uint8)
                 iio.imwrite(labels_path, labels_rgb)
+
+                # SORA-style edge artifacts (black + yellow outlines)
+                if edge_mask is not None:
+                    iio.imwrite(edge_mask_path, (edge_mask.astype(np.uint8) * 255))
+                    edge_rgb = np.zeros((*edge_mask.shape, 3), dtype=np.uint8)
+                    edge_rgb[edge_mask] = (255, 255, 0)
+                    iio.imwrite(edge_map_path, edge_rgb)
 
                 if getattr(pp, "save_overlay", True):
                     # 1. Prepare base RGB image
@@ -1206,31 +1216,10 @@ class BatchController:
 
                     overlay = rgb.copy()
 
-                    # 2. Prepare boundaries
-                    # Find boundaries from labels (cleaner) or mask
-                    from skimage.segmentation import find_boundaries
-                    if labels.max() > 0:
-                        bounds = find_boundaries(labels, mode='outer')
-                    else:
-                        bounds = find_boundaries(mask, mode='outer')
+                    if edge_mask is not None:
+                        overlay[edge_mask] = (255, 255, 0)
                     
-                    overlay_float = overlay.astype(np.float32)
-                    red_color = np.array([255.0, 0.0, 0.0])
-                    
-                    # 3. Alpha blend mask (DISABLED per user request)
-                    # We only want boundaries.
-                    # mask_bool = (mask > 0)
-                    # m_exp = mask_bool[..., None]
-                    # overlay_float = np.where(m_exp, overlay_float * (1 - alpha) + red_color * alpha, overlay_float)
-                    
-                    # 4. Solid red boundaries
-                    # boundaries is (H,W) bool
-                    b_exp = bounds[..., None]
-                    overlay_float = np.where(b_exp, red_color, overlay_float)
-                    
-                    # 5. Save
-                    overlay_u8 = np.clip(overlay_float, 0, 255).astype(np.uint8)
-                    iio.imwrite(overlay_path, overlay_u8)
+                    iio.imwrite(overlay_path, overlay)
 
                 # objects.csv
                 with objects_csv.open("w", encoding="utf-8", newline="") as f:
@@ -1321,71 +1310,52 @@ class BatchController:
         self._log("Run Batch done ✅")
 
     def compute_afm_preview(self, file_path: str, roi_rect, afm_params: dict):
+        """Compute AFM preview overlay (yellow single-stroke outlines).
+
+        Returns:
+          RGB uint8 image (ROI-sized)
+        """
         import imageio.v2 as iio
         import numpy as np
-        import matplotlib.pyplot as plt
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from skimage import measure
 
-        from barakuda.devices.afm.core.bacteria_segmentation import (
-            AfmBacteriaSegParams,
-            segment_bacteria_afm,
-        )
+        from barakuda.devices.afm.core.bacteria_segmentation import segment_bacteria_afm
 
         img_orig = iio.imread(file_path)
         img = img_orig
-        
-        # ensure 2D grayscale for segmentation (PNG can be RGB)
+
         # ensure 2D grayscale for segmentation (PNG can be RGB)
         if img.ndim == 3:
             if img.shape[-1] >= 3:
-                # simple luminance-ish conversion without extra deps
                 img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
             else:
                 img = img[..., 0]
-            img = img.astype(np.float32)
+        img = np.asarray(img, dtype=np.float32)
 
         # crop ROI (x, y, w, h)
         x, y, w, h = roi_rect
-        roi_img = img[y:y+h, x:x+w]
-        roi_img_orig = img_orig[y:y+h, x:x+w]
+        roi_img = img[y:y + h, x:x + w]
+        roi_img_orig = img_orig[y:y + h, x:x + w]
 
         pp = self._build_afm_seg_params(afm_params)
-
         res = segment_bacteria_afm(roi_img, pp)
-        mask = res["mask"]
-        labels = res["labels"]
+        edge = res.get("edge_mask", None)
 
-        # render overlay with red contours
-        fig = plt.figure(figsize=(6, 6))
-        ax = fig.add_subplot(1, 1, 1)
-        
+        # base RGB (uint8)
         if roi_img_orig.ndim == 2:
-            ax.imshow(roi_img_orig, cmap="gray")
+            base = np.stack([roi_img_orig] * 3, axis=-1)
         else:
-            ax.imshow(roi_img_orig)
-        ax.set_axis_off()
-        
-        # Instance boundaries
-        from skimage.segmentation import find_boundaries
-        if labels.max() > 0:
-            bnd = find_boundaries(labels, mode='outer')
-            overlay_layer = np.zeros(roi_img.shape + (4,), dtype=np.float32)
-            overlay_layer[bnd] = [1.0, 0.0, 0.0, 1.0]
-            ax.imshow(overlay_layer)
-            
-        fig.tight_layout(pad=0)
-        
-        # render to numpy array
-        canvas = FigureCanvasAgg(fig)
-        canvas.draw()
-        buf = canvas.buffer_rgba()
-        w, h = fig.canvas.get_width_height()
-        overlay_rgba = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 4))
-        plt.close(fig)
-        
-        # return RGB
-        return overlay_rgba[:, :, :3]
+            base = roi_img_orig[..., :3] if roi_img_orig.shape[-1] >= 3 else np.stack([roi_img_orig[..., 0]] * 3, axis=-1)
+
+        if base.dtype != np.uint8:
+            bmin = float(np.nanmin(base))
+            bmax = float(np.nanmax(base))
+            base = ((base - bmin) / (bmax - bmin + 1e-9) * 255.0).astype(np.uint8)
+
+        overlay = base.copy()
+        if edge is not None:
+            overlay[edge] = (255, 255, 0)
+
+        return overlay
 
     def _build_afm_seg_params(self, afm_params: dict):
         from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams
