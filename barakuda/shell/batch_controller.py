@@ -1181,12 +1181,17 @@ class BatchController:
                 stem = p.stem
 
                 # --- BUILD V2 PARAMS (Cellpose-only) ---
+                _cp_diam_px = afm_params.get("cp_diameter_px")
                 p_v2 = AfmV2Params(
+                    compute_profile=_s("compute_profile", "auto"),
+                    preview_fast_mode=_b("preview_fast_mode", False),
+                    preview_downscale=_f("preview_downscale", 0.5),
                     invert=_b("invert", False),
                     clip_p_low=_f("clip_p_low", 1.0),
                     clip_p_high=_f("clip_p_high", 99.0),
                     cp_model=_s("cp_model", "cyto3"),
-                    cp_diameter=_f("cp_diameter", 0.0),
+                    cp_diameter_mode=_s("cp_diameter_mode", "auto"),
+                    cp_diameter_px=int(_cp_diam_px) if _cp_diam_px is not None else None,
                     cp_flow_threshold=_f("cp_flow_threshold", 0.4),
                     cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
                     rods_only=_b("rods_only", True),
@@ -1198,11 +1203,16 @@ class BatchController:
                 )
 
                 # --- RUN V2 PIPELINE ---
-                res = run_afm_v2(roi_img, p_v2)
+                res = run_afm_v2(roi_img, p_v2, float(loader_meta.get("afm_um_per_px", 0.0)))
                 labels = res["labels"]
                 rod_labels = res["rod_labels"]
                 rod_table = res["rod_table"]
                 audit = res["audit"]
+
+                # --- Map coords back to FULL image ---
+                if "centroid_x" in rod_table and len(rod_table["centroid_x"]) > 0:
+                    rod_table["centroid_x"] += x0
+                    rod_table["centroid_y"] += y0
 
                 # --- Merge loader metadata into audit ---
                 audit["device"] = "AFM"
@@ -1214,11 +1224,13 @@ class BatchController:
                 audit["afm_um_per_px"] = loader_meta.get("afm_um_per_px", 0.0)
                 audit["afm_um_per_px_source"] = loader_meta.get("afm_um_per_px_source", "unknown")
 
-                n_rods = len(rod_table["label"])
+                n_rods = len(rod_table.get("label", []))
 
-                # --- EXPORT: rods_mask.png ---
+                # --- EXPORT: rods_mask.png (FULL SIZE) ---
                 rods_mask_path = run_dir / f"{stem}_rods_mask.png"
-                iio.imwrite(rods_mask_path, ((rod_labels > 0).astype(np.uint8) * 255))
+                full_mask = np.zeros((H, W), dtype=np.uint8)
+                full_mask[y0:y0+h0, x0:x0+w0] = (rod_labels > 0).astype(np.uint8) * 255
+                iio.imwrite(rods_mask_path, full_mask)
 
                 # --- EXPORT: rods_props.csv ---
                 rods_csv = run_dir / f"{stem}_rods_props.csv"
@@ -1235,16 +1247,26 @@ class BatchController:
                             row.append(f"{val:.6f}" if isinstance(val, (float, np.floating)) else str(val))
                         wcsv.writerow(row)
 
-                # --- EXPORT: overlay.png (ellipses via render_ellipse_overlay) ---
+                # --- EXPORT: overlay.png (FULL SIZE with ROI box) ---
                 if bool(afm_params.get("save_overlay", True)):
-                    # Build base RGB for overlay
-                    base_rgb = roi_img.copy()
-                    overlay = render_ellipse_overlay(base_rgb, rod_table, thickness_px=int(p_v2.ellipse_thickness_px))
+                    from barakuda.devices.afm.core.afm_v2_pipeline import _normalize
+                    full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
+                    full_img8 = (full_norm * 255.0).astype(np.uint8)
+                    overlay = render_ellipse_overlay(full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px))
+                    
+                    import cv2
+                    cv2.rectangle(overlay, (x0, y0), (x0+w0, y0+h0), (255, 255, 0), max(1, int(p_v2.ellipse_thickness_px)))
+
                     overlay_path = run_dir / f"{stem}_overlay.png"
                     iio.imwrite(overlay_path, overlay)
 
                 # --- EXPORT: summary.json (full audit + top-level must-have) ---
                 summary_json = run_dir / f"{stem}_summary.json"
+                
+                cp_audit = audit.get("cellpose", {})
+                timings = audit.get("timings_ms", {})
+                diam_eff = cp_audit.get("diameter_effective_px", "Auto")
+                
                 payload = {
                     # Top-level must-have keys (Bible spec)
                     "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
@@ -1254,18 +1276,32 @@ class BatchController:
                     "afm_um_per_px": audit.get("afm_um_per_px", 0.0),
                     "afm_um_per_px_source": audit.get("afm_um_per_px_source", "unknown"),
                     "afm_scan_size_um": loader_meta.get("afm_scan_size_um", 0.0),
-                    "cellpose_model": audit.get("cellpose_model", p_v2.cp_model),
-                    "cellpose_version": audit.get("cellpose_version", None),
-                    "diameter": audit.get("diameter", float(p_v2.cp_diameter)),
-                    "flow_threshold": audit.get("flow_threshold", float(p_v2.cp_flow_threshold)),
-                    "cellprob_threshold": audit.get("cellprob_threshold", float(p_v2.cp_cellprob_threshold)),
+                    
+                    # Compute & Environment
+                    "compute_profile": cp_audit.get("compute_profile", "unknown"),
+                    "compute_device_resolved": cp_audit.get("device", "unknown"),
+                    "torch_version": cp_audit.get("torch_version", "unknown"),
+                    "cellpose_version": cp_audit.get("cellpose_version", "unknown"),
+                    
+                    # Core AFM Params
+                    "cellpose_model": cp_audit.get("cellpose_model", p_v2.cp_model),
+                    "diameter_mode": p_v2.cp_diameter_mode,
+                    "diameter_effective_px": diam_eff,
+                    "flow_threshold": cp_audit.get("flow_threshold", p_v2.cp_flow_threshold),
+                    "cellprob_threshold": cp_audit.get("cellprob_threshold", p_v2.cp_cellprob_threshold),
                     "rod_filter": audit.get("rod_filter", {}),
+                    
+                    # Performance & Diagnostics
+                    "preview_downscale_applied": audit.get("preview_downscale_applied", False),
+                    "preview_downscale_factor": audit.get("preview_downscale_factor", 1.0),
+                    "timings_ms": timings,
+                    
                     # Batch metadata
                     "n_labels": int(labels.max()),
                     "n_rods": n_rods,
                     "roi_rect": [x0, y0, w0, h0],
                     "source_image": p.name,
-                    # Full audit trace
+                    # Full audit trace (for granular bug reports)
                     "audit": audit,
                 }
                 summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
