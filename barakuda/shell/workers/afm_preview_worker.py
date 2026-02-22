@@ -8,6 +8,45 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
 from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
 
+import sys
+import re
+
+class _ProgressCatcher(object):
+    def __init__(self, original_stream, signal_emit):
+        self.original_stream = original_stream
+        self.signal_emit = signal_emit
+        self.buf = ""
+
+    def write(self, s):
+        try:
+            self.original_stream.write(s)
+        except Exception:
+            pass
+            
+        self.buf += s
+        while '\r' in self.buf or '\n' in self.buf:
+            c = '\r' if '\r' in self.buf else '\n'
+            line, _, self.buf = self.buf.partition(c)
+            line = line.strip()
+            if not line:
+                continue
+            
+            pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%', line)
+            if pct_match:
+                pct = pct_match.group(1)
+                if "download" in line.lower():
+                    self.signal_emit(f"Downloading model... {pct}%")
+                else:
+                    self.signal_emit(f"Cellpose running... {pct}%")
+            elif "downloading" in line.lower():
+                self.signal_emit("Downloading Cellpose model...")
+
+    def flush(self):
+        try:
+            self.original_stream.flush()
+        except Exception:
+            pass
+
 class AfmPreviewWorker(QObject):
     """Worker thread for AFM Cellpose preview.
     Runs segmentation and ellipse rendering without freezing the UI.
@@ -86,7 +125,19 @@ class AfmPreviewWorker(QObject):
 
             # Cellpose inference can take a while and freeze here
             self.progress.emit("Cellpose: segmentation running...")
-            res = run_afm_v2(roi_img, p_v2)
+            
+            catcher_err = _ProgressCatcher(sys.stderr, self.progress.emit)
+            catcher_out = _ProgressCatcher(sys.stdout, self.progress.emit)
+            old_err = sys.stderr
+            old_out = sys.stdout
+            
+            try:
+                sys.stderr = catcher_err
+                sys.stdout = catcher_out
+                res = run_afm_v2(roi_img, p_v2)
+            finally:
+                sys.stderr = old_err
+                sys.stdout = old_out
 
             if self._is_cancelled:
                 return
