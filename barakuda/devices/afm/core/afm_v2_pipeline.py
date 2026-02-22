@@ -182,10 +182,12 @@ def run_afm_v2(height_img: np.ndarray, params: AfmV2Params) -> Dict[str, Any]:
         "clip_p_low": params.clip_p_low,
         "clip_p_high": params.clip_p_high,
         "rods_only": params.rods_only,
-        "rods_min_major_axis_px": params.rods_min_major_axis_px,
-        "rods_min_aspect_ratio": params.rods_min_aspect_ratio,
-        "rods_min_eccentricity": params.rods_min_eccentricity,
-        "rods_min_area_px": params.rods_min_area_px,
+        "rod_filter": {
+            "min_major_axis_px": params.rods_min_major_axis_px,
+            "min_aspect_ratio": params.rods_min_aspect_ratio,
+            "min_eccentricity": params.rods_min_eccentricity,
+            "min_area_px": params.rods_min_area_px,
+        },
         "ellipse_thickness_px": params.ellipse_thickness_px,
     }
     audit.update(cp_audit)
