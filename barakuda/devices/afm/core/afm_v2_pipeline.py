@@ -6,9 +6,14 @@ from skimage import filters, morphology, measure, segmentation, exposure
 
 try:
     from cellpose import models as cp_models  # optional
+    import cellpose as _cellpose_pkg
     _HAS_CELLPOSE = True
+    _CELLPOSE_VERSION = getattr(_cellpose_pkg, "__version__", "unknown")
 except Exception:
     _HAS_CELLPOSE = False
+    _CELLPOSE_VERSION = None
+
+_AFM_PIPELINE_VERSION = "2.0"
 
 
 @dataclass
@@ -101,11 +106,28 @@ def segment_cellpose(norm: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict
     audit = {
         "cellpose_model": p.cp_model,
         "cellpose_installed": True,
+        "cellpose_version": _CELLPOSE_VERSION,
         "diameter": float(p.cp_diameter),
         "flow_threshold": float(p.cp_flow_threshold),
         "cellprob_threshold": float(p.cp_cellprob_threshold),
     }
     return masks.astype(np.int32), audit
+
+
+def _empty_rod_table() -> Dict[str, np.ndarray]:
+    """Return a valid rod_table with empty arrays for all required columns."""
+    return {
+        "label": np.array([], dtype=np.int32),
+        "centroid_x": np.array([], dtype=np.float32),
+        "centroid_y": np.array([], dtype=np.float32),
+        "orientation_rad": np.array([], dtype=np.float32),
+        "major_axis_px": np.array([], dtype=np.float32),
+        "minor_axis_px": np.array([], dtype=np.float32),
+        "aspect_ratio": np.array([], dtype=np.float32),
+        "eccentricity": np.array([], dtype=np.float32),
+        "solidity": np.array([], dtype=np.float32),
+        "area_px": np.array([], dtype=np.int32),
+    }
 
 
 def rod_filter(labels: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
@@ -118,6 +140,9 @@ def rod_filter(labels: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str
         ecc = float(getattr(pr, "eccentricity", 0.0))
         if maj >= p.rods_min_major_axis_px and ar >= p.rods_min_aspect_ratio and ecc >= p.rods_min_eccentricity:
             keep.append(pr.label)
+
+    if not keep:
+        return np.zeros_like(labels, dtype=np.int32), _empty_rod_table()
 
     rod_labels = np.where(np.isin(labels, keep), labels, 0).astype(np.int32)
 
@@ -142,9 +167,16 @@ def rod_filter(labels: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str
 
 
 def run_afm_v2(height_img: np.ndarray, params: AfmV2Params) -> Dict[str, Any]:
+    """Run AFM v2 segmentation pipeline.
+
+    Guaranteed return keys:
+        labels, rod_labels, rod_table, audit, norm
+    No None values — empty arrays if no rods found.
+    """
     norm = _normalize(height_img, invert=params.invert, p_low=params.clip_p_low, p_high=params.clip_p_high)
 
     audit: Dict[str, Any] = {
+        "afm_pipeline_version": _AFM_PIPELINE_VERSION,
         "backend": params.backend,
         "invert": params.invert,
         "clip_p_low": params.clip_p_low,
@@ -168,11 +200,13 @@ def run_afm_v2(height_img: np.ndarray, params: AfmV2Params) -> Dict[str, Any]:
     else:
         labels = segment_classic(norm, params)
 
-    out: Dict[str, Any] = {"norm": norm, "labels": labels, "audit": audit}
+    # Guaranteed: always compute rod_labels and rod_table
+    rod_labels, rod_table = rod_filter(labels, params)
 
-    if params.rods_only:
-        rod_labels, rod_table = rod_filter(labels, params)
-        out["rod_labels"] = rod_labels
-        out["rod_table"] = rod_table
-
-    return out
+    return {
+        "norm": norm,
+        "labels": labels,
+        "rod_labels": rod_labels,
+        "rod_table": rod_table,
+        "audit": audit,
+    }
