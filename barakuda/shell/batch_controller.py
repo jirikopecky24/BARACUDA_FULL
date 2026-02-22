@@ -1185,7 +1185,7 @@ class BatchController:
                     invert=_b("invert", False),
                     clip_p_low=_f("clip_p_low", 1.0),
                     clip_p_high=_f("clip_p_high", 99.0),
-                    cp_model="cyto3",
+                    cp_model=_s("cp_model", "cyto3"),
                     cp_diameter=_f("cp_diameter", 0.0),
                     cp_flow_threshold=_f("cp_flow_threshold", 0.4),
                     cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
@@ -1205,11 +1205,14 @@ class BatchController:
                 audit = res["audit"]
 
                 # --- Merge loader metadata into audit ---
+                audit["device"] = "AFM"
                 audit["loader"] = loader_meta.get("loader", "unknown")
-                audit["loader_reason"] = loader_meta.get("loader_reason", "")
+                audit["selected_channel"] = loader_meta.get("selected_channel", "unknown")
                 audit["afmreader_version"] = loader_meta.get("afmreader_version", None)
                 audit["pixel_to_nm"] = loader_meta.get("pixel_to_nm", 0.0)
                 audit["pixel_to_nm_source"] = loader_meta.get("pixel_to_nm_source", "unknown")
+                audit["afm_um_per_px"] = loader_meta.get("afm_um_per_px", 0.0)
+                audit["afm_um_per_px_source"] = loader_meta.get("afm_um_per_px_source", "unknown")
 
                 n_rods = len(rod_table["label"])
 
@@ -1324,7 +1327,7 @@ class BatchController:
             invert=_b("invert", False),
             clip_p_low=_f("clip_p_low", 1.0),
             clip_p_high=_f("clip_p_high", 99.0),
-            cp_model="cyto3",
+            cp_model=_s("cp_model", "cyto3"),
             cp_diameter=_f("cp_diameter", 0.0),
             cp_flow_threshold=_f("cp_flow_threshold", 0.4),
             cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),

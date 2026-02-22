@@ -1,6 +1,7 @@
 """SPM loader via AFMReader — mandatory, no fallback.
 
 If AFMReader is not installed, raises RuntimeError.
+Scale is always derived from SPM metadata, never from OT/camera.
 """
 from __future__ import annotations
 
@@ -43,7 +44,8 @@ def load_spm_height(
 
     meta_dict keys:
         selected_channel, shape, pixel_to_nm, pixel_to_nm_source,
-        loader, afmreader_version
+        afm_um_per_px, afm_um_per_px_source,
+        loader, afmreader_version, device
 
     Raises
     ------
@@ -62,16 +64,21 @@ def load_spm_height(
             image, px_to_nm = _afmreader_load_spm(file_path=path, channel=ch_name)
             img = np.asarray(image, dtype=np.float32)
 
-            # Determine scaling source
+            # ── Derive AFM scale (independent from OT) ───────────
+            pixel_to_nm = 0.0
+            px_source = "unknown"
+            um_per_px = 0.0
+            um_source = "unknown"
+
             if px_to_nm is not None and float(px_to_nm) > 0:
                 pixel_to_nm = float(px_to_nm)
                 px_source = "afmreader"
+                um_per_px = pixel_to_nm / 1000.0  # nm → µm
+                um_source = "afmreader"
             else:
-                pixel_to_nm = 0.0
-                px_source = "unknown"
                 logger.warning(
                     "AFMReader returned no pixel-to-nm scaling for channel '%s'. "
-                    "Marking as unknown.", ch_name,
+                    "Scale set to unknown.", ch_name,
                 )
 
             meta = {
@@ -79,12 +86,16 @@ def load_spm_height(
                 "shape": list(img.shape),
                 "pixel_to_nm": pixel_to_nm,
                 "pixel_to_nm_source": px_source,
+                "afm_um_per_px": um_per_px,
+                "afm_um_per_px_source": um_source,
                 "loader": "afmreader",
                 "afmreader_version": _AFMREADER_VERSION,
+                "device": "AFM",
             }
             logger.info(
-                "SPM loaded via AFMReader | channel=%s | shape=%s | pixel_to_nm=%.4f",
-                ch_name, img.shape, pixel_to_nm,
+                "SPM loaded via AFMReader | channel=%s | shape=%s | "
+                "pixel_to_nm=%.4f | um_per_px=%.6f | source=%s",
+                ch_name, img.shape, pixel_to_nm, um_per_px, um_source,
             )
             return img, meta
         except Exception as exc:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QFormLayout,
-    QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton,
+    QWidget, QVBoxLayout, QLabel, QFormLayout, QHBoxLayout,
+    QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox,
 )
 from barakuda.devices.base import DeviceSpec
 from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE
@@ -16,13 +16,16 @@ class AfmPanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
 
-        title = QLabel("AFM — Cellpose V2 Segmentation")
-        title.setStyleSheet("font-weight: 600;")
+        title = QLabel("AFM — Cellpose V2 Rod-Fit Pipeline")
+        title.setStyleSheet("font-weight: 600; font-size: 13px;")
         layout.addWidget(title)
 
         # Cellpose availability warning
         if not _HAS_CELLPOSE:
-            warn = QLabel("⚠ Cellpose is NOT installed. Segmentation will fail.\nInstall via: pip install cellpose")
+            warn = QLabel(
+                "⚠ Cellpose is NOT installed. Segmentation will fail.\n"
+                "Install via: pip install cellpose"
+            )
             warn.setStyleSheet("color: #d32f2f; font-weight: 600; padding: 6px;")
             warn.setWordWrap(True)
             layout.addWidget(warn)
@@ -30,9 +33,27 @@ class AfmPanel(QWidget):
         self.btn_preview = QPushButton("Preview AFM")
         layout.addWidget(self.btn_preview)
 
+        # ── Data (read-only) ──────────────────────────────────────
+        form_data = QFormLayout()
+        lbl_data = QLabel("— Data —")
+        lbl_data.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_data.addRow(lbl_data)
+
+        self.lbl_channel = QLabel("–")
+        self.lbl_channel.setStyleSheet("color: #555;")
+        form_data.addRow("Channel:", self.lbl_channel)
+
+        self.lbl_scale = QLabel("unknown")
+        self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
+        form_data.addRow("Scale:", self.lbl_scale)
+
+        layout.addLayout(form_data)
+
         # ── Preprocessing ─────────────────────────────────────────
         form_pre = QFormLayout()
-        form_pre.addRow(QLabel("— Preprocessing —"))
+        lbl_pre = QLabel("— Preprocessing —")
+        lbl_pre.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_pre.addRow(lbl_pre)
 
         self.cb_invert = QCheckBox("Invert (bacteria are dark)")
         self.cb_invert.setChecked(False)
@@ -56,7 +77,14 @@ class AfmPanel(QWidget):
 
         # ── Cellpose Segmentation ─────────────────────────────────
         form_cp = QFormLayout()
-        form_cp.addRow(QLabel("— Cellpose Segmentation —"))
+        lbl_cp = QLabel("— Cellpose Segmentation —")
+        lbl_cp.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_cp.addRow(lbl_cp)
+
+        self.cb_cp_model = QComboBox()
+        self.cb_cp_model.addItems(["cyto3", "cyto2", "cyto", "nuclei"])
+        self.cb_cp_model.setCurrentText("cyto3")
+        form_cp.addRow("Model", self.cb_cp_model)
 
         self.sp_cp_diam = QDoubleSpinBox()
         self.sp_cp_diam.setRange(0.0, 500.0)
@@ -80,11 +108,13 @@ class AfmPanel(QWidget):
 
         layout.addLayout(form_cp)
 
-        # ── Rod Filter ────────────────────────────────────────────
+        # ── Rod Geometry Filter ───────────────────────────────────
         form_rod = QFormLayout()
-        form_rod.addRow(QLabel("— Rod Filter —"))
+        lbl_rod = QLabel("— Rod Geometry Filter —")
+        lbl_rod.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_rod.addRow(lbl_rod)
 
-        self.cb_rods_only = QCheckBox("Rods only (long bacteria)")
+        self.cb_rods_only = QCheckBox("Rods only")
         self.cb_rods_only.setChecked(True)
         form_rod.addRow(self.cb_rods_only)
 
@@ -117,13 +147,20 @@ class AfmPanel(QWidget):
 
         # ── Overlay ───────────────────────────────────────────────
         form_ov = QFormLayout()
-        form_ov.addRow(QLabel("— Overlay —"))
+        lbl_ov = QLabel("— Overlay —")
+        lbl_ov.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_ov.addRow(lbl_ov)
 
         self.sp_ellipse_thick = QSpinBox()
         self.sp_ellipse_thick.setRange(1, 3)
         self.sp_ellipse_thick.setSingleStep(1)
         self.sp_ellipse_thick.setValue(2)
         form_ov.addRow("Ellipse thickness (px)", self.sp_ellipse_thick)
+
+        ov_info = QLabel("Overlay renders ellipse fit from rod_table (no boundaries).")
+        ov_info.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
+        ov_info.setWordWrap(True)
+        form_ov.addRow(ov_info)
 
         layout.addLayout(form_ov)
 
@@ -150,6 +187,31 @@ class AfmPanel(QWidget):
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
 
+    # ── Update Data section from loader metadata ──────────────────
+    def update_loader_info(self, meta: dict | None) -> None:
+        """Update the read-only Data section from loader metadata.
+
+        Called by preview/batch after loading an .spm file.
+        """
+        if meta is None:
+            self.lbl_channel.setText("–")
+            self.lbl_scale.setText("unknown")
+            self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
+            return
+
+        ch = meta.get("selected_channel", "–")
+        self.lbl_channel.setText(str(ch))
+
+        um_per_px = meta.get("afm_um_per_px", 0.0)
+        um_source = meta.get("afm_um_per_px_source", "unknown")
+
+        if um_per_px and float(um_per_px) > 0:
+            self.lbl_scale.setText(f"{float(um_per_px):.4f} µm/px")
+            self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
+        else:
+            self.lbl_scale.setText("unknown")
+            self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
+
     # ── Defaults (high recall) ────────────────────────────────────
     def apply_afm_defaults(self):
         # Preprocessing
@@ -158,6 +220,7 @@ class AfmPanel(QWidget):
         self.sp_clip_high.setValue(99.0)
 
         # Cellpose
+        self.cb_cp_model.setCurrentText("cyto3")
         self.sp_cp_diam.setValue(0.0)       # auto
         self.sp_cp_flow.setValue(0.4)
         self.sp_cp_prob.setValue(-0.5)
@@ -183,61 +246,46 @@ class AfmPanel(QWidget):
         )
         self.sp_clip_low.setToolTip(
             "Clip percentile low.\n"
-            "Pixels below this percentile are clipped (removes noise floor).\n"
-            "Default 1.0."
+            "Pixels below this percentile are clipped.\nDefault 1.0."
         )
         self.sp_clip_high.setToolTip(
             "Clip percentile high.\n"
-            "Pixels above this percentile are clipped (removes outlier peaks).\n"
-            "Default 99.0."
+            "Pixels above this percentile are clipped.\nDefault 99.0."
+        )
+        self.cb_cp_model.setToolTip(
+            "Cellpose model.\n"
+            "cyto3 = general cells/bacteria (recommended).\n"
+            "cyto2 / cyto = older models.\n"
+            "nuclei = for nuclei detection."
         )
         self.sp_cp_diam.setToolTip(
             "Cellpose Diameter [px].\n"
-            "Approximate size of bacteria.\n"
             "0 = Auto (slower but adaptive).\n"
-            "Set manually if you know the size."
+            "Set manually if you know the cell size."
         )
         self.sp_cp_flow.setToolTip(
             "Flow threshold.\n"
             "Controls mask boundary strictness.\n"
-            "Lower = stricter, Higher = more generous.\n"
-            "Default 0.4."
+            "Lower = stricter, Higher = more generous.\nDefault 0.4."
         )
         self.sp_cp_prob.setToolTip(
             "Cellprob threshold.\n"
-            "Lower = more sensitive (larger masks), Higher = stricter.\n"
+            "Lower = more sensitive (larger masks).\n"
             "Default -0.5 (high recall)."
         )
         self.cb_rods_only.setToolTip(
             "Rods only.\n"
             "Filters output to keep only elongated rod-like shapes.\n"
-            "Required for ellipse overlay and rod properties export."
+            "Required for ellipse overlay and rod export."
         )
-        self.sp_rods_min_major.setToolTip(
-            "Min major axis [px].\n"
-            "Removes objects shorter than this."
-        )
-        self.sp_rods_min_ar.setToolTip(
-            "Min aspect ratio (Major/Minor).\n"
-            "Removes round objects (AR ~ 1). Rods typically > 1.8."
-        )
-        self.sp_rods_min_ecc.setToolTip(
-            "Min eccentricity [0–1].\n"
-            "Removes round objects. Rods ecc ~ 0.85+."
-        )
-        self.sp_min_area.setToolTip(
-            "Min area [px²].\n"
-            "Removes tiny noise detections."
-        )
+        self.sp_rods_min_major.setToolTip("Min major axis [px].\nRemoves short objects.")
+        self.sp_rods_min_ar.setToolTip("Min aspect ratio (Major/Minor).\nRods typically > 1.8.")
+        self.sp_rods_min_ecc.setToolTip("Min eccentricity [0–1].\nRods ecc ~ 0.85+.")
+        self.sp_min_area.setToolTip("Min area [px²].\nRemoves tiny noise.")
         self.sp_ellipse_thick.setToolTip(
-            "Ellipse thickness [px].\n"
-            "Yellow ellipse outline thickness in overlay.\n"
-            "1 = thin, 2 = recommended, 3 = thick."
+            "Ellipse thickness [px].\n1 = thin, 2 = recommended, 3 = thick."
         )
-        self.cb_export_legacy.setToolTip(
-            "Export legacy objects.csv alongside rods_props.csv.\n"
-            "Default OFF."
-        )
+        self.cb_export_legacy.setToolTip("Export legacy objects.csv.\nDefault OFF.")
 
     # ── Parameter collection ──────────────────────────────────────
     def get_afm_params(self) -> dict:
@@ -245,6 +293,7 @@ class AfmPanel(QWidget):
             "invert": bool(self.cb_invert.isChecked()),
             "clip_p_low": float(self.sp_clip_low.value()),
             "clip_p_high": float(self.sp_clip_high.value()),
+            "cp_model": str(self.cb_cp_model.currentText()),
             "cp_diameter": float(self.sp_cp_diam.value()),
             "cp_flow_threshold": float(self.sp_cp_flow.value()),
             "cp_cellprob_threshold": float(self.sp_cp_prob.value()),
