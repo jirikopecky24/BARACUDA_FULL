@@ -153,6 +153,54 @@ class PreviewPanel(QWidget):
 
         self._video_row.setVisible(False)
 
+        # --- SPM file: load via AFMReader, normalize for display ---
+        if str(path).lower().endswith(".spm"):
+            try:
+                import logging
+                _log = logging.getLogger(__name__)
+
+                from barakuda.devices.afm.io.afmreader_loader import load_spm_height
+                height_img, meta = load_spm_height(str(path))
+
+                _log.info(
+                    "SPM loaded via AFMReader | channel=%s | shape=%s | pixel_to_nm=%s | loader=%s",
+                    meta.get("selected_channel", "?"),
+                    meta.get("shape", "?"),
+                    meta.get("pixel_to_nm", "?"),
+                    meta.get("loader", "?"),
+                )
+
+                # Percentile normalization for preview display
+                finite = height_img[np.isfinite(height_img)]
+                if len(finite) > 0:
+                    p1, p99 = np.percentile(finite, [1, 99])
+                else:
+                    p1, p99 = 0.0, 1.0
+                norm = (height_img - p1) / (p99 - p1 + 1e-9)
+                norm = np.clip(norm, 0.0, 1.0)
+                preview_uint8 = (norm * 255.0).astype(np.uint8)
+                arr = np.stack([preview_uint8] * 3, axis=-1)  # grayscale RGB
+
+                self._current_frame_index = 0
+                self._set_before_and_after(arr)
+                self._ensure_roi_for_image(arr.shape[0], arr.shape[1])
+
+                self._info_meta = {
+                    "path": str(path),
+                    "type": "spm",
+                    "shape": f"{arr.shape}, dtype={height_img.dtype}",
+                    "channel": str(meta.get("selected_channel", "?")),
+                    "pixel_to_nm": str(meta.get("pixel_to_nm", "?")),
+                    "loader": str(meta.get("loader", "?")),
+                }
+                self._refresh_info_block()
+                return
+            except Exception as e:
+                self._clear_views()
+                self._info.setText(f"{path}\n\nSPM: chyba načtení\n{e!r}")
+                return
+
+        # --- Standard image file: load via Qt QImage ---
         arr = self._load_image_qt(path)
         if arr is None:
             self._clear_views()
@@ -291,6 +339,11 @@ class PreviewPanel(QWidget):
             lines.append(f"frames={meta.get('frames', 'n/a')}")
             lines.append(f"duration={meta.get('duration', 'n/a')}")
             lines.append(f"current={meta.get('current', 'n/a')}")
+        elif meta.get("type") == "spm":
+            lines.append(f"shape={meta.get('shape', 'n/a')}")
+            lines.append(f"channel={meta.get('channel', 'n/a')}")
+            lines.append(f"pixel_to_nm={meta.get('pixel_to_nm', 'n/a')}")
+            lines.append(f"loader={meta.get('loader', 'n/a')}")
         else:
             lines.append(f"shape={meta.get('shape', 'n/a')}")
 
