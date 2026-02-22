@@ -1,13 +1,22 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, QObject, QEvent, QLocale
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFormLayout, QHBoxLayout,
     QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox,
-    QScrollArea, QFrame, QSizePolicy,
+    QScrollArea, QFrame, QSizePolicy, QAbstractSpinBox
 )
 from barakuda.devices.base import DeviceSpec
 from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE
+
+
+class NoWheelValueChangeFilter(QObject):
+    """Event filter that blocks mouse wheel from changing values in scrollable panels."""
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel:
+            event.ignore()
+            return True
+        return False
 
 
 class AfmPanel(QWidget):
@@ -18,6 +27,9 @@ class AfmPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        # Use Czech locale for all spinboxes to ensure ',' is used for decimals
+        self._loc = QLocale(QLocale.Language.Czech, QLocale.Country.CzechRepublic)
 
         # ══════════════════════════════════════════════════════════
         # FIXED TOP: title + warning
@@ -78,14 +90,16 @@ class AfmPanel(QWidget):
         form_pre.addRow(self.cb_invert)
 
         self.sp_clip_low = QDoubleSpinBox()
-        self.sp_clip_low.setRange(0.0, 49.0)
+        self.sp_clip_low.setLocale(self._loc)
+        self.sp_clip_low.setRange(0.0, 50.0)
         self.sp_clip_low.setDecimals(1)
         self.sp_clip_low.setSingleStep(0.5)
         self.sp_clip_low.setValue(1.0)
         form_pre.addRow("Clip percentile low", self.sp_clip_low)
 
         self.sp_clip_high = QDoubleSpinBox()
-        self.sp_clip_high.setRange(51.0, 100.0)
+        self.sp_clip_high.setLocale(self._loc)
+        self.sp_clip_high.setRange(50.0, 100.0)
         self.sp_clip_high.setDecimals(1)
         self.sp_clip_high.setSingleStep(0.5)
         self.sp_clip_high.setValue(99.0)
@@ -105,21 +119,26 @@ class AfmPanel(QWidget):
         form_cp.addRow("Model", self.cb_cp_model)
 
         self.sp_cp_diam = QDoubleSpinBox()
-        self.sp_cp_diam.setRange(0.0, 500.0)
+        self.sp_cp_diam.setLocale(self._loc)
+        self.sp_cp_diam.setRange(0.0, 200.0)
+        self.sp_cp_diam.setDecimals(1)
+        self.sp_cp_diam.setSingleStep(1.0)
         self.sp_cp_diam.setValue(0.0)
         self.sp_cp_diam.setSpecialValueText("Auto")
         form_cp.addRow("Diameter (px)", self.sp_cp_diam)
 
         self.sp_cp_flow = QDoubleSpinBox()
-        self.sp_cp_flow.setRange(0.0, 3.0)
-        self.sp_cp_flow.setSingleStep(0.1)
+        self.sp_cp_flow.setLocale(self._loc)
+        self.sp_cp_flow.setRange(0.0, 1.0)
+        self.sp_cp_flow.setSingleStep(0.05)
         self.sp_cp_flow.setDecimals(2)
         self.sp_cp_flow.setValue(0.4)
         form_cp.addRow("Flow threshold", self.sp_cp_flow)
 
         self.sp_cp_prob = QDoubleSpinBox()
+        self.sp_cp_prob.setLocale(self._loc)
         self.sp_cp_prob.setRange(-6.0, 6.0)
-        self.sp_cp_prob.setSingleStep(0.1)
+        self.sp_cp_prob.setSingleStep(0.10)
         self.sp_cp_prob.setDecimals(2)
         self.sp_cp_prob.setValue(-0.5)
         form_cp.addRow("Cellprob threshold", self.sp_cp_prob)
@@ -137,27 +156,33 @@ class AfmPanel(QWidget):
         form_rod.addRow(self.cb_rods_only)
 
         self.sp_rods_min_major = QDoubleSpinBox()
-        self.sp_rods_min_major.setRange(0.0, 500.0)
-        self.sp_rods_min_major.setDecimals(1)
+        self.sp_rods_min_major.setLocale(self._loc)
+        self.sp_rods_min_major.setRange(1.0, 500.0)
+        self.sp_rods_min_major.setDecimals(0)
+        self.sp_rods_min_major.setSingleStep(1.0)
         self.sp_rods_min_major.setValue(12.0)
         form_rod.addRow("Min major axis (px)", self.sp_rods_min_major)
 
         self.sp_rods_min_ar = QDoubleSpinBox()
-        self.sp_rods_min_ar.setRange(1.0, 10.0)
+        self.sp_rods_min_ar.setLocale(self._loc)
+        self.sp_rods_min_ar.setRange(1.0, 20.0)
         self.sp_rods_min_ar.setDecimals(2)
-        self.sp_rods_min_ar.setSingleStep(0.1)
+        self.sp_rods_min_ar.setSingleStep(0.10)
         self.sp_rods_min_ar.setValue(1.8)
         form_rod.addRow("Min aspect ratio", self.sp_rods_min_ar)
 
         self.sp_rods_min_ecc = QDoubleSpinBox()
-        self.sp_rods_min_ecc.setRange(0.0, 1.0)
+        self.sp_rods_min_ecc.setLocale(self._loc)
+        self.sp_rods_min_ecc.setRange(0.0, 0.99)
         self.sp_rods_min_ecc.setDecimals(2)
         self.sp_rods_min_ecc.setSingleStep(0.05)
         self.sp_rods_min_ecc.setValue(0.65)
         form_rod.addRow("Min eccentricity", self.sp_rods_min_ecc)
 
         self.sp_min_area = QSpinBox()
+        self.sp_min_area.setLocale(self._loc)
         self.sp_min_area.setRange(1, 100_000)
+        self.sp_min_area.setSingleStep(1)
         self.sp_min_area.setValue(8)
         form_rod.addRow("Min area (px)", self.sp_min_area)
 
@@ -170,7 +195,8 @@ class AfmPanel(QWidget):
         form_ov.addRow(lbl_ov)
 
         self.sp_ellipse_thick = QSpinBox()
-        self.sp_ellipse_thick.setRange(1, 3)
+        self.sp_ellipse_thick.setLocale(self._loc)
+        self.sp_ellipse_thick.setRange(1, 10)
         self.sp_ellipse_thick.setSingleStep(1)
         self.sp_ellipse_thick.setValue(2)
         form_ov.addRow("Ellipse thickness (px)", self.sp_ellipse_thick)
@@ -218,6 +244,13 @@ class AfmPanel(QWidget):
         # Apply defaults + tooltips on init
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
+
+        # ── Wheel Blocker ─────────────────────────────────────────
+        self._wheel_blocker = NoWheelValueChangeFilter(self)
+        for w in self.findChildren(QAbstractSpinBox):
+            w.installEventFilter(self._wheel_blocker)
+        for w in self.findChildren(QComboBox):
+            w.installEventFilter(self._wheel_blocker)
 
     # ── Update Data section from loader metadata ──────────────────
     def update_loader_info(self, meta: dict | None) -> None:
