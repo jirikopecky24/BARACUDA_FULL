@@ -164,11 +164,6 @@ class AfmPanel(QWidget):
 
         layout.addLayout(form_ov)
 
-        # ── Export ────────────────────────────────────────────────
-        self.cb_export_legacy = QCheckBox("Export legacy objects.csv")
-        self.cb_export_legacy.setChecked(False)
-        layout.addWidget(self.cb_export_legacy)
-
         # ── Actions ───────────────────────────────────────────────
         layout.addSpacing(8)
         layout.addWidget(QLabel("ROI z Preview se použije jako výpočetní oblast."))
@@ -235,9 +230,6 @@ class AfmPanel(QWidget):
         # Overlay
         self.sp_ellipse_thick.setValue(2)
 
-        # Export
-        self.cb_export_legacy.setChecked(False)
-
     # ── Tooltips ──────────────────────────────────────────────────
     def apply_afm_tooltips(self):
         self.cb_invert.setToolTip(
@@ -285,7 +277,6 @@ class AfmPanel(QWidget):
         self.sp_ellipse_thick.setToolTip(
             "Ellipse thickness [px].\n1 = thin, 2 = recommended, 3 = thick."
         )
-        self.cb_export_legacy.setToolTip("Export legacy objects.csv.\nDefault OFF.")
 
     # ── Parameter collection ──────────────────────────────────────
     def get_afm_params(self) -> dict:
@@ -303,7 +294,6 @@ class AfmPanel(QWidget):
             "rods_min_eccentricity": float(self.sp_rods_min_ecc.value()),
             "rods_min_area_px": int(self.sp_min_area.value()),
             "ellipse_thickness_px": int(self.sp_ellipse_thick.value()),
-            "export_legacy_csv": bool(self.cb_export_legacy.isChecked()),
         }
 
 
