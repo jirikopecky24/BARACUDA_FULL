@@ -563,10 +563,12 @@ class ShellMainWindow(QMainWindow):
         self._afm_preview_thread.started.connect(self._afm_preview_worker.run)
         
         # hook signals
-        self._afm_preview_worker.progress.connect(
-            lambda msg: (self.log_panel.log(msg),
-                         self._device_panel.set_status_message(msg) if hasattr(self._device_panel, "set_status_message") else None)
-        )
+        def _on_progress_pct(pct: int, msg: str):
+            self.log_panel.log(f"{pct}% - {msg}")
+            if hasattr(self._device_panel, "set_preview_progress"):
+                self._device_panel.set_preview_progress(pct, msg)  # type: ignore[attr-defined]
+
+        self._afm_preview_worker.progress_pct.connect(_on_progress_pct)
         self._afm_preview_worker.finished.connect(self._afm_preview_done)
         self._afm_preview_worker.error.connect(self._afm_preview_failed)
         
@@ -579,6 +581,9 @@ class ShellMainWindow(QMainWindow):
         self._afm_preview_thread.start()
 
     def _afm_preview_done(self, payload: dict) -> None:
+        if hasattr(self._device_panel, "reset_preview_progress"):
+            self._device_panel.reset_preview_progress()  # type: ignore[attr-defined]
+
         if self._afm_preview_worker and getattr(self._afm_preview_worker, "_is_cancelled", False):
             self.log_panel.log("Preview AFM: CANCELLED (result ignored)")
             if hasattr(self._device_panel, "set_preview_state"):

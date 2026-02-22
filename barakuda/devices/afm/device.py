@@ -63,21 +63,19 @@ class AfmPanel(QWidget):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(8, 4, 8, 4)
 
-        # ── Data (read-only) ──────────────────────────────────────
+        # ── Data ──────────────────────────────────────────────────
         form_data = QFormLayout()
         lbl_data = QLabel("— Data —")
         lbl_data.setStyleSheet("font-weight: 600; margin-top: 4px;")
         form_data.addRow(lbl_data)
 
-        self.lbl_channel = QLabel("–")
+        self.lbl_channel = QLabel("Channel: unknown")
         self.lbl_channel.setStyleSheet("color: #555;")
-        form_data.addRow("Channel:", self.lbl_channel)
 
-        self.lbl_scale = QLabel("unknown")
+        self.lbl_scale = QLabel("Scale: unknown")
         self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
-        form_data.addRow("Scale:", self.lbl_scale)
 
-        self.lbl_status = QLabel("")
+        self.lbl_status = QLabel("Status: idle")
         self.lbl_status.setStyleSheet("color: #0277bd; font-weight: 600; font-size: 11px;")
         form_data.addRow("Status:", self.lbl_status)
 
@@ -286,12 +284,24 @@ class AfmPanel(QWidget):
             self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
 
     # ── UI State Helpers ──────────────────────────────────────────
-    def set_preview_state(self, is_running: bool):
-        """Enables/disables buttons and sets status text during preview."""
+    def set_preview_progress(self, pct: int, text: str | None = None) -> None:
+        pct = max(0, min(100, pct))
+        self.pb_preview.setVisible(True)
+        self.pb_preview.setValue(pct)
+        if text:
+            self.lbl_status.setText(f"Status: {text}")
+
+    def reset_preview_progress(self) -> None:
+        self.pb_preview.setValue(0)
+        self.pb_preview.setVisible(False)
+        self.lbl_status.setText("Status: idle")
+
+    def set_preview_state(self, is_running: bool) -> None:
+        """Called by MainWindow to toggle running state UI (disables Preview button)."""
+        self.btn_preview.setEnabled(not is_running)
+        self.btn_cancel.setEnabled(is_running)
         if is_running:
-            self.btn_preview.setEnabled(False)
             self.btn_preview.setText("Preview AFM (running...)")
-            self.btn_cancel.setEnabled(True)
             self.btn_run.setEnabled(False)
             self.lbl_status.setText("Preview running... (Cellpose)")
             self.lbl_status.setStyleSheet("color: #e65100; font-weight: 600; font-size: 11px;")
