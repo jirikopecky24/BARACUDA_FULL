@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from barakuda.devices.base import DeviceSpec
 from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE
+from barakuda.devices.afm.core.compute import resolve_device
 
 
 class NoWheelValueChangeFilter(QObject):
@@ -77,9 +78,48 @@ class AfmPanel(QWidget):
 
         self.lbl_status = QLabel("Status: idle")
         self.lbl_status.setStyleSheet("color: #0277bd; font-weight: 600; font-size: 11px;")
-        form_data.addRow("Status:", self.lbl_status)
+        
+        from PyQt6.QtWidgets import QProgressBar
+        self.pb_preview = QProgressBar()
+        self.pb_preview.setRange(0, 100)
+        self.pb_preview.setValue(0)
+        self.pb_preview.setVisible(False)
+
+        form_data.addRow(self.lbl_channel)
+        form_data.addRow(self.lbl_scale)
+        form_data.addRow(self.lbl_status)
+        form_data.addRow(self.pb_preview)
 
         scroll_layout.addLayout(form_data)
+
+        # ── Compute ───────────────────────────────────────────────
+        form_comp = QFormLayout()
+        lbl_comp = QLabel("— Compute —")
+        lbl_comp.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_comp.addRow(lbl_comp)
+
+        self.cb_profile = QComboBox()
+        self.cb_profile.addItems(["Auto", "GPU (force)", "CPU (force)"])
+        self.cb_profile.setCurrentText("Auto")
+        self.cb_profile.currentTextChanged.connect(self._on_profile_changed)
+        form_comp.addRow("Compute Profile", self.cb_profile)
+
+        self.lbl_dev_info = QLabel("Device: ?\nTorch: ?\nCellpose: ?")
+        self.lbl_dev_info.setStyleSheet("color: #666; font-size: 11px;")
+        self.lbl_dev_info.setWordWrap(True)
+        form_comp.addRow(self.lbl_dev_info)
+
+        self.chk_fast_preview = QCheckBox("Fast Preview (CPU recommended)")
+        self.chk_fast_preview.setChecked(True)
+        self.chk_fast_preview.stateChanged.connect(self._on_fast_preview_changed)
+        form_comp.addRow(self.chk_fast_preview)
+
+        self.cb_downscale = QComboBox()
+        self.cb_downscale.addItems(["1.0", "0.75", "0.5", "0.33"])
+        self.cb_downscale.setCurrentText("0.5")
+        form_comp.addRow("Preview downscale", self.cb_downscale)
+
+        scroll_layout.addLayout(form_comp)
 
         # ── Preprocessing ─────────────────────────────────────────
         form_pre = QFormLayout()
@@ -250,6 +290,7 @@ class AfmPanel(QWidget):
         # Apply defaults + tooltips on init
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
+        self._on_profile_changed() # Trigger initial hardware check
 
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
@@ -326,8 +367,48 @@ class AfmPanel(QWidget):
         else:
             self.lbl_status.setStyleSheet("color: #2e7d32; font-weight: 600; font-size: 11px;")
 
+    def _on_fast_preview_changed(self, state: int):
+        self.cb_downscale.setEnabled(self.chk_fast_preview.isChecked())
+
+    def _on_profile_changed(self, text: str = ""):
+        txt = self.cb_profile.currentText()
+        if "GPU" in txt:
+            prof = "gpu"
+        elif "CPU" in txt:
+            prof = "cpu"
+        else:
+            prof = "auto"
+
+        try:
+            info = resolve_device(prof)
+            dev = info.get("device", "unknown")
+            t_ver = info.get("torch_version", "?")
+            c_ver = info.get("cellpose_version", "?")
+            gpu_n = info.get("gpu_name", "")
+            
+            if dev == "cuda" and gpu_n and gpu_n != "unknown":
+                dev_str = f"cuda ({gpu_n})"
+            else:
+                dev_str = dev
+                
+            self.lbl_dev_info.setText(f"Device: {dev_str}\nTorch: {t_ver}\nCellpose: {c_ver}")
+            
+            # auto-apply sensible view defaults if the user switches compute engines
+            if prof == "cpu" or dev == "cpu":
+                self.chk_fast_preview.setChecked(True)
+                self.cb_downscale.setCurrentText("0.5")
+            else:
+                self.chk_fast_preview.setChecked(False)
+                self.cb_downscale.setCurrentText("1.0")
+
+        except Exception as e:
+            self.lbl_dev_info.setText(f"Device: Error\n{e}")
+            self.lbl_dev_info.setStyleSheet("color: #d32f2f; font-size: 11px;")
+
     # ── Defaults (high recall) ────────────────────────────────────
     def apply_afm_defaults(self):
+        # Compute default
+        self.cb_profile.setCurrentText("Auto")
         # Preprocessing
         self.cb_invert.setChecked(False)
         self.sp_clip_low.setValue(1.0)
@@ -399,12 +480,32 @@ class AfmPanel(QWidget):
 
     # ── Parameter collection ──────────────────────────────────────
     def get_afm_params(self) -> dict:
+        diam_val = float(self.sp_cp_diam.value())
+        if diam_val == 0.0:
+            cp_diam_mode = "auto"
+            cp_diam_px = None
+        else:
+            cp_diam_mode = "fixed"
+            cp_diam_px = int(diam_val)
+            
+        prof_txt = self.cb_profile.currentText()
+        if "GPU" in prof_txt:
+            prof = "gpu"
+        elif "CPU" in prof_txt:
+            prof = "cpu"
+        else:
+            prof = "auto"
+
         return {
+            "compute_profile": prof,
+            "preview_fast_mode": bool(self.chk_fast_preview.isChecked()),
+            "preview_downscale": float(self.cb_downscale.currentText()),
             "invert": bool(self.cb_invert.isChecked()),
             "clip_p_low": float(self.sp_clip_low.value()),
             "clip_p_high": float(self.sp_clip_high.value()),
             "cp_model": str(self.cb_cp_model.currentText()),
-            "cp_diameter": float(self.sp_cp_diam.value()),
+            "cp_diameter_mode": cp_diam_mode,
+            "cp_diameter_px": cp_diam_px,
             "cp_flow_threshold": float(self.sp_cp_flow.value()),
             "cp_cellprob_threshold": float(self.sp_cp_prob.value()),
             "rods_only": bool(self.cb_rods_only.isChecked()),
