@@ -1243,29 +1243,29 @@ class BatchController:
                     overlay_path = run_dir / f"{stem}_overlay.png"
                     iio.imwrite(overlay_path, overlay)
 
-                # --- OPTIONAL: legacy objects.csv ---
-                if _b("export_legacy_csv", False):
-                    from skimage import measure
-                    objects_csv = run_dir / f"{stem}_objects.csv"
-                    props = measure.regionprops(labels)
-                    with objects_csv.open("w", encoding="utf-8", newline="") as f:
-                        wcsv = csv.writer(f)
-                        wcsv.writerow(["label", "area_px", "centroid_x_px", "centroid_y_px",
-                                       "perimeter_px", "eccentricity", "solidity"])
-                        for o in props:
-                            wcsv.writerow([
-                                o.label, o.area,
-                                f"{o.centroid[1]:.6f}", f"{o.centroid[0]:.6f}",
-                                f"{o.perimeter:.6f}", f"{o.eccentricity:.6f}", f"{o.solidity:.6f}",
-                            ])
-
-                # --- EXPORT: summary.json (full audit) ---
+                # --- EXPORT: summary.json (full audit + top-level must-have) ---
                 summary_json = run_dir / f"{stem}_summary.json"
                 payload = {
+                    # Top-level must-have keys (Bible spec)
+                    "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
+                    "device": "AFM",
+                    "loader": audit.get("loader", "unknown"),
+                    "selected_channel": audit.get("selected_channel", "unknown"),
+                    "afm_um_per_px": audit.get("afm_um_per_px", 0.0),
+                    "afm_um_per_px_source": audit.get("afm_um_per_px_source", "unknown"),
+                    "afm_scan_size_um": loader_meta.get("afm_scan_size_um", 0.0),
+                    "cellpose_model": audit.get("cellpose_model", p_v2.cp_model),
+                    "cellpose_version": audit.get("cellpose_version", None),
+                    "diameter": audit.get("diameter", float(p_v2.cp_diameter)),
+                    "flow_threshold": audit.get("flow_threshold", float(p_v2.cp_flow_threshold)),
+                    "cellprob_threshold": audit.get("cellprob_threshold", float(p_v2.cp_cellprob_threshold)),
+                    "rod_filter": audit.get("rod_filter", {}),
+                    # Batch metadata
                     "n_labels": int(labels.max()),
                     "n_rods": n_rods,
                     "roi_rect": [x0, y0, w0, h0],
                     "source_image": p.name,
+                    # Full audit trace
                     "audit": audit,
                 }
                 summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
