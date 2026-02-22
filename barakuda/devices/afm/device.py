@@ -207,8 +207,13 @@ class AfmPanel(QWidget):
         self.sp_rods_min_ecc.setRange(0.0, 1.0)
         self.sp_rods_min_ecc.setDecimals(2)
         self.sp_rods_min_ecc.setSingleStep(0.05)
-        self.sp_rods_min_ecc.setValue(0.85)
+        self.sp_rods_min_ecc.setValue(0.65)
         form.addRow("Rods min eccentricity", self.sp_rods_min_ecc)
+
+        # Legacy export toggle (default OFF)
+        self.cb_export_legacy = QCheckBox("Export legacy objects.csv")
+        self.cb_export_legacy.setChecked(False)
+        form.addRow(self.cb_export_legacy)
 
         # Hidden global threshold factor
 
@@ -311,60 +316,68 @@ class AfmPanel(QWidget):
 
     def apply_afm_defaults(self):
         # ===============================
-        # AFM DEFAULT PROFILE (Publication - Stable Manual Tuned Version)
+        # AFM DEFAULT PROFILE — HIGH RECALL (v2)
         # ===============================
 
-        # Core toggles (Publication profile)
-        self.cb_height_aware.setChecked(False)       # AFM height normalization OFF
-        self.cb_separate.setChecked(True)            # Separate touching objects ON
-        self.cb_save_overlay.setChecked(True)        # Save overlay ON
-        self.cb_invert.setChecked(False)             # Invert OFF
+        # Core toggles
+        self.cb_height_aware.setChecked(False)
+        self.cb_separate.setChecked(True)
+        self.cb_save_overlay.setChecked(True)
+        self.cb_invert.setChecked(False)
         self.cb_use_contours.setChecked(False)
 
         # Core sigmas
         self.sp_bg.setValue(4.0)
         self.sp_smooth.setValue(0.20)
-        self.sp_edge_sigma.setValue(1.30)        # sweet spot 1.2–1.4
+        self.sp_edge_sigma.setValue(1.30)
 
         # Canny (hidden but keep consistent)
         self.sp_canny_low.setValue(0.05)
         self.sp_canny_high.setValue(0.20)
 
-        # Hidden internal closing/fill (leave stable)
+        # Hidden internal closing/fill
         self.sp_close_radius.setValue(2)
         self.sp_fill_holes.setValue(300)
 
-        # Filters (high coverage but not pure noise)
+        # Filters — HIGH RECALL (low thresholds)
         self.sp_min_perim.setValue(10)
         self.sp_min_ecc.setValue(0.05)
         self.sp_min_sol.setValue(0.35)
 
-        # Detection / separation
-        self.sp_log_sigma.setValue(1.60)         # 1.5–1.8 (publication-friendly)
-        self.sp_peak_dist.setValue(3)
-        self.sp_compactness.setValue(0.030)      # geometric / print-ready
-        self.sp_low_factor.setValue(0.45)        # keep internal threshold stable
+        # Detection / separation — HIGH RECALL
+        self.sp_log_sigma.setValue(1.60)
+        self.sp_peak_dist.setValue(2)              # ← v2: was 3
+        self.sp_compactness.setValue(0.030)
+        self.sp_low_factor.setValue(0.45)
 
-        # Object filtering / Mask stabilization
-        self.sp_min_area.setValue(15)
+        # Object filtering — HIGH RECALL
+        self.sp_min_area.setValue(8)                # ← v2: was 15
         self.sp_close.setValue(1)
-        self.sp_holes.setValue(80) 
+        self.sp_holes.setValue(80)
         self.sp_bins.setValue(20)
 
         # Outline design controls
         self.sp_outline_smooth.setValue(2)
         self.sp_outline_thick.setValue(2)
 
-        # Inclusive Outline (Publication)
+        # Inclusive Outline
         self.cb_outline_mode.setCurrentText("inclusive")
         self.sp_outline_ring.setValue(2)
         self.sp_outline_edge_sigma.setValue(1.3)
         self.sp_outline_canny_low.setValue(0.08)
-        self.sp_outline_canny_low.setValue(0.08)
         self.sp_outline_canny_high.setValue(0.24)
-        
-        # Cellpose defaults
-        self.cb_backend.setCurrentIndex(0) # Classic
+
+        # Rod-only — HIGH RECALL defaults
+        self.cb_rods_only.setChecked(True)          # ← v2: ON by default
+        self.sp_rods_min_major.setValue(12.0)        # ← v2: was 18
+        self.sp_rods_min_ar.setValue(1.8)            # ← v2: was 2.5
+        self.sp_rods_min_ecc.setValue(0.65)          # ← v2: was 0.85
+
+        # Legacy export
+        self.cb_export_legacy.setChecked(False)
+
+        # Backend — Classic by default
+        self.cb_backend.setCurrentIndex(0)
         self.sp_cp_diam.setValue(0.0)
         self.sp_cp_flow.setValue(0.4)
         self.sp_cp_prob.setValue(-0.5)
@@ -500,6 +513,11 @@ class AfmPanel(QWidget):
             "Min eccentricity [0–1].\n"
             "Removes round objects (Ecc < 0.8). Rods ecc ~ 0.9+."
         )
+        self.cb_export_legacy.setToolTip(
+            "Export legacy objects.csv.\n"
+            "If enabled, produces old-format objects.csv alongside rods_props.csv.\n"
+            "Default OFF."
+        )
 
         # Post-processing / cleanup
         self.sp_min_area.setToolTip(
@@ -585,6 +603,7 @@ class AfmPanel(QWidget):
             "rods_min_major_axis_px": float(self.sp_rods_min_major.value()),
             "rods_min_aspect_ratio": float(self.sp_rods_min_ar.value()),
             "rods_min_eccentricity": float(self.sp_rods_min_ecc.value()),
+            "export_legacy_csv": bool(self.cb_export_legacy.isChecked()),
             "backend": str(self.cb_backend.currentData()),
             "cp_diameter": float(self.sp_cp_diam.value()),
             "cp_flow_threshold": float(self.sp_cp_flow.value()),

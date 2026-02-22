@@ -1114,13 +1114,9 @@ class BatchController:
         import json
         import numpy as np
         import imageio.v3 as iio
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from skimage.color import label2rgb
-        from skimage import measure
 
-        from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams, segment_bacteria_afm
+        from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
+        from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
 
         total = len(file_paths)
         progress_fn(0, total, "", 0)
@@ -1128,18 +1124,41 @@ class BatchController:
         # ROI
         x, y, w, h = roi_rect
 
+        def _f(key, default): return float(afm_params.get(key, default))
+        def _i(key, default): return int(afm_params.get(key, default))
+        def _b(key, default): return bool(afm_params.get(key, default))
+        def _s(key, default): return str(afm_params.get(key, default))
+
         for i, p in enumerate(file_paths, start=1):
             try:
                 dataset_set_status_fn(p, "running")
 
-                img_orig = iio.imread(p)
-                img = img_orig
-                if img.ndim == 3:
-                    if img.shape[-1] >= 3:
-                        img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
-                    else:
-                        img = img[..., 0]
-                img = np.asarray(img, dtype=np.float32)
+                # --- LOAD IMAGE ---
+                loader_meta = {}
+                if str(p).lower().endswith(".spm"):
+                    try:
+                        from barakuda.devices.afm.io.afmreader_loader import load_spm_height
+                        img, loader_meta = load_spm_height(str(p))
+                        self._log(f"[AFM] Loaded .spm via {loader_meta.get('loader', '?')}: "
+                                  f"channel={loader_meta.get('selected_channel', '?')}, "
+                                  f"shape={loader_meta.get('shape', '?')}, "
+                                  f"px_to_nm={loader_meta.get('pixel_to_nm', '?')}")
+                    except Exception as e:
+                        self._log(f"ERROR: Failed to load .spm file {p.name}: {e!r}")
+                        dataset_set_status_fn(p, "failed")
+                        continue
+                else:
+                    img_orig = iio.imread(p)
+                    img = img_orig
+                    if img.ndim == 3:
+                        if img.shape[-1] >= 3:
+                            img = (img[..., 0].astype(np.float32) * 0.299 +
+                                   img[..., 1].astype(np.float32) * 0.587 +
+                                   img[..., 2].astype(np.float32) * 0.114)
+                        else:
+                            img = img[..., 0]
+                    img = np.asarray(img, dtype=np.float32)
+                    loader_meta = {"loader": "imageio", "loader_reason": "standard image file"}
 
                 H, W = int(img.shape[0]), int(img.shape[1])
                 # clamp ROI
@@ -1149,11 +1168,10 @@ class BatchController:
                 h0 = max(1, min(int(h), H - y0))
 
                 roi_img = img[y0:y0 + h0, x0:x0 + w0]
-                roi_img_orig = img_orig[y0:y0 + h0, x0:x0 + w0]
 
                 cfg = {
                     "device": "afm",
-                    "method": "BACTERIA_SEGMENT",
+                    "method": "AFM_V2",
                     "roi_rect": [x0, y0, w0, h0],
                     "params": afm_params,
                 }
@@ -1162,198 +1180,101 @@ class BatchController:
                 run_dir = run.run_dir
                 stem = p.stem
 
-                pp = self._build_afm_seg_params(afm_params)
+                # --- BUILD V2 PARAMS ---
+                p_v2 = AfmV2Params(
+                    backend=_s("backend", "classic"),
+                    invert=_b("invert", False),
+                    clip_p_low=0.1,
+                    clip_p_high=99.9,
+                    smooth_sigma=_f("smooth_sigma", 0.3),
+                    log_sigma=_f("log_sigma", 1.6),
+                    min_area_px=_i("min_area_px", 8),
+                    separate_watershed=_b("separate", True),
+                    peak_min_distance_px=_i("peak_min_distance_px", 2),
+                    watershed_compactness=_f("watershed_compactness", 0.03),
+                    cp_model="cyto3",
+                    cp_diameter=_f("cp_diameter", 0.0),
+                    cp_flow_threshold=_f("cp_flow_threshold", 0.4),
+                    cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
+                    rods_only=_b("rods_only", True),
+                    rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
+                    rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
+                    rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
+                    ellipse_thickness_px=_i("edge_thickness_px", 2),
+                )
 
-                res = segment_bacteria_afm(roi_img, pp)
-                mask = res["mask"]
+                # --- RUN V2 PIPELINE ---
+                res = run_afm_v2(roi_img, p_v2)
                 labels = res["labels"]
-                edge_mask = res.get("edge_mask", None)
+                rod_labels = res["rod_labels"]
+                rod_table = res["rod_table"]
+                audit = res["audit"]
 
-                # ---- artifacts ----
-                mask_path = run_dir / f"{stem}_mask.png"
-                labels_path = run_dir / f"{stem}_labels.png"
-                edge_mask_path = run_dir / f"{stem}_edge_mask.png"
-                edge_map_path = run_dir / f"{stem}_edge_map.png"
-                overlay_path = run_dir / f"{stem}_overlay.png"
-                objects_csv = run_dir / f"{stem}_objects.csv"
-                summary_json = run_dir / f"{stem}_summary.json"
-                area_hist_png = run_dir / f"{stem}_area_hist.png"
+                # --- Merge loader metadata into audit ---
+                audit["loader"] = loader_meta.get("loader", "unknown")
+                audit["loader_reason"] = loader_meta.get("loader_reason", "")
+                audit["afmreader_version"] = loader_meta.get("afmreader_version", None)
+                audit["pixel_to_nm"] = loader_meta.get("pixel_to_nm", 0.0)
+                audit["pixel_to_nm_source"] = loader_meta.get("pixel_to_nm_source", "unknown")
 
-                iio.imwrite(mask_path, (mask.astype(np.uint8) * 255))
-                labels_rgb = (label2rgb(labels, bg_label=0) * 255).astype(np.uint8)
-                iio.imwrite(labels_path, labels_rgb)
+                n_rods = len(rod_table["label"])
 
-                # SORA-style edge artifacts (black + yellow outlines)
-                if edge_mask is not None:
-                    iio.imwrite(edge_mask_path, (edge_mask.astype(np.uint8) * 255))
-                    edge_rgb = np.zeros((*edge_mask.shape, 3), dtype=np.uint8)
-                    edge_rgb[edge_mask] = (255, 255, 0)
-                    iio.imwrite(edge_map_path, edge_rgb)
+                # --- EXPORT: rods_mask.png ---
+                rods_mask_path = run_dir / f"{stem}_rods_mask.png"
+                iio.imwrite(rods_mask_path, ((rod_labels > 0).astype(np.uint8) * 255))
 
-                if getattr(pp, "save_overlay", True):
-                    # 1. Prepare base RGB image
-                    # roi_img can be (H,W) or (H,W,3) or (H,W,4)
-                    base_h, base_w = roi_img_orig.shape[:2]
-                    if roi_img_orig.ndim == 2:
-                        # Grayscale -> RGB
-                        rgb = np.stack([roi_img_orig]*3, axis=-1)
-                    elif roi_img_orig.ndim == 3:
-                        if roi_img_orig.shape[2] == 4:
-                            rgb = roi_img_orig[..., :3] # RGBA -> RGB
-                        else:
-                            rgb = roi_img_orig # RGB
-                    else:
-                        # Fallback for safe handling
-                        rgb = np.zeros((base_h, base_w, 3), dtype=roi_img_orig.dtype)
+                # --- EXPORT: rods_props.csv ---
+                rods_csv = run_dir / f"{stem}_rods_props.csv"
+                cols = ["label", "centroid_x", "centroid_y", "orientation_rad",
+                        "major_axis_px", "minor_axis_px", "aspect_ratio",
+                        "eccentricity", "solidity", "area_px"]
+                with rods_csv.open("w", encoding="utf-8", newline="") as f:
+                    wcsv = csv.writer(f)
+                    wcsv.writerow(cols)
+                    for k in range(n_rods):
+                        row = []
+                        for c in cols:
+                            val = rod_table[c][k]
+                            row.append(f"{val:.6f}" if isinstance(val, (float, np.floating)) else str(val))
+                        wcsv.writerow(row)
 
-                    # Ensure float for blending or uint8 for saving? 
-                    # Let's work in uint8 if input is uint8, or float if float.
-                    # Usually iio.imread returns uint8.
-                    if rgb.dtype != np.uint8:
-                        # normalize to 0..255
-                        rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-9) * 255.0
-                        rgb = rgb.astype(np.uint8)
-
-                    overlay = rgb.copy()
-
-                    # --- Ellipse-only overlay (ROD-FIT) ---
-                    from skimage import draw, morphology
-                    ell = np.zeros((overlay.shape[0], overlay.shape[1]), dtype=bool)
-
-                    rod_table = res.get("rod_table", None)
-
-                    if bool(getattr(pp, "rods_only", False)) and isinstance(rod_table, dict) and ("label" in rod_table):
-                        n = len(rod_table["label"])
-                        for k in range(n):
-                            cy = float(rod_table["centroid_y"][k])
-                            cx = float(rod_table["centroid_x"][k])
-                            maj = float(rod_table["major_axis_px"][k])
-                            mino = float(rod_table["minor_axis_px"][k])
-                            ang = float(rod_table["orientation_rad"][k])
-
-                            rr = max(1, int(round(maj / 2.0)))
-                            cc = max(1, int(round(mino / 2.0)))
-
-                            pr, pc = draw.ellipse_perimeter(
-                                int(round(cy)), int(round(cx)),
-                                rr, cc,
-                                orientation=-ang,
-                                shape=ell.shape,
-                            )
-                            ell[pr, pc] = True
-
-                    t = int(getattr(pp, "edge_thickness_px", 2))
-                    if t > 1:
-                        ell = morphology.binary_dilation(ell, morphology.disk(t - 1))
-
-                    overlay[ell] = (255, 255, 0)
+                # --- EXPORT: overlay.png (ellipses via render_ellipse_overlay) ---
+                if bool(afm_params.get("save_overlay", True)):
+                    # Build base RGB for overlay
+                    base_rgb = roi_img.copy()
+                    overlay = render_ellipse_overlay(base_rgb, rod_table, thickness_px=int(p_v2.ellipse_thickness_px))
+                    overlay_path = run_dir / f"{stem}_overlay.png"
                     iio.imwrite(overlay_path, overlay)
 
-                # objects.csv
-                with objects_csv.open("w", encoding="utf-8", newline="") as f:
-                    wcsv = csv.writer(f)
-                    wcsv.writerow(["label", "area_px", "centroid_x_px", "centroid_y_px", "perimeter_px", "eccentricity", "solidity"])
-                    for o in res["objects"]:
-                        wcsv.writerow([
-                            o["label"], o["area_px"],
-                            f"{o['centroid_x_px']:.6f}", f"{o['centroid_y_px']:.6f}",
-                            f"{o['perimeter_px']:.6f}", f"{o['eccentricity']:.6f}", f"{o['solidity']:.6f}",
-                        ])
-
-                # NEW: Rod-only export (for ellipse fitting)
-                rod_mask = res.get("rod_mask", None)
-                rod_table = res.get("rod_table", None)
-
-                if rod_mask is not None:
-                    iio.imwrite(run_dir / f"{stem}_rods_mask.png", (rod_mask.astype(np.uint8) * 255))
-                
-                if rod_table is not None:
-                    # CSV with ellipse-ready props
-                    rods_csv = run_dir / f"{stem}_rods_props.csv"
-                    with rods_csv.open("w", encoding="utf-8", newline="") as f:
+                # --- OPTIONAL: legacy objects.csv ---
+                if _b("export_legacy_csv", False):
+                    from skimage import measure
+                    objects_csv = run_dir / f"{stem}_objects.csv"
+                    props = measure.regionprops(labels)
+                    with objects_csv.open("w", encoding="utf-8", newline="") as f:
                         wcsv = csv.writer(f)
-                        # defined columns in bacteria_segmentation.py
-                        cols = ["label", "area_px", "centroid_x", "centroid_y", "orientation_rad", 
-                                "major_axis_px", "minor_axis_px", "aspect_ratio", "eccentricity", "solidity"]
-                        wcsv.writerow(cols)
-                        
-                        # len of arrays
-                        n_rods = len(rod_table["label"])
-                        for k in range(n_rods):
-                            # build row
-                            row = []
-                            for c in cols:
-                                val = rod_table[c][k]
-                                row.append(f"{val:.6f}" if isinstance(val, (float, np.floating)) else str(val))
-                            wcsv.writerow(row)
+                        wcsv.writerow(["label", "area_px", "centroid_x_px", "centroid_y_px",
+                                       "perimeter_px", "eccentricity", "solidity"])
+                        for o in props:
+                            wcsv.writerow([
+                                o.label, o.area,
+                                f"{o.centroid[1]:.6f}", f"{o.centroid[0]:.6f}",
+                                f"{o.perimeter:.6f}", f"{o.eccentricity:.6f}", f"{o.solidity:.6f}",
+                            ])
 
-                # summary.json (audit-first + ROI)
+                # --- EXPORT: summary.json (full audit) ---
+                summary_json = run_dir / f"{stem}_summary.json"
                 payload = {
-                    "summary": res["summary"],
-                    "audit": res["audit"],
+                    "n_labels": int(labels.max()),
+                    "n_rods": n_rods,
                     "roi_rect": [x0, y0, w0, h0],
                     "source_image": p.name,
+                    "audit": audit,
                 }
-                summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-                # frequencies plot (četnosti)
-                bins = res["summary"]["area_frequencies"]["bins"]
-                if bins:
-                    xs = [0.5 * (b["bin_lo"] + b["bin_hi"]) for b in bins]
-                    ys = [b["count"] for b in bins]
-                    fig = plt.figure(figsize=(7, 4))
-                    ax = fig.add_subplot(1, 1, 1)
-                    ax.plot(xs, ys)
-                    ax.set_xlabel("area [px]")
-                    ax.set_ylabel("count")
-                    ax.set_title(f"Area frequencies (n={res['summary']['count_bacteria']})")
-                    fig.tight_layout()
-                    fig.savefig(area_hist_png, dpi=180)
-                    plt.close(fig)
-
-                # bundle results.csv
-                results_csv = run_dir / f"{stem}_results.csv"
-                with results_csv.open("w", encoding="utf-8", newline="") as out:
-                    out.write("# [Metadata]\n")
-                    out.write("key,value\n")
-                    out.write(f"device,afm\n")
-                    out.write(f"method,BACTERIA_SEGMENT\n")
-                    out.write(f"roi_rect,{json.dumps([x0,y0,w0,h0])}\n")
-                    out.write(f"count_bacteria,{res['summary']['count_bacteria']}\n")
-                    out.write("\n# [Summary]\n")
-                    out.write(json.dumps(res["summary"], ensure_ascii=False, indent=2))
-                    out.write("\n\n# [Objects]\n")
-                    out.write(objects_csv.read_text(encoding="utf-8"))
-
-                # bundle results.xlsx (Metadata + Summary + Objects)
-                try:
-                    from openpyxl import Workbook
-                    wb = Workbook()
-                    ws_m = wb.active
-                    ws_m.title = "Metadata"
-                    ws_m.append(["key", "value"])
-                    ws_m.append(["device", "afm"])
-                    ws_m.append(["method", "BACTERIA_SEGMENT"])
-                    ws_m.append(["roi_rect", json.dumps([x0, y0, w0, h0])])
-                    for k, v in res["audit"]["params"].items():
-                        ws_m.append([f"param.{k}", str(v)])
-
-                    ws_s = wb.create_sheet("Summary")
-                    ws_s.append(["key", "value"])
-                    for k, v in res["summary"].items():
-                        ws_s.append([k, json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)])
-
-                    ws_o = wb.create_sheet("Objects")
-                    with objects_csv.open("r", encoding="utf-8") as f:
-                        for line in f.read().splitlines():
-                            ws_o.append(line.split(","))
-
-                    wb.save(run_dir / f"{stem}_results.xlsx")
-                except Exception as e:
-                    self._log(f"WARN: AFM XLSX export failed ({p.name}): {e!r}")
+                summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
                 dataset_set_status_fn(p, "done")
-                self._log(f"OK AFM: {p.name} -> {run.run_id} (count={res['summary']['count_bacteria']})")
+                self._log(f"OK AFM: {p.name} -> {run.run_id} (rods={n_rods}, total_labels={int(labels.max())})")
 
             except Exception as e:
                 dataset_set_status_fn(p, "failed")
@@ -1365,7 +1286,7 @@ class BatchController:
         self._log("Run Batch done ✅")
 
     def compute_afm_preview(self, file_path: str, roi_rect, afm_params: dict):
-        """Compute AFM preview overlay (yellow single-stroke outlines).
+        """Compute AFM preview overlay (yellow ellipse outlines).
 
         Returns:
           RGB uint8 image (ROI-sized)
@@ -1374,23 +1295,23 @@ class BatchController:
         import numpy as np
 
         from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
-        from barakuda.devices.afm.io.brucker_spm import read_channel
+        from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
 
         if file_path.lower().endswith(".spm"):
-            # Bruker SPM load
-            img, ch = read_channel(file_path, prefer_name_contains="Height")
-            # img is float32 usually
+            from barakuda.devices.afm.io.afmreader_loader import load_spm_height
+            img, loader_meta = load_spm_height(file_path)
             img_orig = img
         else:
-            # Standard image load
             img_orig = iio.imread(file_path)
-            
+
         img = img_orig
 
         # ensure 2D grayscale for segmentation (PNG can be RGB)
         if img.ndim == 3:
             if img.shape[-1] >= 3:
-                img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+                img = (img[..., 0].astype(np.float32) * 0.299 +
+                       img[..., 1].astype(np.float32) * 0.587 +
+                       img[..., 2].astype(np.float32) * 0.114)
             else:
                 img = img[..., 0]
         img = np.asarray(img, dtype=np.float32)
@@ -1398,26 +1319,8 @@ class BatchController:
         # crop ROI (x, y, w, h)
         x, y, w, h = roi_rect
         roi_img = img[y:y + h, x:x + w]
-        roi_img_orig = img_orig[y:y + h, x:x + w]
-
-        # base RGB (uint8)
-        # Verify base construction for SPM (float32) or standard (uint8/16)
-        if roi_img_orig.ndim == 2:
-            base = np.stack([roi_img_orig] * 3, axis=-1)
-        else:
-            base = roi_img_orig[..., :3] if roi_img_orig.shape[-1] >= 3 else np.stack([roi_img_orig[..., 0]] * 3, axis=-1)
-
-        if base.dtype != np.uint8:
-            bmin = float(np.nanmin(base))
-            bmax = float(np.max(base))
-            if bmax > bmin:
-                base = ((base - bmin) / (bmax - bmin) * 255.0).astype(np.uint8)
-            else:
-                base = base.astype(np.uint8)
 
         # Build V2 params
-        # Mapping old UI params to new V2 params where possible
-        
         def _f(key, default): return float(afm_params.get(key, default))
         def _i(key, default): return int(afm_params.get(key, default))
         def _b(key, default): return bool(afm_params.get(key, default))
@@ -1426,7 +1329,7 @@ class BatchController:
         p_v2 = AfmV2Params(
             backend=_s("backend", "classic"),
             invert=_b("invert", False),
-            clip_p_low=0.1,   # Fixed defaults or exposable? User didn't ask to expose clip
+            clip_p_low=0.1,
             clip_p_high=99.9,
             smooth_sigma=_f("smooth_sigma", 1.0),
             log_sigma=_f("log_sigma", 1.6),
@@ -1434,70 +1337,21 @@ class BatchController:
             separate_watershed=_b("separate", True),
             peak_min_distance_px=_i("peak_min_distance_px", 2),
             watershed_compactness=_f("watershed_compactness", 0.03),
-            
-            # Cellpose
-            cp_model="cyto3", # default
+            cp_model="cyto3",
             cp_diameter=_f("cp_diameter", 0.0),
             cp_flow_threshold=_f("cp_flow_threshold", 0.4),
             cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
-
-            # Rods
             rods_only=_b("rods_only", True),
             rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
             rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
             rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
-            
             ellipse_thickness_px=_i("edge_thickness_px", 2),
         )
 
         res = run_afm_v2(roi_img, p_v2)
-        # v2 returns: {"norm": ..., "labels": ..., "audit": ..., "rod_labels": ..., "rod_table": ...}
 
-        overlay = base.copy()
-
-        # --- Ellipse-only overlay (ROD-FIT) ---
-        from skimage import draw, morphology
-        ell = np.zeros((overlay.shape[0], overlay.shape[1]), dtype=bool)
-
-        rod_table = res.get("rod_table", None)
-        rod_labels = res.get("rod_labels", None)
-
-        # Prefer rod_table if rods_only is enabled and table exists
-        rod_table = res.get("rod_table", None)
-        rod_labels = res.get("rod_labels", None)
-        
-        # Prefer rod_table if rods_only is enabled and table exists (v2 always returns it if rods_only=True)
-        if p_v2.rods_only and isinstance(rod_table, dict) and ("label" in rod_table):
-            n = len(rod_table["label"])
-            for k in range(n):
-                cy = float(rod_table["centroid_y"][k])
-                cx = float(rod_table["centroid_x"][k])
-                maj = float(rod_table["major_axis_px"][k])
-                mino = float(rod_table["minor_axis_px"][k])
-                ang = float(rod_table["orientation_rad"][k])
-
-                rr = max(1, int(round(maj / 2.0)))
-                cc = max(1, int(round(mino / 2.0)))
-
-                pr, pc = draw.ellipse_perimeter(
-                    int(round(cy)), int(round(cx)),
-                    rr, cc,
-                    orientation=-ang,  # <-- IMPORTANT for image coord convention
-                    shape=ell.shape,
-                )
-                ell[pr, pc] = True
-
-        # Fallback: if rods_only off, you can optionally draw ellipses for all labels.
-        elif rod_labels is not None:
-            # (Optional) keep empty for rod-fit. If you want all objects: compute props and draw.
-            pass
-
-        # thickness via existing UI param (Outline thickness)
-        t = int(p_v2.ellipse_thickness_px)
-        if t > 1:
-            ell = morphology.binary_dilation(ell, morphology.disk(t - 1))
-
-        overlay[ell] = (255, 255, 0)
+        # Overlay: single call to render_ellipse_overlay (no inline drawing)
+        overlay = render_ellipse_overlay(roi_img, res["rod_table"], thickness_px=int(p_v2.ellipse_thickness_px))
         return overlay
 
     def _build_afm_seg_params(self, afm_params: dict):
