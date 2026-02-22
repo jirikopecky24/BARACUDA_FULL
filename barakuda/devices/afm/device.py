@@ -4,6 +4,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFormLayout, QHBoxLayout,
     QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox,
+    QScrollArea, QFrame, QSizePolicy,
 )
 from barakuda.devices.base import DeviceSpec
 from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE
@@ -15,12 +16,19 @@ class AfmPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ══════════════════════════════════════════════════════════
+        # FIXED TOP: title + warning
+        # ══════════════════════════════════════════════════════════
+        top_bar = QVBoxLayout()
+        top_bar.setContentsMargins(8, 6, 8, 2)
 
         title = QLabel("AFM — Cellpose V2 Rod-Fit Pipeline")
         title.setStyleSheet("font-weight: 600; font-size: 13px;")
-        layout.addWidget(title)
+        top_bar.addWidget(title)
 
-        # Cellpose availability warning
         if not _HAS_CELLPOSE:
             warn = QLabel(
                 "⚠ Cellpose is NOT installed. Segmentation will fail.\n"
@@ -28,10 +36,20 @@ class AfmPanel(QWidget):
             )
             warn.setStyleSheet("color: #d32f2f; font-weight: 600; padding: 6px;")
             warn.setWordWrap(True)
-            layout.addWidget(warn)
+            top_bar.addWidget(warn)
 
-        self.btn_preview = QPushButton("Preview AFM")
-        layout.addWidget(self.btn_preview)
+        layout.addLayout(top_bar)
+
+        # ══════════════════════════════════════════════════════════
+        # SCROLLABLE: all parameter sections
+        # ══════════════════════════════════════════════════════════
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(8, 4, 8, 4)
 
         # ── Data (read-only) ──────────────────────────────────────
         form_data = QFormLayout()
@@ -47,7 +65,7 @@ class AfmPanel(QWidget):
         self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
         form_data.addRow("Scale:", self.lbl_scale)
 
-        layout.addLayout(form_data)
+        scroll_layout.addLayout(form_data)
 
         # ── Preprocessing ─────────────────────────────────────────
         form_pre = QFormLayout()
@@ -73,7 +91,7 @@ class AfmPanel(QWidget):
         self.sp_clip_high.setValue(99.0)
         form_pre.addRow("Clip percentile high", self.sp_clip_high)
 
-        layout.addLayout(form_pre)
+        scroll_layout.addLayout(form_pre)
 
         # ── Cellpose Segmentation ─────────────────────────────────
         form_cp = QFormLayout()
@@ -106,7 +124,7 @@ class AfmPanel(QWidget):
         self.sp_cp_prob.setValue(-0.5)
         form_cp.addRow("Cellprob threshold", self.sp_cp_prob)
 
-        layout.addLayout(form_cp)
+        scroll_layout.addLayout(form_cp)
 
         # ── Rod Geometry Filter ───────────────────────────────────
         form_rod = QFormLayout()
@@ -143,7 +161,7 @@ class AfmPanel(QWidget):
         self.sp_min_area.setValue(8)
         form_rod.addRow("Min area (px)", self.sp_min_area)
 
-        layout.addLayout(form_rod)
+        scroll_layout.addLayout(form_rod)
 
         # ── Overlay ───────────────────────────────────────────────
         form_ov = QFormLayout()
@@ -162,21 +180,40 @@ class AfmPanel(QWidget):
         ov_info.setWordWrap(True)
         form_ov.addRow(ov_info)
 
-        layout.addLayout(form_ov)
+        scroll_layout.addLayout(form_ov)
+        scroll_layout.addStretch(1)
 
-        # ── Actions ───────────────────────────────────────────────
-        layout.addSpacing(8)
-        layout.addWidget(QLabel("ROI z Preview se použije jako výpočetní oblast."))
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, stretch=1)   # scroll eats all vertical space
+
+        # ══════════════════════════════════════════════════════════
+        # FIXED BOTTOM: action buttons (never scroll away)
+        # ══════════════════════════════════════════════════════════
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #ccc;")
+        layout.addWidget(sep)
+
+        actions = QVBoxLayout()
+        actions.setContentsMargins(8, 4, 8, 6)
+
+        roi_hint = QLabel("ROI z Preview se použije jako výpočetní oblast.")
+        roi_hint.setStyleSheet("color: #888; font-size: 11px;")
+        roi_hint.setWordWrap(True)
+        actions.addWidget(roi_hint)
+
+        self.btn_preview = QPushButton("Preview AFM")
+        actions.addWidget(self.btn_preview)
 
         self.btn_reset = QPushButton("Reset AFM defaults")
         self.btn_reset.clicked.connect(self.apply_afm_defaults)
-        layout.addWidget(self.btn_reset)
+        actions.addWidget(self.btn_reset)
 
         self.btn_run = QPushButton("Spustit AFM Batch")
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
-        layout.addWidget(self.btn_run)
+        actions.addWidget(self.btn_run)
 
-        layout.addStretch(1)
+        layout.addLayout(actions)
 
         # Apply defaults + tooltips on init
         self.apply_afm_defaults()
@@ -201,7 +238,7 @@ class AfmPanel(QWidget):
         um_source = meta.get("afm_um_per_px_source", "unknown")
 
         if um_per_px and float(um_per_px) > 0:
-            self.lbl_scale.setText(f"{float(um_per_px):.4f} µm/px")
+            self.lbl_scale.setText(f"{float(um_per_px):.4f} µm/px ({um_source})")
             self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
         else:
             self.lbl_scale.setText("unknown")
