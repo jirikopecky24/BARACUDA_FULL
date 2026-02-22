@@ -573,13 +573,7 @@ class ShellMainWindow(QMainWindow):
 
         self._afm_preview_thread.started.connect(self._afm_preview_worker.run)
         
-        # hook signals
-        def _on_progress_pct(pct: int, msg: str):
-            self.log_panel.log(f"{pct}% - {msg}")
-            if hasattr(self._device_panel, "set_preview_progress"):
-                self._device_panel.set_preview_progress(pct, msg)  # type: ignore[attr-defined]
-
-        self._afm_preview_worker.progress_pct.connect(_on_progress_pct)
+        self._afm_preview_worker.progress_pct.connect(self._handle_afm_preview_progress)
         self._afm_preview_worker.finished.connect(self._afm_preview_done)
         self._afm_preview_worker.error.connect(self._afm_preview_failed)
         
@@ -589,9 +583,27 @@ class ShellMainWindow(QMainWindow):
         self._afm_preview_thread.finished.connect(self._afm_preview_worker.deleteLater)
         self._afm_preview_thread.finished.connect(self._afm_preview_thread.deleteLater)
 
+        # start timer for smooth 20->79% progress
+        from PyQt6.QtCore import QTimer
+        if not hasattr(self, "_afm_preview_timer"):
+            self._afm_preview_timer = QTimer(self)
+            self._afm_preview_timer.timeout.connect(self._afm_preview_on_timer)
+        self._afm_preview_progress_val = 0
+        self._afm_preview_timer.start(500)  # increment roughly every 0.5s
+
         self._afm_preview_thread.start()
 
+    def _afm_preview_on_timer(self) -> None:
+        val = getattr(self, "_afm_preview_progress_val", 0)
+        if 20 <= val < 79:
+            val += 1
+            self._afm_preview_progress_val = val
+            if hasattr(self._device_panel, "set_preview_progress"):
+                self._device_panel.set_preview_progress(val, "Cellpose evaluating...")
+
     def _afm_preview_done(self, payload: dict) -> None:
+        if hasattr(self, "_afm_preview_timer"):
+            self._afm_preview_timer.stop()
         if hasattr(self._device_panel, "reset_preview_progress"):
             self._device_panel.reset_preview_progress()  # type: ignore[attr-defined]
 
@@ -629,21 +641,48 @@ class ShellMainWindow(QMainWindow):
 
 
     def _afm_preview_failed(self, tb_str: str) -> None:
+        if hasattr(self, "_afm_preview_timer"):
+            self._afm_preview_timer.stop()
+            
         if self._afm_preview_worker and getattr(self._afm_preview_worker, "_is_cancelled", False):
             self.log_panel.log("Preview AFM: FAILED while cancelling")
+            self._on_afm_preview_error("Cancelled")
         else:
             self.log_panel.log("Preview AFM: ERROR")
-            
-        # Log stack trace
-        for line in tb_str.splitlines():
-            self.log_panel.log(line)
+            # Log stack trace
+            for line in tb_str.splitlines():
+                self.log_panel.log(line)
+            self._on_afm_preview_error(tb_str)
+
+    def _afm_preview_cleanup(self) -> None:
+        """Common cleanup for AFM preview."""
+        if hasattr(self, "_afm_preview_timer"):
+            self._afm_preview_timer.stop()
             
         if hasattr(self._device_panel, "set_preview_state"):
             self._device_panel.set_preview_state(False)  # type: ignore[attr-defined]
         if hasattr(self._device_panel, "set_status_message"):
             self._device_panel.set_status_message("Error", is_error=True)  # type: ignore[attr-defined]
 
+    def _on_afm_preview_error(self, err: str) -> None:
+        if self._device_panel and hasattr(self._device_panel, "set_preview_state"):
+            self._device_panel.set_preview_state(False)  # type: ignore[attr-defined]
+            if hasattr(self._device_panel, "set_preview_progress"):
+                self._device_panel.set_preview_progress(0, f"Error: {err}")  # type: ignore[attr-defined]
+        self.log_panel.log(f"AFM Preview ERROR: {err}")
+        self._afm_preview_cleanup()
+
+    def _handle_afm_preview_progress(self, pct: int, msg: str) -> None:
+        """Handle progress updates safely across thread boundaries."""
+        self._afm_preview_progress_val = pct
+        self.log_panel.log(f"{pct}% - {msg}")
+        if hasattr(self._device_panel, "set_preview_progress"):
+            self._device_panel.set_preview_progress(pct, msg)  # type: ignore[attr-defined]
+
     def _on_afm_preview_cancel_clicked(self) -> None:
+        if hasattr(self, "_afm_preview_timer"):
+            self._afm_preview_timer.stop()
+            
         if self._afm_preview_worker:
             self._afm_preview_worker.cancel()
             self.log_panel.log("Preview AFM: Cancelling...")

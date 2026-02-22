@@ -136,97 +136,42 @@ class AfmPreviewWorker(QObject):
                 
             self.progress_pct.emit(15, "Initializing Cellpose...")
             
-            from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE, cp_models
+            from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE, _CELLPOSE_VERSION, run_afm_v2
             if not _HAS_CELLPOSE:
                 raise RuntimeError("Cellpose is not installed.")
 
-            if hasattr(cp_models, "Cellpose"):
-                model = cp_models.Cellpose(model_type=p_v2.cp_model)
-            else:
-                model = cp_models.CellposeModel(model_type=p_v2.cp_model)
-                
-            self.progress_pct.emit(20, "Cellpose: starting inference...")
-            
-            # ── Tiled Inference (20% to 80%) ────────────────────────
-            H, W = img8.shape
-            TILE_SIZE = 320
-            OVERLAP = 32
-            STEP = TILE_SIZE - OVERLAP
-            
-            y_starts = list(range(0, max(1, H - OVERLAP), STEP))
-            x_starts = list(range(0, max(1, W - OVERLAP), STEP))
-            
-            # ensure we cover edges
-            if y_starts[-1] + TILE_SIZE < H: y_starts.append(H - TILE_SIZE)
-            if x_starts[-1] + TILE_SIZE < W: x_starts.append(W - TILE_SIZE)
-            
-            total_tiles = len(y_starts) * len(x_starts)
-            done_tiles = 0
-            
-            global_masks = np.zeros((H, W), dtype=np.int32)
-            max_label = 0
-            
-            for y in y_starts:
-                for x in x_starts:
-                    if self._is_cancelled:
-                        return
-                        
-                    y0, y1 = max(0, y), min(H, y + TILE_SIZE)
-                    x0, x1 = max(0, x), min(W, x + TILE_SIZE)
-                    
-                    tile = img8[y0:y1, x0:x1]
-                    
-                    # evaluate tile
-                    eval_out = model.eval(
-                        tile,
-                        channels=[0, 0],
-                        diameter=(None if p_v2.cp_diameter == 0 else float(p_v2.cp_diameter)),
-                        flow_threshold=float(p_v2.cp_flow_threshold),
-                        cellprob_threshold=float(p_v2.cp_cellprob_threshold),
-                    )
-                    
-                    tile_masks = eval_out[0].astype(np.int32)
-                    
-                    # merge into global (simple max approach for overlap)
-                    has_mask = tile_masks > 0
-                    if np.any(has_mask):
-                        shifted = tile_masks + max_label
-                        shifted[~has_mask] = 0
-                        
-                        view = global_masks[y0:y1, x0:x1]
-                        # overwrite where background currently
-                        replace_mask = (view == 0) & has_mask
-                        view[replace_mask] = shifted[replace_mask]
-                        
-                        max_label = np.max(shifted)
-                        
-                    done_tiles += 1
-                    pct = 20 + int(60 * done_tiles / total_tiles)
-                    self.progress_pct.emit(pct, f"Cellpose {done_tiles}/{total_tiles}")
+            self.progress_pct.emit(15, f"Cellpose version: {_CELLPOSE_VERSION}")
 
             if self._is_cancelled:
                 return
 
-            self.progress_pct.emit(85, "Filtering shapes...")
+            self.progress_pct.emit(20, "Cellpose: starting inference...")
+            
+            um_per_px = float(self.meta.get("afm_um_per_px", 0.0))
+            
+            # The preview pipeline wraps auto-diameter, fallback routing, downscaling and filtering natively
+            v2_out = run_afm_v2(roi_img, p_v2, um_per_px)
 
-            if p_v2.rods_only:
-                final_masks, rod_table = rod_filter(global_masks, p_v2)
-            else:
-                from skimage import measure
-                final_masks = global_masks
-                props = measure.regionprops(final_masks)
-                keep_labels = [p.label for p in props if p.area >= p_v2.rods_min_area_px]
-                
-                # fake rod table for area filter
-                rod_table = {
-                    "label": np.array(keep_labels, dtype=np.int32)
-                }
-                
-                # apply area filter
-                filtered_mask = np.zeros_like(final_masks)
-                for lbl in keep_labels:
-                    filtered_mask[final_masks == lbl] = lbl
-                final_masks = filtered_mask
+            if self._is_cancelled:
+                return
+
+            self.progress_pct.emit(80, "Inference complete.")
+            
+            audit = v2_out["audit"]
+            timings = audit.get("timings_ms", {})
+            self.progress_pct.emit(80, f"⏱️ Pre-process: {timings.get('preprocess_ms', 0)} ms")
+            self.progress_pct.emit(80, f"⏱️ Evaluate: {timings.get('eval_ms', 0)} ms")
+            self.progress_pct.emit(80, f"⏱️ Post-process: {timings.get('postprocess_ms', 0)} ms")
+            self.progress_pct.emit(80, f"⏱️ Total: {timings.get('total_ms', 0)} ms")
+            
+            dev_ui = audit.get("device", "unknown")
+            diam_ui = audit.get("diameter_effective_px", "Auto")
+            self.progress_pct.emit(80, f"Device Engine: {dev_ui} | Eff. Diameter: {diam_ui} px")
+
+            self.progress_pct.emit(85, "Generating preview overlays...")
+
+            final_masks = v2_out["rod_labels"]
+            rod_table = v2_out["rod_table"]
 
             if self._is_cancelled:
                 return
@@ -234,9 +179,21 @@ class AfmPreviewWorker(QObject):
             self.progress_pct.emit(95, "Rendering overlay...")
             n_rods = len(rod_table.get("label", []))
 
+            # Map rod centroids back to full image relative coords
+            if "centroid_x" in rod_table and len(rod_table["centroid_x"]) > 0:
+                rod_table["centroid_x"] += x
+                rod_table["centroid_y"] += y
+
+            # Render overlay on the FULL image for context
+            full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
+            full_img8 = (full_norm * 255.0).astype(np.uint8)
             overlay = render_ellipse_overlay(
-                roi_img, rod_table, thickness_px=int(p_v2.ellipse_thickness_px)
+                full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px)
             )
+
+            # Draw the ROI box on the overlay for clarity (yellow)
+            import cv2
+            cv2.rectangle(overlay, (int(x), int(y)), (int(x+w), int(y+h)), (255, 255, 0), max(1, int(p_v2.ellipse_thickness_px)))
 
             if not self._is_cancelled:
                 payload = {
