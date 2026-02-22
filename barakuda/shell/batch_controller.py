@@ -1286,7 +1286,7 @@ class BatchController:
         """Compute AFM preview overlay (yellow ellipse outlines).
 
         Returns:
-          RGB uint8 image (ROI-sized)
+          dict with keys: overlay (RGB uint8), n_rods (int)
         """
         import imageio.v2 as iio
         import numpy as np
@@ -1315,8 +1315,13 @@ class BatchController:
                 img = img[..., 0]
         img = np.asarray(img, dtype=np.float32)
 
-        # crop ROI (x, y, w, h)
+        # crop ROI (x, y, w, h) — clamped to image bounds
         x, y, w, h = roi_rect
+        H, W = img.shape[:2]
+        x = max(0, min(x, W - 1))
+        y = max(0, min(y, H - 1))
+        w = max(1, min(w, W - x))
+        h = max(1, min(h, H - y))
         roi_img = img[y:y + h, x:x + w]
 
         # Build V2 params
@@ -1343,8 +1348,13 @@ class BatchController:
 
         res = run_afm_v2(roi_img, p_v2)
 
+        rod_table = res["rod_table"]
+        n_rods = len(rod_table.get("label", []))
+
         # Overlay: single call to render_ellipse_overlay (no inline drawing)
-        overlay = render_ellipse_overlay(roi_img, res["rod_table"], thickness_px=int(p_v2.ellipse_thickness_px))
-        return overlay
+        overlay = render_ellipse_overlay(roi_img, rod_table, thickness_px=int(p_v2.ellipse_thickness_px))
+
+        return {"overlay": overlay, "n_rods": n_rods}
 
     # NOTE: _build_afm_seg_params removed — legacy pipeline no longer used
+

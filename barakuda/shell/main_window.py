@@ -511,31 +511,64 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id != "afm" or self._device_panel is None:
             return
 
+        import traceback
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtWidgets import QApplication
+
+        paths = self.dataset.get_selected_paths()
+        if not paths:
+            self.log_panel.log("AFM Preview: no file selected.")
+            return
+
+        file_path = str(paths[0])
+
+        # Get params from panel
+        afm_params: dict = {}
+        if hasattr(self._device_panel, "get_afm_params"):
+            afm_params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
+
+        # ROI fallback: if not set or too small, use full image
+        roi = self.preview.get_roi_rect()
+        if roi is None or roi[2] < 2 or roi[3] < 2:
+            # Try to get image dimensions from preview
+            img_size = None
+            try:
+                img_size = self.preview.get_image_size()  # (w, h) or None
+            except Exception:
+                pass
+            if img_size and img_size[0] > 0 and img_size[1] > 0:
+                roi = (0, 0, int(img_size[0]), int(img_size[1]))
+            else:
+                roi = (0, 0, 512, 512)  # safe fallback
+            self.log_panel.log(f"Preview AFM: ROI not set → using full frame {roi[2]}×{roi[3]}")
+
+        self.log_panel.log(
+            f"Preview AFM: START | file={paths[0].name} | roi={roi}"
+        )
+
+        QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
         try:
-            paths = self.dataset.get_selected_paths()
-            if not paths:
-                self.log_panel.log("AFM Preview: no file selected.")
-                return
-
-            roi = self.preview.get_roi_rect()
-            if roi is None:
-                self.log_panel.log("AFM Preview: ROI is required.")
-                return
-
-            # Get params from panel
-            afm_params = {}
-            if hasattr(self._device_panel, "get_afm_params"):
-                 afm_params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
-
-            overlay_rgb = self.batch.compute_afm_preview(
-                file_path=str(paths[0]),
+            result = self.batch.compute_afm_preview(
+                file_path=file_path,
                 roi_rect=roi,
                 afm_params=afm_params,
             )
 
-            self.preview.set_after_image(overlay_rgb)
-            self.preview.show_after_tab()   # auto-switch to AFTER tab
-            self.log_panel.log("AFM Preview: updated.")
+            # result can be overlay_rgb (ndarray) or dict with more info
+            overlay_rgb = result
+            n_rods = "?"
+            if isinstance(result, dict):
+                overlay_rgb = result.get("overlay")
+                n_rods = result.get("n_rods", "?")
+
+            if overlay_rgb is not None:
+                self.preview.set_after_image(overlay_rgb)
+            else:
+                self.log_panel.log("Preview AFM: overlay is None, AFTER tab will be empty.")
+
+            self.preview.show_after_tab()
+
+            self.log_panel.log(f"Preview AFM: DONE (n_rods={n_rods})")
 
             # Update Data section labels (Channel/Scale) from loader metadata
             loader_meta = getattr(self.batch, "_last_afm_loader_meta", None)
@@ -543,4 +576,8 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.update_loader_info(loader_meta)  # type: ignore[attr-defined]
 
         except Exception as e:
-            self.log_panel.log(f"AFM Preview ERROR: {e!r}")
+            self.log_panel.log(f"Preview AFM: ERROR — {e!r}")
+            self.log_panel.log(traceback.format_exc())
+        finally:
+            QApplication.restoreOverrideCursor()
+
