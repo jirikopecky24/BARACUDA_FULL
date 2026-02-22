@@ -534,6 +534,13 @@ class ShellMainWindow(QMainWindow):
             )
 
             self.preview.set_after_image(overlay_rgb)
+            self.preview.show_after_tab()   # auto-switch to AFTER tab
             self.log_panel.log("AFM Preview: updated.")
+
+            # Update Data section labels (Channel/Scale) from loader metadata
+            loader_meta = getattr(self.batch, "_last_afm_loader_meta", None)
+            if hasattr(self._device_panel, "update_loader_info"):
+                self._device_panel.update_loader_info(loader_meta)  # type: ignore[attr-defined]
+
         except Exception as e:
             self.log_panel.log(f"AFM Preview ERROR: {e!r}")

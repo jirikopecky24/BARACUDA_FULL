@@ -1294,6 +1294,7 @@ class BatchController:
         from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
         from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
 
+        loader_meta = None
         if file_path.lower().endswith(".spm"):
             from barakuda.devices.afm.io.afmreader_loader import load_spm_height
             img, loader_meta = load_spm_height(file_path)
@@ -1301,6 +1302,7 @@ class BatchController:
         else:
             img_orig = iio.imread(file_path)
 
+        self._last_afm_loader_meta = loader_meta
         img = img_orig
 
         # ensure 2D grayscale for segmentation (PNG can be RGB)
