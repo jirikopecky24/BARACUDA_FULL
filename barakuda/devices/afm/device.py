@@ -77,6 +77,10 @@ class AfmPanel(QWidget):
         self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
         form_data.addRow("Scale:", self.lbl_scale)
 
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color: #0277bd; font-weight: 600; font-size: 11px;")
+        form_data.addRow("Status:", self.lbl_status)
+
         scroll_layout.addLayout(form_data)
 
         # ── Preprocessing ─────────────────────────────────────────
@@ -231,6 +235,10 @@ class AfmPanel(QWidget):
         self.btn_preview = QPushButton("Preview AFM")
         actions.addWidget(self.btn_preview)
 
+        self.btn_cancel = QPushButton("Cancel Preview")
+        self.btn_cancel.setEnabled(False)
+        actions.addWidget(self.btn_cancel)
+
         self.btn_reset = QPushButton("Reset AFM defaults")
         self.btn_reset.clicked.connect(self.apply_afm_defaults)
         actions.addWidget(self.btn_reset)
@@ -276,6 +284,29 @@ class AfmPanel(QWidget):
         else:
             self.lbl_scale.setText("unknown")
             self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
+
+    # ── UI State Helpers ──────────────────────────────────────────
+    def set_preview_state(self, is_running: bool):
+        """Enables/disables buttons and sets status text during preview."""
+        if is_running:
+            self.btn_preview.setEnabled(False)
+            self.btn_preview.setText("Preview AFM (running...)")
+            self.btn_cancel.setEnabled(True)
+            self.btn_run.setEnabled(False)
+            self.lbl_status.setText("Preview running... (Cellpose)")
+            self.lbl_status.setStyleSheet("color: #e65100; font-weight: 600; font-size: 11px;")
+        else:
+            self.btn_preview.setEnabled(True)
+            self.btn_preview.setText("Preview AFM")
+            self.btn_cancel.setEnabled(False)
+            self.btn_run.setEnabled(True)
+
+    def set_status_message(self, text: str, is_error: bool = False):
+        self.lbl_status.setText(text)
+        if is_error:
+            self.lbl_status.setStyleSheet("color: #d32f2f; font-weight: 600; font-size: 11px;")
+        else:
+            self.lbl_status.setStyleSheet("color: #2e7d32; font-weight: 600; font-size: 11px;")
 
     # ── Defaults (high recall) ────────────────────────────────────
     def apply_afm_defaults(self):
