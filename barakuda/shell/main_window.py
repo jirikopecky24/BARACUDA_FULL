@@ -39,6 +39,9 @@ class ShellMainWindow(QMainWindow):
         self._active_device_id: str = ""
         self._device_panel: Optional[QWidget] = None
 
+        self._afm_preview_thread = None
+        self._afm_preview_worker = None
+
         runs_folder = Path(__file__).resolve().parents[2] / "runs"
         self.batch = BatchController(runs_folder=runs_folder, log_fn=self.log_panel.log)
 
@@ -228,6 +231,8 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.run_batch_clicked.connect(self._on_run_batch)  # type: ignore[attr-defined]
                 if hasattr(self._device_panel, "btn_preview"):
                     self._device_panel.btn_preview.clicked.connect(self._on_afm_preview)  # type: ignore[attr-defined]
+                if hasattr(self._device_panel, "btn_cancel"):
+                    self._device_panel.btn_cancel.clicked.connect(self._on_afm_preview_cancel_clicked)  # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
 
@@ -511,9 +516,12 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id != "afm" or self._device_panel is None:
             return
 
-        import traceback
-        from PyQt6.QtCore import Qt as _Qt
-        from PyQt6.QtWidgets import QApplication
+        if self._afm_preview_thread is not None and self._afm_preview_thread.isRunning():
+            self.log_panel.log("AFM Preview: already running.")
+            return
+
+        from PyQt6.QtCore import QThread
+        from barakuda.shell.workers.afm_preview_worker import AfmPreviewWorker
 
         paths = self.dataset.get_selected_paths()
         if not paths:
@@ -527,57 +535,102 @@ class ShellMainWindow(QMainWindow):
         if hasattr(self._device_panel, "get_afm_params"):
             afm_params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
 
-        # ROI fallback: if not set or too small, use full image
+        # ROI fallback
         roi = self.preview.get_roi_rect()
         if roi is None or roi[2] < 2 or roi[3] < 2:
-            # Try to get image dimensions from preview
             img_size = None
             try:
-                img_size = self.preview.get_image_size()  # (w, h) or None
+                img_size = self.preview.get_image_size()
             except Exception:
                 pass
             if img_size and img_size[0] > 0 and img_size[1] > 0:
                 roi = (0, 0, int(img_size[0]), int(img_size[1]))
             else:
-                roi = (0, 0, 512, 512)  # safe fallback
+                roi = (0, 0, 512, 512)
             self.log_panel.log(f"Preview AFM: ROI not set → using full frame {roi[2]}×{roi[3]}")
 
-        self.log_panel.log(
-            f"Preview AFM: START | file={paths[0].name} | roi={roi}"
+        self.log_panel.log(f"Preview AFM: START | file={paths[0].name} | roi={roi}")
+        
+        # update UI state
+        if hasattr(self._device_panel, "set_preview_state"):
+            self._device_panel.set_preview_state(True)  # type: ignore[attr-defined]
+
+        # Start thread
+        self._afm_preview_thread = QThread()
+        self._afm_preview_worker = AfmPreviewWorker(file_path, roi, afm_params)
+        self._afm_preview_worker.moveToThread(self._afm_preview_thread)
+
+        self._afm_preview_thread.started.connect(self._afm_preview_worker.run)
+        
+        # hook signals
+        self._afm_preview_worker.progress.connect(
+            lambda msg: (self.log_panel.log(msg),
+                         self._device_panel.set_status_message(msg) if hasattr(self._device_panel, "set_status_message") else None)
         )
+        self._afm_preview_worker.finished.connect(self._afm_preview_done)
+        self._afm_preview_worker.error.connect(self._afm_preview_failed)
+        
+        # cleanup
+        self._afm_preview_worker.finished.connect(self._afm_preview_thread.quit)
+        self._afm_preview_worker.error.connect(self._afm_preview_thread.quit)
+        self._afm_preview_thread.finished.connect(self._afm_preview_worker.deleteLater)
+        self._afm_preview_thread.finished.connect(self._afm_preview_thread.deleteLater)
 
-        QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
-        try:
-            result = self.batch.compute_afm_preview(
-                file_path=file_path,
-                roi_rect=roi,
-                afm_params=afm_params,
-            )
+        self._afm_preview_thread.start()
 
-            # result can be overlay_rgb (ndarray) or dict with more info
-            overlay_rgb = result
-            n_rods = "?"
-            if isinstance(result, dict):
-                overlay_rgb = result.get("overlay")
-                n_rods = result.get("n_rods", "?")
+    def _afm_preview_done(self, payload: dict) -> None:
+        if self._afm_preview_worker and getattr(self._afm_preview_worker, "_is_cancelled", False):
+            self.log_panel.log("Preview AFM: CANCELLED (result ignored)")
+            if hasattr(self._device_panel, "set_preview_state"):
+                self._device_panel.set_preview_state(False)  # type: ignore[attr-defined]
+            if hasattr(self._device_panel, "set_status_message"):
+                self._device_panel.set_status_message("Cancelled", is_error=True)  # type: ignore[attr-defined]
+            return
 
-            if overlay_rgb is not None:
-                self.preview.set_after_image(overlay_rgb)
-            else:
-                self.log_panel.log("Preview AFM: overlay is None, AFTER tab will be empty.")
+        overlay_rgb = payload.get("overlay")
+        n_rods = payload.get("n_rods", "?")
+        loader_meta = payload.get("loader_meta")
 
-            self.preview.show_after_tab()
+        if getattr(self, "batch", None):
+            self.batch._last_afm_loader_meta = loader_meta
 
-            self.log_panel.log(f"Preview AFM: DONE (n_rods={n_rods})")
+        if overlay_rgb is not None:
+            self.preview.set_after_image(overlay_rgb)
+        else:
+            self.log_panel.log("Preview AFM: overlay is None, AFTER tab will be empty.")
 
-            # Update Data section labels (Channel/Scale) from loader metadata
-            loader_meta = getattr(self.batch, "_last_afm_loader_meta", None)
-            if hasattr(self._device_panel, "update_loader_info"):
-                self._device_panel.update_loader_info(loader_meta)  # type: ignore[attr-defined]
+        self.preview.show_after_tab()
+        self.log_panel.log(f"Preview AFM: DONE (n_rods={n_rods})")
 
-        except Exception as e:
-            self.log_panel.log(f"Preview AFM: ERROR — {e!r}")
-            self.log_panel.log(traceback.format_exc())
-        finally:
-            QApplication.restoreOverrideCursor()
+        if hasattr(self._device_panel, "update_loader_info"):
+            self._device_panel.update_loader_info(loader_meta)  # type: ignore[attr-defined]
+
+        if hasattr(self._device_panel, "set_preview_state"):
+            self._device_panel.set_preview_state(False)  # type: ignore[attr-defined]
+            
+        if hasattr(self._device_panel, "set_status_message"):
+            self._device_panel.set_status_message("Done")  # type: ignore[attr-defined]
+
+
+    def _afm_preview_failed(self, tb_str: str) -> None:
+        if self._afm_preview_worker and getattr(self._afm_preview_worker, "_is_cancelled", False):
+            self.log_panel.log("Preview AFM: FAILED while cancelling")
+        else:
+            self.log_panel.log("Preview AFM: ERROR")
+            
+        # Log stack trace
+        for line in tb_str.splitlines():
+            self.log_panel.log(line)
+            
+        if hasattr(self._device_panel, "set_preview_state"):
+            self._device_panel.set_preview_state(False)  # type: ignore[attr-defined]
+        if hasattr(self._device_panel, "set_status_message"):
+            self._device_panel.set_status_message("Error", is_error=True)  # type: ignore[attr-defined]
+
+    def _on_afm_preview_cancel_clicked(self) -> None:
+        if self._afm_preview_worker:
+            self._afm_preview_worker.cancel()
+            self.log_panel.log("Preview AFM: Cancelling...")
+            if hasattr(self._device_panel, "set_status_message"):
+                self._device_panel.set_status_message("Cancelling...", is_error=True)  # type: ignore[attr-defined]
 
