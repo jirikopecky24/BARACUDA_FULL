@@ -18,6 +18,9 @@ PyQt6_sip==13.11.0
 pyqtgraph==0.14.0
 python-dateutil==2.9.0.post0
 pytz==2025.2
+scikit-image>=0.21.0
 scipy==1.15.3
 six==1.17.0
 tzdata==2025.3
+AFMReader
+# cellpose  # optional: deep-learning segmentation backend for AFM
