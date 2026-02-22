@@ -192,6 +192,17 @@ class ShellMainWindow(QMainWindow):
             except Exception as e:
                 self.log_panel.log(f"WARN: scale load failed: {e!r}")
 
+        # Auto-load AFM scale/metadata into panel on selection to avoid "unknown"
+        if self._active_device_id == "afm" and self._device_panel is not None:
+            if str(path).lower().endswith(".spm"):
+                try:
+                    from barakuda.devices.afm.io.afmreader_loader import load_spm_height
+                    _, loader_meta = load_spm_height(str(path))
+                    if hasattr(self._device_panel, "update_loader_info"):
+                        self._device_panel.update_loader_info(loader_meta)  # type: ignore[attr-defined]
+                except Exception as e:
+                    self.log_panel.log(f"WARN: AFM scale auto-load failed: {e!r}")
+
     # ---------------- device switching ----------------
 
     def _on_device_changed(self, idx: int) -> None:

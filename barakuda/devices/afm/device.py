@@ -273,11 +273,19 @@ class AfmPanel(QWidget):
         ch = meta.get("selected_channel", "–")
         self.lbl_channel.setText(str(ch))
 
-        um_per_px = meta.get("afm_um_per_px", 0.0)
+        um_per_px = float(meta.get("afm_um_per_px", 0.0))
         um_source = meta.get("afm_um_per_px_source", "unknown")
+        px_to_nm = float(meta.get("pixel_to_nm", 0.0))
+        px_source = meta.get("pixel_to_nm_source", "unknown")
 
-        if um_per_px and float(um_per_px) > 0:
-            self.lbl_scale.setText(f"{float(um_per_px):.4f} µm/px ({um_source})")
+        if um_per_px > 0 and px_to_nm > 0:
+            self.lbl_scale.setText(f"{um_per_px:.6f} µm/px ({px_to_nm:.4f} nm/px, src={um_source})")
+            self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
+        elif um_per_px > 0:
+            self.lbl_scale.setText(f"{um_per_px:.6f} µm/px (src={um_source})")
+            self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
+        elif px_to_nm > 0:
+            self.lbl_scale.setText(f"{px_to_nm:.4f} nm/px (src={px_source})")
             self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
         else:
             self.lbl_scale.setText("unknown")
