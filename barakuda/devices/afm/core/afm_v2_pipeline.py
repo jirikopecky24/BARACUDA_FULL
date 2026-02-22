@@ -2,7 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple
 import numpy as np
-from skimage import filters, morphology, measure, segmentation, exposure
+from scipy.ndimage import distance_transform_edt
+from skimage import filters, morphology, measure, segmentation, exposure, feature
 
 try:
     from cellpose import models as cp_models  # optional
@@ -67,15 +68,15 @@ def segment_classic(norm: np.ndarray, p: AfmV2Params) -> np.ndarray:
     # threshold
     thr = filters.threshold_otsu(log)
     m = log > thr
-    m = morphology.remove_small_objects(m, min_size=int(p.min_area_px))
+    m = morphology.remove_small_objects(m, min_size=max(1, int(p.min_area_px)), connectivity=1)
 
     if not p.separate_watershed:
         lab = measure.label(m)
         return lab
 
     # markers via distance peaks
-    dist = morphology.distance_transform_edt(m)
-    coords = measure.peak_local_max(dist, min_distance=int(p.peak_min_distance_px), labels=m)
+    dist = distance_transform_edt(m)
+    coords = feature.peak_local_max(dist, min_distance=int(p.peak_min_distance_px), labels=m)
     markers = np.zeros_like(m, dtype=np.int32)
     for i, (r, c) in enumerate(coords, start=1):
         markers[r, c] = i
