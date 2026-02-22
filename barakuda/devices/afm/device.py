@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QFormLayout,
+    QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton,
+)
 from barakuda.devices.base import DeviceSpec
 from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE
 
@@ -13,602 +16,247 @@ class AfmPanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
 
-        title = QLabel("AFM — Bacteria Segmentation")
+        title = QLabel("AFM — Cellpose V2 Segmentation")
         title.setStyleSheet("font-weight: 600;")
         layout.addWidget(title)
-        
-        
+
+        # Cellpose availability warning
+        if not _HAS_CELLPOSE:
+            warn = QLabel("⚠ Cellpose is NOT installed. Segmentation will fail.\nInstall via: pip install cellpose")
+            warn.setStyleSheet("color: #d32f2f; font-weight: 600; padding: 6px;")
+            warn.setWordWrap(True)
+            layout.addWidget(warn)
+
         self.btn_preview = QPushButton("Preview AFM")
         layout.addWidget(self.btn_preview)
 
-        form = QFormLayout()
-
-        self.cb_height_aware = QCheckBox("AFM height normalization (recommended)")
-        self.cb_height_aware.setChecked(True)
-        form.addRow(self.cb_height_aware)
-
-        self.cb_separate = QCheckBox("Separate touching objects (watershed)")
-        self.cb_separate.setChecked(True)
-        form.addRow(self.cb_separate)
-
-        self.cb_save_overlay = QCheckBox("Save overlay (segmentation on RGB)")
-        self.cb_save_overlay.setChecked(True)
-        form.addRow(self.cb_save_overlay)
-
-        # Hidden but kept for compatibility if needed
-        self.cb_use_contours = QCheckBox("Contour-first mode (closed outlines)")
-        self.cb_use_contours.setChecked(False) 
-        self.cb_use_contours.hide() # Hidden
-        # layout.addWidget(self.cb_use_contours) # Removed from layout, kept as member
+        # ── Preprocessing ─────────────────────────────────────────
+        form_pre = QFormLayout()
+        form_pre.addRow(QLabel("— Preprocessing —"))
 
         self.cb_invert = QCheckBox("Invert (bacteria are dark)")
         self.cb_invert.setChecked(False)
-        form.addRow(self.cb_invert)
+        form_pre.addRow(self.cb_invert)
 
-        self.sp_bg = QDoubleSpinBox()
-        self.sp_bg.setRange(0.1, 1000.0)
-        self.sp_bg.setDecimals(2)
-        self.sp_bg.setValue(12.0)
-        form.addRow("Background sigma", self.sp_bg)
+        self.sp_clip_low = QDoubleSpinBox()
+        self.sp_clip_low.setRange(0.0, 49.0)
+        self.sp_clip_low.setDecimals(1)
+        self.sp_clip_low.setSingleStep(0.5)
+        self.sp_clip_low.setValue(1.0)
+        form_pre.addRow("Clip percentile low", self.sp_clip_low)
 
-        self.sp_smooth = QDoubleSpinBox()
-        self.sp_smooth.setRange(0.0, 50.0)
-        self.sp_smooth.setDecimals(2)
-        self.sp_smooth.setValue(1.0)
-        form.addRow("Smooth sigma", self.sp_smooth)
+        self.sp_clip_high = QDoubleSpinBox()
+        self.sp_clip_high.setRange(51.0, 100.0)
+        self.sp_clip_high.setDecimals(1)
+        self.sp_clip_high.setSingleStep(0.5)
+        self.sp_clip_high.setValue(99.0)
+        form_pre.addRow("Clip percentile high", self.sp_clip_high)
 
-        # Renamed/Used as general edge sigma
-        self.sp_edge_sigma = QDoubleSpinBox()
-        self.sp_edge_sigma.setRange(0.2, 10.0)
-        self.sp_edge_sigma.setDecimals(2)
-        self.sp_edge_sigma.setValue(1.2)
-        form.addRow("Edge sigma", self.sp_edge_sigma)
+        layout.addLayout(form_pre)
 
-        # Hidden params (Canny)
-        self.sp_canny_low = QDoubleSpinBox()
-        self.sp_canny_low.setRange(0.0, 1.0)
-        self.sp_canny_low.setDecimals(3)
-        self.sp_canny_low.setValue(0.05)
-        self.sp_canny_low.hide()
-        # form.addRow("Canny low (0..1)", self.sp_canny_low)
+        # ── Cellpose Segmentation ─────────────────────────────────
+        form_cp = QFormLayout()
+        form_cp.addRow(QLabel("— Cellpose Segmentation —"))
 
-        self.sp_canny_high = QDoubleSpinBox()
-        self.sp_canny_high.setRange(0.0, 1.0)
-        self.sp_canny_high.setDecimals(3)
-        self.sp_canny_high.setValue(0.20)
-        self.sp_canny_high.hide()
-        # form.addRow("Canny high (0..1)", self.sp_canny_high)
+        self.sp_cp_diam = QDoubleSpinBox()
+        self.sp_cp_diam.setRange(0.0, 500.0)
+        self.sp_cp_diam.setValue(0.0)
+        self.sp_cp_diam.setSpecialValueText("Auto")
+        form_cp.addRow("Diameter (px)", self.sp_cp_diam)
 
-        # Hidden params
-        self.sp_edge_dilate = QSpinBox()
-        self.sp_edge_dilate.setRange(0, 10)
-        self.sp_edge_dilate.setValue(1)
-        self.sp_edge_dilate.hide()
-        # form.addRow("Edge dilate (px)", self.sp_edge_dilate)
+        self.sp_cp_flow = QDoubleSpinBox()
+        self.sp_cp_flow.setRange(0.0, 3.0)
+        self.sp_cp_flow.setSingleStep(0.1)
+        self.sp_cp_flow.setDecimals(2)
+        self.sp_cp_flow.setValue(0.4)
+        form_cp.addRow("Flow threshold", self.sp_cp_flow)
 
-        # Hidden - duplicate?
-        self.sp_close_radius = QSpinBox()
-        self.sp_close_radius.setRange(0, 20)
-        self.sp_close_radius.setValue(2)
-        self.sp_close_radius.hide()
-        # form.addRow("Close radius (px)", self.sp_close_radius)
+        self.sp_cp_prob = QDoubleSpinBox()
+        self.sp_cp_prob.setRange(-6.0, 6.0)
+        self.sp_cp_prob.setSingleStep(0.1)
+        self.sp_cp_prob.setDecimals(2)
+        self.sp_cp_prob.setValue(-0.5)
+        form_cp.addRow("Cellprob threshold", self.sp_cp_prob)
 
-        self.sp_min_perim = QSpinBox()
-        self.sp_min_perim.setRange(0, 10000)
-        self.sp_min_perim.setValue(60)
-        form.addRow("Min perimeter (px)", self.sp_min_perim)
+        layout.addLayout(form_cp)
 
-        self.sp_min_ecc = QDoubleSpinBox()
-        self.sp_min_ecc.setRange(0.0, 0.999)
-        self.sp_min_ecc.setDecimals(2)
-        self.sp_min_ecc.setValue(0.70)
-        form.addRow("Min eccentricity", self.sp_min_ecc)
+        # ── Rod Filter ────────────────────────────────────────────
+        form_rod = QFormLayout()
+        form_rod.addRow(QLabel("— Rod Filter —"))
 
-        self.sp_min_sol = QDoubleSpinBox()
-        self.sp_min_sol.setRange(0.0, 1.0)
-        self.sp_min_sol.setDecimals(2)
-        self.sp_min_sol.setValue(0.50)
-        form.addRow("Min solidity", self.sp_min_sol)
-
-        # Duplicate - hidden
-        self.sp_fill_holes = QSpinBox()
-        self.sp_fill_holes.setRange(0, 50000)
-        self.sp_fill_holes.setValue(300)
-        self.sp_fill_holes.hide()
-        # form.addRow("Fill holes area (px)", self.sp_fill_holes)
-
-        self.sp_log_sigma = QDoubleSpinBox()
-        self.sp_log_sigma.setRange(0.5, 10.0)
-        self.sp_log_sigma.setDecimals(2)
-        self.sp_log_sigma.setValue(2.0)
-        form.addRow("LoG sigma", self.sp_log_sigma)
-
-        self.sp_peak_dist = QSpinBox()
-        self.sp_peak_dist.setRange(1, 50)
-        self.sp_peak_dist.setValue(6)
-        form.addRow("Peak min distance (px)", self.sp_peak_dist)
-
-        # Watershed compactness (shape regularization)
-        self.sp_compactness = QDoubleSpinBox()
-        self.sp_compactness.setRange(0.0, 0.20)
-        self.sp_compactness.setDecimals(3)
-        self.sp_compactness.setSingleStep(0.005)
-        self.sp_compactness.setValue(0.020)
-        form.addRow("Watershed compactness", self.sp_compactness)
-
-        # Outline smoothing radius (px) — visualization-only geometric regularization
-        self.sp_outline_smooth = QSpinBox()
-        self.sp_outline_smooth.setRange(0, 6)
-        self.sp_outline_smooth.setSingleStep(1)
-        self.sp_outline_smooth.setValue(2)
-        form.addRow("Outline smoothing radius (px)", self.sp_outline_smooth)
-
-        # Outline thickness (px) — controls visible stroke thickness
-        self.sp_outline_thick = QSpinBox()
-        self.sp_outline_thick.setRange(0, 3)  # 0 = thinnest (1px boundary), 2 = ~2–3px
-        self.sp_outline_thick.setSingleStep(1)
-        self.sp_outline_thick.setValue(2)
-        form.addRow("Outline thickness (px)", self.sp_outline_thick)
-
-        # Output / Export settings
-        # ...
-
-        # Outline mode (Strict / Inclusive)
-        self.cb_outline_mode = QComboBox()
-        self.cb_outline_mode.addItems(["inclusive", "strict"])
-        self.cb_outline_mode.setCurrentText("inclusive")
-        form.addRow("Outline mode", self.cb_outline_mode)
-
-        self.sp_outline_ring = QSpinBox()
-        self.sp_outline_ring.setRange(1, 6)
-        self.sp_outline_ring.setValue(2)
-        form.addRow("Outline ring radius (px)", self.sp_outline_ring)
-
-        # Advanced overlay edge controls (kept for compatibility / audit, hidden from UI)
-        self.sp_outline_edge_sigma = QDoubleSpinBox()
-        self.sp_outline_edge_sigma.setRange(0.5, 3.0)
-        self.sp_outline_edge_sigma.setDecimals(2)
-        self.sp_outline_edge_sigma.setSingleStep(0.1)
-        self.sp_outline_edge_sigma.setValue(1.2)
-        self.sp_outline_edge_sigma.hide()
-
-        self.sp_outline_canny_low = QDoubleSpinBox()
-        self.sp_outline_canny_low.setRange(0.01, 0.49)
-        self.sp_outline_canny_low.setDecimals(2)
-        self.sp_outline_canny_low.setSingleStep(0.01)
-        self.sp_outline_canny_low.setValue(0.10)
-        self.sp_outline_canny_low.hide()
-
-        self.sp_outline_canny_high = QDoubleSpinBox()
-        self.sp_outline_canny_high.setRange(0.05, 0.95)
-        self.sp_outline_canny_high.setDecimals(2)
-        self.sp_outline_canny_high.setSingleStep(0.01)
-        self.sp_outline_canny_high.setValue(0.30)
-        self.sp_outline_canny_high.hide()
-
-        # Rod-only filtering (for fitting)
         self.cb_rods_only = QCheckBox("Rods only (long bacteria)")
-        self.cb_rods_only.setChecked(False)
-        form.addRow(self.cb_rods_only)
+        self.cb_rods_only.setChecked(True)
+        form_rod.addRow(self.cb_rods_only)
 
         self.sp_rods_min_major = QDoubleSpinBox()
         self.sp_rods_min_major.setRange(0.0, 500.0)
-        self.sp_rods_min_major.setValue(18.0)
-        form.addRow("Rods min major axis (px)", self.sp_rods_min_major)
+        self.sp_rods_min_major.setDecimals(1)
+        self.sp_rods_min_major.setValue(12.0)
+        form_rod.addRow("Min major axis (px)", self.sp_rods_min_major)
 
         self.sp_rods_min_ar = QDoubleSpinBox()
         self.sp_rods_min_ar.setRange(1.0, 10.0)
         self.sp_rods_min_ar.setDecimals(2)
         self.sp_rods_min_ar.setSingleStep(0.1)
-        self.sp_rods_min_ar.setValue(2.5)
-        form.addRow("Rods min aspect ratio", self.sp_rods_min_ar)
+        self.sp_rods_min_ar.setValue(1.8)
+        form_rod.addRow("Min aspect ratio", self.sp_rods_min_ar)
 
         self.sp_rods_min_ecc = QDoubleSpinBox()
         self.sp_rods_min_ecc.setRange(0.0, 1.0)
         self.sp_rods_min_ecc.setDecimals(2)
         self.sp_rods_min_ecc.setSingleStep(0.05)
         self.sp_rods_min_ecc.setValue(0.65)
-        form.addRow("Rods min eccentricity", self.sp_rods_min_ecc)
-
-        # Legacy export toggle (default OFF)
-        self.cb_export_legacy = QCheckBox("Export legacy objects.csv")
-        self.cb_export_legacy.setChecked(False)
-        form.addRow(self.cb_export_legacy)
-
-        # Hidden global threshold factor
-
-        # Hidden global threshold factor
-        self.sp_low_factor = QDoubleSpinBox()
-        self.sp_low_factor.setRange(0.0, 1.00) # Allow 0.0
-        self.sp_low_factor.setDecimals(2)
-        self.sp_low_factor.setSingleStep(0.05)
-        self.sp_low_factor.setValue(0.45)
-        self.sp_low_factor.hide()
-        # form.addRow("Low mask factor (k * std)", self.sp_low_factor)
+        form_rod.addRow("Min eccentricity", self.sp_rods_min_ecc)
 
         self.sp_min_area = QSpinBox()
-        self.sp_min_area.setRange(1, 10_000_000)
-        self.sp_min_area.setValue(120)
-        form.addRow("Min area (px)", self.sp_min_area)
+        self.sp_min_area.setRange(1, 100_000)
+        self.sp_min_area.setValue(8)
+        form_rod.addRow("Min area (px)", self.sp_min_area)
 
-        self.sp_close = QSpinBox()
-        self.sp_close.setRange(0, 50)
-        self.sp_close.setValue(2)
-        form.addRow("Closing radius (px)", self.sp_close)
+        layout.addLayout(form_rod)
 
-        self.sp_holes = QSpinBox()
-        self.sp_holes.setRange(0, 10_000_000)
-        self.sp_holes.setValue(240)
-        form.addRow("Fill holes area (px)", self.sp_holes)
+        # ── Overlay ───────────────────────────────────────────────
+        form_ov = QFormLayout()
+        form_ov.addRow(QLabel("— Overlay —"))
 
-        # Histogram bins are not needed for rod-fit workflow (kept for compatibility, hidden)
-        self.sp_bins = QSpinBox()
-        self.sp_bins.setRange(5, 200)
-        self.sp_bins.setValue(20)
-        self.sp_bins.hide()
+        self.sp_ellipse_thick = QSpinBox()
+        self.sp_ellipse_thick.setRange(1, 3)
+        self.sp_ellipse_thick.setSingleStep(1)
+        self.sp_ellipse_thick.setValue(2)
+        form_ov.addRow("Ellipse thickness (px)", self.sp_ellipse_thick)
 
+        layout.addLayout(form_ov)
 
+        # ── Export ────────────────────────────────────────────────
+        self.cb_export_legacy = QCheckBox("Export legacy objects.csv")
+        self.cb_export_legacy.setChecked(False)
+        layout.addWidget(self.cb_export_legacy)
 
-        layout.addLayout(form)
+        # ── Actions ───────────────────────────────────────────────
+        layout.addSpacing(8)
         layout.addWidget(QLabel("ROI z Preview se použije jako výpočetní oblast."))
-        
+
         self.btn_reset = QPushButton("Reset AFM defaults")
         self.btn_reset.clicked.connect(self.apply_afm_defaults)
         layout.addWidget(self.btn_reset)
-        
-        # --- Backend Selection ---
-        layout.addSpacing(10)
-        form_backend = QFormLayout()
-        self.cb_backend = QComboBox()
-        self.cb_backend.addItem("Classic (Watershed)", "classic")
-        if _HAS_CELLPOSE:
-            self.cb_backend.addItem("Cellpose (Deep Learning)", "cellpose")
-        else:
-            self.cb_backend.addItem("Cellpose (Not Installed)", "classic")
-            self.cb_backend.model().item(1).setEnabled(False)
-            
-        self.cb_backend.currentTextChanged.connect(self._on_backend_changed)
-        form_backend.addRow("Backend", self.cb_backend)
-        
-        self.sp_cp_diam = QDoubleSpinBox()
-        self.sp_cp_diam.setRange(0.0, 500.0)
-        self.sp_cp_diam.setValue(0.0)
-        self.sp_cp_diam.setSpecialValueText("Auto")
-        form_backend.addRow("Cellpose Diameter (px)", self.sp_cp_diam)
-        
-        self.sp_cp_flow = QDoubleSpinBox()
-        self.sp_cp_flow.setRange(0.0, 3.0)
-        self.sp_cp_flow.setSingleStep(0.1)
-        self.sp_cp_flow.setValue(0.4)
-        form_backend.addRow("Flow Threshold", self.sp_cp_flow)
-        
-        self.sp_cp_prob = QDoubleSpinBox()
-        self.sp_cp_prob.setRange(-6.0, 6.0)
-        self.sp_cp_prob.setSingleStep(0.1)
-        self.sp_cp_prob.setValue(0.0)
-        form_backend.addRow("Cellprob Threshold", self.sp_cp_prob)
-        
-        layout.addLayout(form_backend)
-        layout.addSpacing(10)
 
         self.btn_run = QPushButton("Spustit AFM Batch")
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         layout.addWidget(self.btn_run)
-        
+
         layout.addStretch(1)
-        
-        # Apple Defaults immediately
+
+        # Apply defaults + tooltips on init
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
-        
-        # Init visibility
-        self._on_backend_changed()
 
-    def _on_backend_changed(self):
-        is_cp = (self.cb_backend.currentData() == "cellpose")
-        self.sp_cp_diam.setVisible(is_cp)
-        self.sp_cp_flow.setVisible(is_cp)
-        self.sp_cp_prob.setVisible(is_cp)
-        
-        # Hide classic specific params if cellpose? 
-        # For now we keep them visible as they might be used for pre-processing (smooth/bg)
-        # or stick to "minimal changes" as requested.
-
+    # ── Defaults (high recall) ────────────────────────────────────
     def apply_afm_defaults(self):
-        # ===============================
-        # AFM DEFAULT PROFILE — HIGH RECALL (v2)
-        # ===============================
-
-        # Core toggles
-        self.cb_height_aware.setChecked(False)
-        self.cb_separate.setChecked(True)
-        self.cb_save_overlay.setChecked(True)
+        # Preprocessing
         self.cb_invert.setChecked(False)
-        self.cb_use_contours.setChecked(False)
+        self.sp_clip_low.setValue(1.0)
+        self.sp_clip_high.setValue(99.0)
 
-        # Core sigmas
-        self.sp_bg.setValue(4.0)
-        self.sp_smooth.setValue(0.20)
-        self.sp_edge_sigma.setValue(1.30)
-
-        # Canny (hidden but keep consistent)
-        self.sp_canny_low.setValue(0.05)
-        self.sp_canny_high.setValue(0.20)
-
-        # Hidden internal closing/fill
-        self.sp_close_radius.setValue(2)
-        self.sp_fill_holes.setValue(300)
-
-        # Filters — HIGH RECALL (low thresholds)
-        self.sp_min_perim.setValue(10)
-        self.sp_min_ecc.setValue(0.05)
-        self.sp_min_sol.setValue(0.35)
-
-        # Detection / separation — HIGH RECALL
-        self.sp_log_sigma.setValue(1.60)
-        self.sp_peak_dist.setValue(2)              # ← v2: was 3
-        self.sp_compactness.setValue(0.030)
-        self.sp_low_factor.setValue(0.45)
-
-        # Object filtering — HIGH RECALL
-        self.sp_min_area.setValue(8)                # ← v2: was 15
-        self.sp_close.setValue(1)
-        self.sp_holes.setValue(80)
-        self.sp_bins.setValue(20)
-
-        # Outline design controls
-        self.sp_outline_smooth.setValue(2)
-        self.sp_outline_thick.setValue(2)
-
-        # Inclusive Outline
-        self.cb_outline_mode.setCurrentText("inclusive")
-        self.sp_outline_ring.setValue(2)
-        self.sp_outline_edge_sigma.setValue(1.3)
-        self.sp_outline_canny_low.setValue(0.08)
-        self.sp_outline_canny_high.setValue(0.24)
-
-        # Rod-only — HIGH RECALL defaults
-        self.cb_rods_only.setChecked(True)          # ← v2: ON by default
-        self.sp_rods_min_major.setValue(12.0)        # ← v2: was 18
-        self.sp_rods_min_ar.setValue(1.8)            # ← v2: was 2.5
-        self.sp_rods_min_ecc.setValue(0.65)          # ← v2: was 0.85
-
-        # Legacy export
-        self.cb_export_legacy.setChecked(False)
-
-        # Backend — Classic by default
-        self.cb_backend.setCurrentIndex(0)
-        self.sp_cp_diam.setValue(0.0)
+        # Cellpose
+        self.sp_cp_diam.setValue(0.0)       # auto
         self.sp_cp_flow.setValue(0.4)
         self.sp_cp_prob.setValue(-0.5)
 
+        # Rod filter (high recall)
+        self.cb_rods_only.setChecked(True)
+        self.sp_rods_min_major.setValue(12.0)
+        self.sp_rods_min_ar.setValue(1.8)
+        self.sp_rods_min_ecc.setValue(0.65)
+        self.sp_min_area.setValue(8)
+
+        # Overlay
+        self.sp_ellipse_thick.setValue(2)
+
+        # Export
+        self.cb_export_legacy.setChecked(False)
+
+    # ── Tooltips ──────────────────────────────────────────────────
     def apply_afm_tooltips(self):
-        # ==============================
-        # AFM PARAMETER TOOLTIPS (hover)
-        # ==============================
-
-        # Checkboxes
-        self.cb_height_aware.setToolTip(
-            "AFM height normalization: row leveling + background subtraction + percentile clipping.\n"
-            "Use ON for more stable, comparable segmentation across datasets."
-        )
-        self.cb_separate.setToolTip(
-            "Separate touching objects (watershed).\n"
-            "ON = tries to split touching bacteria into instances.\n"
-            "OFF = returns a single connected mask (no instance separation)."
-        )
-        self.cb_save_overlay.setToolTip(
-            "Save overlay image with red contours drawn on the preview (RGB) image."
-        )
         self.cb_invert.setToolTip(
-            "Invert intensity assumption.\n"
-            "Use only if bacteria appear DARK relative to background in the processed image."
+            "Invert intensity.\n"
+            "Use if bacteria appear DARK relative to background."
         )
-
-        # Sigma parameters
-        self.sp_bg.setToolTip(
-            "Background sigma [px].\n"
-            "Controls how aggressively large-scale surface trends are removed.\n"
-            "Higher = more background removal (flattening), lower = keeps more long-scale structure."
+        self.sp_clip_low.setToolTip(
+            "Clip percentile low.\n"
+            "Pixels below this percentile are clipped (removes noise floor).\n"
+            "Default 1.0."
         )
-        self.sp_smooth.setToolTip(
-            "Smooth sigma [px].\n"
-            "Gaussian smoothing before segmentation.\n"
-            "Higher = less noise but can merge nearby objects; lower = sharper details but more false detections."
-        )
-        self.sp_edge_sigma.setToolTip(
-            "Edge sigma [px].\n"
-            "Scale used for edge/gradient emphasis.\n"
-            "Lower = more sensitive to fine edges (may pick texture), higher = smoother edges."
-        )
-
-        # Shape filters
-        self.sp_min_perim.setToolTip(
-            "Min perimeter [px].\n"
-            "Rejects objects with small boundary length (removes fragments / tiny detections)."
-        )
-        self.sp_min_ecc.setToolTip(
-            "Min eccentricity [0–1].\n"
-            "0 = circle-like, 1 = very elongated.\n"
-            "Higher values keep elongated shapes and reject round/irregular noise."
-        )
-        self.sp_min_sol.setToolTip(
-            "Min solidity [0–1].\n"
-            "Solidity = area / convex hull area.\n"
-            "Higher rejects concave/fragmented shapes; lower keeps more irregular shapes."
-        )
-
-        # Watershed / marker control
-        self.sp_log_sigma.setToolTip(
-            "LoG sigma [px].\n"
-            "Scale for Laplacian-of-Gaussian used to find marker candidates.\n"
-            "Higher = fewer markers (less over-segmentation), lower = more markers (risk of over-segmentation)."
-        )
-        self.sp_peak_dist.setToolTip(
-            "Peak min distance [px].\n"
-            "Minimum distance between detected local maxima (watershed markers).\n"
-            "Higher = fewer seeds (less splitting), lower = more seeds (more splitting / possible map-like result)."
-        )
-        self.sp_compactness.setToolTip(
-            "Watershed compactness (tvarová regularizace při watershed).\n"
-            "Zvyšuje geometrickou pravidelnost a hladkost objektů (méně zubaté kontury).\n"
-            "Vyšší hodnota = hladší/symetričtější tvary, ale může mírně potlačit jemné detaily.\n"
-            "Jednotky: bezrozměrné (0.0–0.2). Doporučení: 0.015–0.030 pro publikovatelný vzhled."
-        )
-        self.sp_outline_smooth.setToolTip(
-            "Outline smoothing radius (px).\n"
-            "Použije se pouze pro vykreslení obrysu (ne měření).\n"
-            "Vyšší hodnota = symetričtější, hladší kontury (publikovatelný vzhled), "
-            "ale může mírně zaoblovat jemné detaily.\n"
-            "0 = vypnuto. Doporučeno: 2."
-        )
-
-        self.sp_outline_thick.setToolTip(
-            "Outline thickness (px).\n"
-            "Řídí tloušťku žluté kontury ve výstupu.\n"
-            "0 = nejtenčí (cca 1px), 1 = tenké, 2 = ~2–3px (doporučeno pro tisk), 3 = tlusté.\n"
-            "Doporučeno: 2."
-        )
-
-        self.cb_outline_mode.setToolTip(
-            "Outline mode.\n"
-            "strict = obrys jen z masky (konzervativní).\n"
-            "inclusive = obrys z masky + dokreslení hran z intenzity, ale jen v prstenci okolo masky.\n"
-            "Inclusive je určený pro publikovatelný vizuál s maximálním pokrytím."
-        )
-        self.sp_outline_ring.setToolTip(
-            "Outline ring radius (px).\n"
-            "Šířka prstence okolo masky, kde se hledají extra hrany.\n"
-            "Vyšší = více doplněných bakterií, ale může přidat šum. Doporučeno 2–3."
-        )
-        self.sp_outline_edge_sigma.setToolTip(
-            "Outline edge sigma (px).\n"
-            "Vyhlazení pro Canny hrany v inclusive režimu.\n"
-            "Vyšší = hladší, symetričtější kontury (méně zubaté). Doporučeno 1.1–1.6."
-        )
-        self.sp_outline_canny_low.setToolTip(
-            "Canny low threshold (0–1).\n"
-            "Nižší = označí více hran (vyšší coverage), ale riziko šumu."
-        )
-        self.sp_outline_canny_high.setToolTip(
-            "Canny high threshold (0–1).\n"
-            "Nižší = více hran (vyšší coverage). Typicky high ~ 3× low."
-        )
-
-        # Rod-only tooltips
-        self.cb_rods_only.setToolTip(
-            "Rods only (long bacteria).\n"
-            "Filters output to keep only elongated rod-like shapes.\n"
-            "Useful for downstream ellipse fitting and orientation analysis."
-        )
-        self.sp_rods_min_major.setToolTip(
-            "Min major axis length [px].\n"
-            "Removes small/round objects shorter than this."
-        )
-        self.sp_rods_min_ar.setToolTip(
-            "Min aspect ratio (Major/Minor).\n"
-            "Removes round objects (AR ~ 1). Rods typically have AR > 2.5."
-        )
-        self.sp_rods_min_ecc.setToolTip(
-            "Min eccentricity [0–1].\n"
-            "Removes round objects (Ecc < 0.8). Rods ecc ~ 0.9+."
-        )
-        self.cb_export_legacy.setToolTip(
-            "Export legacy objects.csv.\n"
-            "If enabled, produces old-format objects.csv alongside rods_props.csv.\n"
-            "Default OFF."
-        )
-
-        # Post-processing / cleanup
-        self.sp_min_area.setToolTip(
-            "Min area [px²].\n"
-            "Rejects small objects (noise). Increase if you see many tiny detections."
-        )
-        self.sp_close.setToolTip(
-            "Closing radius [px].\n"
-            "Morphological closing to connect small gaps and smooth boundaries.\n"
-            "Higher can merge neighbors; use small values (0–2) for bacteria."
-        )
-        self.sp_holes.setToolTip(
-            "Fill holes area [px²].\n"
-            "Fills small holes inside objects up to this area.\n"
-            "Increase if bacteria have unwanted internal holes."
-        )
-        self.sp_bins.setToolTip(
-            "Area bins [count].\n"
-            "Number of bins used for area histogram in exported statistics."
-        )
-        
-        self.cb_backend.setToolTip(
-            "Segmentation Backend.\n"
-            "Classic: Fast, parameter-based (Watershed).\n"
-            "Cellpose: Slower, deep learning based (requires 'cellpose' installed)."
+        self.sp_clip_high.setToolTip(
+            "Clip percentile high.\n"
+            "Pixels above this percentile are clipped (removes outlier peaks).\n"
+            "Default 99.0."
         )
         self.sp_cp_diam.setToolTip(
             "Cellpose Diameter [px].\n"
             "Approximate size of bacteria.\n"
-            "0 = Auto (slower, but adaptive)."
-            "If you know the size, set it to avoid rescaling artifacts."
+            "0 = Auto (slower but adaptive).\n"
+            "Set manually if you know the size."
         )
         self.sp_cp_flow.setToolTip(
             "Flow threshold.\n"
-            "Controls how strictly masks must follow flow dynamics.\n"
-            "Lower = more strict (fewer FPs), Higher = more generous (more TPs).\n"
-            "Default ~ 0.4."
+            "Controls mask boundary strictness.\n"
+            "Lower = stricter, Higher = more generous.\n"
+            "Default 0.4."
         )
         self.sp_cp_prob.setToolTip(
             "Cellprob threshold.\n"
-            "Threshold for cell probability output.\n"
-            "Lower (e.g. -1.0) = more sensitive (larger masks), Higher (e.g. 1.0) = stricter.\n"
-            "Default 0.0 or -1.0."
+            "Lower = more sensitive (larger masks), Higher = stricter.\n"
+            "Default -0.5 (high recall)."
+        )
+        self.cb_rods_only.setToolTip(
+            "Rods only.\n"
+            "Filters output to keep only elongated rod-like shapes.\n"
+            "Required for ellipse overlay and rod properties export."
+        )
+        self.sp_rods_min_major.setToolTip(
+            "Min major axis [px].\n"
+            "Removes objects shorter than this."
+        )
+        self.sp_rods_min_ar.setToolTip(
+            "Min aspect ratio (Major/Minor).\n"
+            "Removes round objects (AR ~ 1). Rods typically > 1.8."
+        )
+        self.sp_rods_min_ecc.setToolTip(
+            "Min eccentricity [0–1].\n"
+            "Removes round objects. Rods ecc ~ 0.85+."
+        )
+        self.sp_min_area.setToolTip(
+            "Min area [px²].\n"
+            "Removes tiny noise detections."
+        )
+        self.sp_ellipse_thick.setToolTip(
+            "Ellipse thickness [px].\n"
+            "Yellow ellipse outline thickness in overlay.\n"
+            "1 = thin, 2 = recommended, 3 = thick."
+        )
+        self.cb_export_legacy.setToolTip(
+            "Export legacy objects.csv alongside rods_props.csv.\n"
+            "Default OFF."
         )
 
-
-        
+    # ── Parameter collection ──────────────────────────────────────
     def get_afm_params(self) -> dict:
         return {
-            "height_aware": bool(self.cb_height_aware.isChecked()),
-            "save_overlay": bool(self.cb_save_overlay.isChecked()),
-            "use_contours": bool(self.cb_use_contours.isChecked()),
-            "separate": bool(self.cb_separate.isChecked()),
             "invert": bool(self.cb_invert.isChecked()),
-            "bg_sigma": float(self.sp_bg.value()),
-            "smooth_sigma": float(self.sp_smooth.value()),
-            "edge_sigma": float(self.sp_edge_sigma.value()),
-            "canny_low": float(self.sp_canny_low.value()),
-            "canny_high": float(self.sp_canny_high.value()),
-            "edge_dilate_px": int(self.sp_edge_dilate.value()),
-            "close_radius_px": int(self.sp_close_radius.value()),
-            "fill_holes_area_px": int(self.sp_fill_holes.value()),
-            "min_perimeter_px": int(self.sp_min_perim.value()),
-            "min_eccentricity": float(self.sp_min_ecc.value()),
-            "min_solidity": float(self.sp_min_sol.value()),
-            "log_sigma": float(self.sp_log_sigma.value()),
-            "peak_min_distance_px": int(self.sp_peak_dist.value()),
-            "watershed_compactness": float(self.sp_compactness.value()),
-            "peak_min_distance": int(self.sp_peak_dist.value()),
-            "low_mask_factor": float(self.sp_low_factor.value()),
-            "min_area_px": int(self.sp_min_area.value()),
-            "closing_radius_px": int(self.sp_close.value()),
-            "hole_area_px": int(self.sp_holes.value()),
-            "area_bins": int(self.sp_bins.value()),
-            "outline_smoothing_radius_px": int(self.sp_outline_smooth.value()),
-            "edge_thickness_px": int(self.sp_outline_thick.value()),
-            "outline_mode": str(self.cb_outline_mode.currentText()),
-            "outline_ring_radius_px": int(self.sp_outline_ring.value()),
-            "outline_edge_sigma": float(self.sp_outline_edge_sigma.value()),
-            "outline_canny_low": float(self.sp_outline_canny_low.value()),
-            "outline_canny_high": float(self.sp_outline_canny_high.value()),
+            "clip_p_low": float(self.sp_clip_low.value()),
+            "clip_p_high": float(self.sp_clip_high.value()),
+            "cp_diameter": float(self.sp_cp_diam.value()),
+            "cp_flow_threshold": float(self.sp_cp_flow.value()),
+            "cp_cellprob_threshold": float(self.sp_cp_prob.value()),
             "rods_only": bool(self.cb_rods_only.isChecked()),
             "rods_min_major_axis_px": float(self.sp_rods_min_major.value()),
             "rods_min_aspect_ratio": float(self.sp_rods_min_ar.value()),
             "rods_min_eccentricity": float(self.sp_rods_min_ecc.value()),
+            "rods_min_area_px": int(self.sp_min_area.value()),
+            "ellipse_thickness_px": int(self.sp_ellipse_thick.value()),
             "export_legacy_csv": bool(self.cb_export_legacy.isChecked()),
-            "backend": str(self.cb_backend.currentData()),
-            "cp_diameter": float(self.sp_cp_diam.value()),
-            "cp_flow_threshold": float(self.sp_cp_flow.value()),
-            "cp_cellprob_threshold": float(self.sp_cp_prob.value()),
         }
+
 
 def get_device_spec() -> DeviceSpec:
     return DeviceSpec(

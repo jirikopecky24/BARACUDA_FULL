@@ -1180,18 +1180,11 @@ class BatchController:
                 run_dir = run.run_dir
                 stem = p.stem
 
-                # --- BUILD V2 PARAMS ---
+                # --- BUILD V2 PARAMS (Cellpose-only) ---
                 p_v2 = AfmV2Params(
-                    backend=_s("backend", "classic"),
                     invert=_b("invert", False),
-                    clip_p_low=0.1,
-                    clip_p_high=99.9,
-                    smooth_sigma=_f("smooth_sigma", 0.3),
-                    log_sigma=_f("log_sigma", 1.6),
-                    min_area_px=_i("min_area_px", 8),
-                    separate_watershed=_b("separate", True),
-                    peak_min_distance_px=_i("peak_min_distance_px", 2),
-                    watershed_compactness=_f("watershed_compactness", 0.03),
+                    clip_p_low=_f("clip_p_low", 1.0),
+                    clip_p_high=_f("clip_p_high", 99.0),
                     cp_model="cyto3",
                     cp_diameter=_f("cp_diameter", 0.0),
                     cp_flow_threshold=_f("cp_flow_threshold", 0.4),
@@ -1200,7 +1193,8 @@ class BatchController:
                     rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
                     rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
                     rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
-                    ellipse_thickness_px=_i("edge_thickness_px", 2),
+                    rods_min_area_px=_i("rods_min_area_px", 8),
+                    ellipse_thickness_px=_i("ellipse_thickness_px", 2),
                 )
 
                 # --- RUN V2 PIPELINE ---
@@ -1327,16 +1321,9 @@ class BatchController:
         def _s(key, default): return str(afm_params.get(key, default))
 
         p_v2 = AfmV2Params(
-            backend=_s("backend", "classic"),
             invert=_b("invert", False),
-            clip_p_low=0.1,
-            clip_p_high=99.9,
-            smooth_sigma=_f("smooth_sigma", 1.0),
-            log_sigma=_f("log_sigma", 1.6),
-            min_area_px=_i("min_area_px", 10),
-            separate_watershed=_b("separate", True),
-            peak_min_distance_px=_i("peak_min_distance_px", 2),
-            watershed_compactness=_f("watershed_compactness", 0.03),
+            clip_p_low=_f("clip_p_low", 1.0),
+            clip_p_high=_f("clip_p_high", 99.0),
             cp_model="cyto3",
             cp_diameter=_f("cp_diameter", 0.0),
             cp_flow_threshold=_f("cp_flow_threshold", 0.4),
@@ -1345,7 +1332,8 @@ class BatchController:
             rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
             rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
             rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
-            ellipse_thickness_px=_i("edge_thickness_px", 2),
+            rods_min_area_px=_i("rods_min_area_px", 8),
+            ellipse_thickness_px=_i("ellipse_thickness_px", 2),
         )
 
         res = run_afm_v2(roi_img, p_v2)
@@ -1354,68 +1342,4 @@ class BatchController:
         overlay = render_ellipse_overlay(roi_img, res["rod_table"], thickness_px=int(p_v2.ellipse_thickness_px))
         return overlay
 
-    def _build_afm_seg_params(self, afm_params: dict):
-        from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams
-
-        # Helper to safely get float/int
-        def _f(key, default):
-            return float(afm_params.get(key, default))
-        
-        def _i(key, default):
-            return int(afm_params.get(key, default))
-        
-        def _b(key, default):
-            return bool(afm_params.get(key, default))
-
-        return AfmBacteriaSegParams(
-            bg_sigma=_f("bg_sigma", 12.0),
-            smooth_sigma=_f("smooth_sigma", 1.0),
-            min_area_px=_i("min_area_px", 120),
-            closing_radius_px=_i("closing_radius_px", 2),
-            hole_area_px=_i("hole_area_px", 240),
-            separate=_b("separate", True),
-            invert=_b("invert", False),
-            area_bins=_i("area_bins", 20),
-            height_aware=_b("height_aware", True),
-            save_overlay=_b("save_overlay", True),
-            # Marker-based watershed params (LoG seeds)
-            log_sigma=_f("log_sigma", 2.0),
-            peak_min_distance_px=_i("peak_min_distance_px", 6),
-            low_mask_factor=_f("low_mask_factor", 0.65),
-            max_markers=_i("max_markers", 5000),
-            # Contour-first params
-            use_contours=_b("use_contours", True),
-            edge_sigma=_f("edge_sigma", 1.2),
-            canny_low=_f("canny_low", 0.05),
-            canny_high=_f("canny_high", 0.20),
-            edge_dilate_px=_i("edge_dilate_px", 1),
-            close_radius_px=_i("close_radius_px", 2),
-            fill_holes_area_px=_i("fill_holes_area_px", 300),
-            min_perimeter_px=_i("min_perimeter_px", 60),
-            min_eccentricity=_f("min_eccentricity", 0.70),
-            min_solidity=_f("min_solidity", 0.50),
-            # Watershed detect-all
-            dist_sigma=_f("dist_sigma", 1.0),
-            seed_percentile=_f("seed_percentile", 75.0),
-            # Fallback logic for peak_min_distance
-            # If "peak_min_distance" is present, use it. 
-            # If not, check "peak_min_distance_px". 
-            # If neither, default to 6.
-            peak_min_distance=_i("peak_min_distance", afm_params.get("peak_min_distance_px", 6)),
-            watershed_compactness=_f("watershed_compactness", 0.0),
-            
-            # Inclusive outline
-            outline_mode=str(afm_params.get("outline_mode", "inclusive")),
-            outline_ring_radius_px=_i("outline_ring_radius_px", 2),
-            outline_edge_sigma=_f("outline_edge_sigma", 1.2),
-            outline_canny_low=_f("outline_canny_low", 0.10),
-            outline_canny_high=_f("outline_canny_high", 0.30),
-            outline_smoothing_radius_px=_i("outline_smoothing_radius_px", 2),
-            edge_thickness_px=_i("edge_thickness_px", 2),
-            
-            # Rod-only
-            rods_only=_b("rods_only", False),
-            rods_min_major_axis_px=_f("rods_min_major_axis_px", 18.0),
-            rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 2.5),
-            rods_min_eccentricity=_f("rods_min_eccentricity", 0.85),
-        )
+    # NOTE: _build_afm_seg_params removed — legacy pipeline no longer used

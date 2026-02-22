@@ -1,58 +1,63 @@
+"""AFM V2 Pipeline — Cellpose-only segmentation + rod geometry filter.
+
+Pipeline version: AFM_V2_CELLPOSE
+Backend: Cellpose (mandatory)
+"""
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, Tuple
-import numpy as np
-from scipy.ndimage import distance_transform_edt
-from skimage import filters, morphology, measure, segmentation, exposure, feature
+from typing import Dict, Any, Tuple
 
+import numpy as np
+from skimage import measure
+
+# ── Cellpose availability ────────────────────────────────────────────
 try:
-    from cellpose import models as cp_models  # optional
+    from cellpose import models as cp_models
     import cellpose as _cellpose_pkg
+
     _HAS_CELLPOSE = True
     _CELLPOSE_VERSION = getattr(_cellpose_pkg, "__version__", "unknown")
 except Exception:
     _HAS_CELLPOSE = False
     _CELLPOSE_VERSION = None
 
-_AFM_PIPELINE_VERSION = "2.0"
+_AFM_PIPELINE_VERSION = "AFM_V2_CELLPOSE"
 
 
+# ── Parameters ───────────────────────────────────────────────────────
 @dataclass
 class AfmV2Params:
-    backend: str = "classic"  # "classic" | "cellpose"
-    invert: bool = False
+    """Cellpose-only AFM segmentation parameters."""
 
     # preprocessing
+    invert: bool = False
     clip_p_low: float = 1.0
     clip_p_high: float = 99.0
 
-    # classic backend
-    smooth_sigma: float = 0.3
-    log_sigma: float = 1.6
-    min_area_px: int = 8
-    separate_watershed: bool = True
-    peak_min_distance_px: int = 2
-    watershed_compactness: float = 0.03
-
-    # cellpose backend (high recall)
+    # cellpose
     cp_model: str = "cyto3"
-    cp_diameter: float = 0.0  # 0 = auto
+    cp_diameter: float = 0.0       # 0 = auto
     cp_flow_threshold: float = 0.4
     cp_cellprob_threshold: float = -0.5
 
-    # rod filter (high recall defaults)
+    # rod filter (high recall)
     rods_only: bool = True
     rods_min_major_axis_px: float = 12.0
     rods_min_aspect_ratio: float = 1.8
     rods_min_eccentricity: float = 0.65
+    rods_min_area_px: int = 8
 
     # overlay
     ellipse_thickness_px: int = 2
 
 
+# ── Internal helpers ─────────────────────────────────────────────────
 def _normalize(img: np.ndarray, invert: bool, p_low: float, p_high: float) -> np.ndarray:
     x = img.astype(np.float32, copy=False)
-    lo, hi = np.percentile(x[np.isfinite(x)], [p_low, p_high])
+    finite = x[np.isfinite(x)]
+    if len(finite) == 0:
+        return np.zeros_like(x)
+    lo, hi = np.percentile(finite, [p_low, p_high])
     x = np.clip(x, lo, hi)
     x = (x - lo) / (hi - lo + 1e-9)
     if invert:
@@ -60,39 +65,15 @@ def _normalize(img: np.ndarray, invert: bool, p_low: float, p_high: float) -> np
     return x
 
 
-def segment_classic(norm: np.ndarray, p: AfmV2Params) -> np.ndarray:
-    # smooth
-    sm = filters.gaussian(norm, sigma=p.smooth_sigma, preserve_range=True)
-    # LoG response for blobs/ridges
-    log = -filters.laplace(filters.gaussian(sm, sigma=p.log_sigma, preserve_range=True))
-    # threshold
-    thr = filters.threshold_otsu(log)
-    m = log > thr
-    m = morphology.remove_small_objects(m, min_size=max(1, int(p.min_area_px)), connectivity=1)
-
-    if not p.separate_watershed:
-        lab = measure.label(m)
-        return lab
-
-    # markers via distance peaks
-    dist = distance_transform_edt(m)
-    coords = feature.peak_local_max(dist, min_distance=int(p.peak_min_distance_px), labels=m)
-    markers = np.zeros_like(m, dtype=np.int32)
-    for i, (r, c) in enumerate(coords, start=1):
-        markers[r, c] = i
-    if markers.max() == 0:
-        lab = measure.label(m)
-        return lab
-
-    lab = segmentation.watershed(-dist, markers, mask=m, compactness=float(p.watershed_compactness))
-    return lab
-
-
-def segment_cellpose(norm: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str, Any]]:
+def _segment_cellpose(norm: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Run Cellpose segmentation. Raises RuntimeError if not installed."""
     if not _HAS_CELLPOSE:
-        raise RuntimeError("Cellpose is not installed. Install dependency or switch backend=classic.")
+        raise RuntimeError(
+            "Cellpose is not installed. "
+            "AFM V2 pipeline requires cellpose. "
+            "Install via: pip install cellpose"
+        )
 
-    # cellpose expects image in [0..255] or float; we feed 0..255 grayscale
     img8 = (norm * 255.0).astype(np.uint8)
 
     model = cp_models.Cellpose(model_type=p.cp_model)
@@ -103,10 +84,9 @@ def segment_cellpose(norm: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict
         flow_threshold=float(p.cp_flow_threshold),
         cellprob_threshold=float(p.cp_cellprob_threshold),
     )
-    # masks already is label image
+
     audit = {
         "cellpose_model": p.cp_model,
-        "cellpose_installed": True,
         "cellpose_version": _CELLPOSE_VERSION,
         "diameter": float(p.cp_diameter),
         "flow_threshold": float(p.cp_flow_threshold),
@@ -132,14 +112,21 @@ def _empty_rod_table() -> Dict[str, np.ndarray]:
 
 
 def rod_filter(labels: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """Filter labels to keep only rod-shaped objects."""
     props = measure.regionprops(labels)
     keep = []
     for pr in props:
-        maj = float(pr.major_axis_length)
-        mino = float(pr.minor_axis_length) if pr.minor_axis_length > 0 else 1e-9
+        maj = float(pr.axis_major_length) if hasattr(pr, 'axis_major_length') else float(pr.major_axis_length)
+        mino_raw = float(pr.axis_minor_length) if hasattr(pr, 'axis_minor_length') else float(pr.minor_axis_length)
+        mino = mino_raw if mino_raw > 0 else 1e-9
         ar = maj / mino
         ecc = float(getattr(pr, "eccentricity", 0.0))
-        if maj >= p.rods_min_major_axis_px and ar >= p.rods_min_aspect_ratio and ecc >= p.rods_min_eccentricity:
+        area = int(pr.area)
+
+        if (maj >= p.rods_min_major_axis_px
+                and ar >= p.rods_min_aspect_ratio
+                and ecc >= p.rods_min_eccentricity
+                and area >= p.rods_min_area_px):
             keep.append(pr.label)
 
     if not keep:
@@ -147,18 +134,25 @@ def rod_filter(labels: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str
 
     rod_labels = np.where(np.isin(labels, keep), labels, 0).astype(np.int32)
 
-    # Build dict-of-arrays table (stable + fast + CSV ready)
+    # Build dict-of-arrays table
     rp = measure.regionprops(rod_labels)
+
+    def _maj(r):
+        return float(r.axis_major_length) if hasattr(r, 'axis_major_length') else float(r.major_axis_length)
+
+    def _min(r):
+        return float(r.axis_minor_length) if hasattr(r, 'axis_minor_length') else float(r.minor_axis_length)
+
     tbl = {
         "label": np.array([r.label for r in rp], dtype=np.int32),
         "centroid_x": np.array([r.centroid[1] for r in rp], dtype=np.float32),
         "centroid_y": np.array([r.centroid[0] for r in rp], dtype=np.float32),
         "orientation_rad": np.array([float(getattr(r, "orientation", 0.0)) for r in rp], dtype=np.float32),
-        "major_axis_px": np.array([float(r.major_axis_length) for r in rp], dtype=np.float32),
-        "minor_axis_px": np.array([float(r.minor_axis_length) for r in rp], dtype=np.float32),
+        "major_axis_px": np.array([_maj(r) for r in rp], dtype=np.float32),
+        "minor_axis_px": np.array([_min(r) for r in rp], dtype=np.float32),
         "aspect_ratio": np.array(
-            [float(r.major_axis_length) / (float(r.minor_axis_length) + 1e-9) for r in rp],
-            dtype=np.float32
+            [_maj(r) / (_min(r) + 1e-9) for r in rp],
+            dtype=np.float32,
         ),
         "eccentricity": np.array([float(getattr(r, "eccentricity", 0.0)) for r in rp], dtype=np.float32),
         "solidity": np.array([float(getattr(r, "solidity", 0.0)) for r in rp], dtype=np.float32),
@@ -167,41 +161,36 @@ def rod_filter(labels: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str
     return rod_labels, tbl
 
 
+# ── Main entry point ─────────────────────────────────────────────────
 def run_afm_v2(height_img: np.ndarray, params: AfmV2Params) -> Dict[str, Any]:
-    """Run AFM v2 segmentation pipeline.
+    """Run AFM V2 Cellpose-only segmentation pipeline.
 
     Guaranteed return keys:
         labels, rod_labels, rod_table, audit, norm
     No None values — empty arrays if no rods found.
     """
-    norm = _normalize(height_img, invert=params.invert, p_low=params.clip_p_low, p_high=params.clip_p_high)
+    norm = _normalize(height_img, invert=params.invert,
+                      p_low=params.clip_p_low, p_high=params.clip_p_high)
 
+    # Cellpose segmentation
+    labels, cp_audit = _segment_cellpose(norm, params)
+
+    # Audit
     audit: Dict[str, Any] = {
-        "afm_pipeline_version": _AFM_PIPELINE_VERSION,
-        "backend": params.backend,
+        "pipeline_version": _AFM_PIPELINE_VERSION,
         "invert": params.invert,
         "clip_p_low": params.clip_p_low,
         "clip_p_high": params.clip_p_high,
-        "smooth_sigma": params.smooth_sigma,
-        "log_sigma": params.log_sigma,
-        "min_area_px": params.min_area_px,
-        "separate_watershed": params.separate_watershed,
-        "peak_min_distance_px": params.peak_min_distance_px,
-        "watershed_compactness": params.watershed_compactness,
         "rods_only": params.rods_only,
         "rods_min_major_axis_px": params.rods_min_major_axis_px,
         "rods_min_aspect_ratio": params.rods_min_aspect_ratio,
         "rods_min_eccentricity": params.rods_min_eccentricity,
+        "rods_min_area_px": params.rods_min_area_px,
         "ellipse_thickness_px": params.ellipse_thickness_px,
     }
+    audit.update(cp_audit)
 
-    if params.backend == "cellpose":
-        labels, cp_audit = segment_cellpose(norm, params)
-        audit.update(cp_audit)
-    else:
-        labels = segment_classic(norm, params)
-
-    # Guaranteed: always compute rod_labels and rod_table
+    # Rod filter (always computed for guaranteed return contract)
     rod_labels, rod_table = rod_filter(labels, params)
 
     return {
