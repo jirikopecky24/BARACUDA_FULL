@@ -76,14 +76,21 @@ def _segment_cellpose(norm: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dic
 
     img8 = (norm * 255.0).astype(np.uint8)
 
-    model = cp_models.Cellpose(model_type=p.cp_model)
-    masks, flows, styles, diams = model.eval(
+    if hasattr(cp_models, "Cellpose"):
+        model = cp_models.Cellpose(model_type=p.cp_model)
+    else:
+        model = cp_models.CellposeModel(model_type=p.cp_model)
+
+    eval_out = model.eval(
         img8,
         channels=[0, 0],
         diameter=(None if p.cp_diameter == 0 else float(p.cp_diameter)),
         flow_threshold=float(p.cp_flow_threshold),
         cellprob_threshold=float(p.cp_cellprob_threshold),
     )
+    # eval() returns (masks, flows, styles, diams) in Cellpose
+    # but (masks, flows, styles) in CellposeModel.
+    masks = eval_out[0]
 
     audit = {
         "cellpose_model": p.cp_model,
