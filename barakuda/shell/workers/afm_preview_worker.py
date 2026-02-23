@@ -107,12 +107,17 @@ class AfmPreviewWorker(QObject):
             def _b(key, default): return bool(self.afm_params.get(key, default))
             def _s(key, default): return str(self.afm_params.get(key, default))
 
+            _cp_diam_px = self.afm_params.get("cp_diameter_px")
             p_v2 = AfmV2Params(
+                compute_profile=_s("compute_profile", "auto"),
+                preview_fast_mode=_b("preview_fast_mode", False),
+                preview_downscale=_f("preview_downscale", 0.5),
                 invert=_b("invert", False),
                 clip_p_low=_f("clip_p_low", 1.0),
                 clip_p_high=_f("clip_p_high", 99.0),
                 cp_model=_s("cp_model", "cyto3"),
-                cp_diameter=_f("cp_diameter", 0.0),
+                cp_diameter_mode=_s("cp_diameter_mode", "auto"),
+                cp_diameter_px=int(_cp_diam_px) if _cp_diam_px is not None else None,
                 cp_flow_threshold=_f("cp_flow_threshold", 0.4),
                 cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
                 rods_only=_b("rods_only", True),
@@ -125,11 +130,6 @@ class AfmPreviewWorker(QObject):
 
             # ── Data Prep (5%) ──────────────────────────────
             self.progress_pct.emit(5, "Preprocessing...")
-            from barakuda.devices.afm.core.afm_v2_pipeline import _normalize, rod_filter
-            import math
-            
-            norm = _normalize(roi_img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
-            img8 = (norm * 255.0).astype(np.uint8)
 
             if self._is_cancelled:
                 return
