@@ -146,8 +146,7 @@ class AfmPreviewWorker(QObject):
                 return
 
             self.progress_pct.emit(20, "Cellpose: starting inference...")
-            
-            um_per_px = float(self.meta.get("afm_um_per_px", 0.0))
+            um_per_px = float(loader_meta.get("afm_um_per_px", 0.0)) if loader_meta else 0.0
             
             # The preview pipeline wraps auto-diameter, fallback routing, downscaling and filtering natively
             v2_out = run_afm_v2(roi_img, p_v2, um_per_px)
