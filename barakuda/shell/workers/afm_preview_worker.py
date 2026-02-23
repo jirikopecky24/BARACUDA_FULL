@@ -5,7 +5,7 @@ import numpy as np
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
+from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params, _normalize
 from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
 
 import sys
