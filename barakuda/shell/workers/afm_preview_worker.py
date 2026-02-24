@@ -159,13 +159,16 @@ class AfmPreviewWorker(QObject):
             audit = v2_out["audit"]
             timings = audit.get("timings_ms", {})
             self.progress_pct.emit(80, f"⏱️ Pre-process: {timings.get('preprocess_ms', 0)} ms")
-            self.progress_pct.emit(80, f"⏱️ Evaluate: {timings.get('eval_ms', 0)} ms")
+            self.progress_pct.emit(80, f"⏱️ Cellpose Get: {timings.get('cellpose_get_ms', 0)} ms")
+            self.progress_pct.emit(80, f"⏱️ Cellpose Eval: {timings.get('cellpose_eval_ms', 0)} ms")
             self.progress_pct.emit(80, f"⏱️ Post-process: {timings.get('postprocess_ms', 0)} ms")
             self.progress_pct.emit(80, f"⏱️ Total: {timings.get('total_ms', 0)} ms")
             
-            dev_ui = audit.get("device", "unknown")
-            diam_ui = audit.get("diameter_effective_px", "Auto")
-            self.progress_pct.emit(80, f"Device Engine: {dev_ui} | Eff. Diameter: {diam_ui} px")
+            cp_audit = audit.get("cellpose", {})
+            dev_ui = cp_audit.get("device", "unknown")
+            engine = dev_ui if dev_ui in ["cuda", "cpu"] else "unknown"
+            diam_ui = cp_audit.get("diameter_effective_px", "Auto")
+            self.progress_pct.emit(80, f"Device Engine: {engine} | Eff. Diameter: {diam_ui} px")
 
             self.progress_pct.emit(85, "Generating preview overlays...")
 

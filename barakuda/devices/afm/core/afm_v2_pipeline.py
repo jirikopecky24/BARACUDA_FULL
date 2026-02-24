@@ -10,6 +10,9 @@ from typing import Dict, Any, Tuple, Optional
 import numpy as np
 from skimage import measure
 from skimage.transform import resize
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ── Cellpose availability ────────────────────────────────────────────
 try:
@@ -86,18 +89,19 @@ def _segment_cellpose(norm: np.ndarray, p: AfmV2Params, um_per_px: float) -> Tup
 
     from barakuda.devices.afm.core.compute import resolve_device
     from barakuda.devices.afm.core.auto_diameter import estimate_diameter_px
-    
+    from barakuda.devices.afm.core.cellpose_cache import get_cellpose
+    import time
+
+    t_get_start = time.perf_counter()
     res = resolve_device(p.compute_profile)
-    gpu_flag = (res["device"] == "cuda")
+    device_str = res["device"]
+
+    model = get_cellpose(p.cp_model, device_str)
+
+    t_get_end = time.perf_counter()
+    cellpose_get_ms = round((t_get_end - t_get_start) * 1000.0, 1)
 
     is_v4 = _CELLPOSE_VERSION and str(_CELLPOSE_VERSION).startswith("4")
-
-    if is_v4:
-        model = cp_models.CellposeModel(model_type=p.cp_model, gpu=gpu_flag)
-    elif hasattr(cp_models, "Cellpose"):
-        model = cp_models.Cellpose(model_type=p.cp_model, gpu=gpu_flag)
-    else:
-        model = cp_models.CellposeModel(model_type=p.cp_model, gpu=gpu_flag)
 
     # Resolve Diameter
     diameter_estimate = {"status": "USER_FIXED"}
@@ -117,7 +121,26 @@ def _segment_cellpose(norm: np.ndarray, p: AfmV2Params, um_per_px: float) -> Tup
     if not is_v4:
         eval_kwargs["channels"] = [0, 0]
 
+    import torch
+    logger.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+    logger.info(f"torch.__version__: {torch.__version__}")
+    logger.info(f"device resolved: {device_str}")
+    
+    net = getattr(model, "net", None)
+    if net is not None:
+        try:
+            net_dev = next(net.parameters()).device
+        except StopIteration:
+            net_dev = "NA"
+    else:
+        net_dev = "NA"
+    logger.info(f"Cellpose net device: {net_dev}")
+
+    t_eval_start = time.perf_counter()
     eval_out = model.eval(img8, **eval_kwargs)
+    t_eval_end = time.perf_counter()
+    cellpose_eval_ms = round((t_eval_end - t_eval_start) * 1000.0, 1)
+    
     masks = eval_out[0]
 
     audit = {
@@ -132,6 +155,8 @@ def _segment_cellpose(norm: np.ndarray, p: AfmV2Params, um_per_px: float) -> Tup
         "diameter_estimate": diameter_estimate,
         "flow_threshold": float(p.cp_flow_threshold),
         "cellprob_threshold": float(p.cp_cellprob_threshold),
+        "cellpose_get_ms": cellpose_get_ms,
+        "cellpose_eval_ms": cellpose_eval_ms,
     }
     return masks.astype(np.int32), audit
 
@@ -157,12 +182,18 @@ def rod_filter(labels: np.ndarray, p: AfmV2Params) -> Tuple[np.ndarray, Dict[str
     props = measure.regionprops(labels)
     keep = []
     for pr in props:
+        area = int(pr.area)
+        if not p.rods_only:
+            # If not forcing rods, just filter tiny specks
+            if area >= p.rods_min_area_px:
+                keep.append(pr.label)
+            continue
+            
         maj = float(pr.axis_major_length) if hasattr(pr, 'axis_major_length') else float(pr.major_axis_length)
         mino_raw = float(pr.axis_minor_length) if hasattr(pr, 'axis_minor_length') else float(pr.minor_axis_length)
         mino = mino_raw if mino_raw > 0 else 1e-9
         ar = maj / mino
         ecc = float(getattr(pr, "eccentricity", 0.0))
-        area = int(pr.area)
 
         if (maj >= p.rods_min_major_axis_px
                 and ar >= p.rods_min_aspect_ratio
@@ -210,6 +241,9 @@ def run_afm_v2(height_img: np.ndarray, params: AfmV2Params, um_per_px: float = 0
         labels, rod_labels, rod_table, audit, norm
     No None values — empty arrays if no rods found.
     """
+    import time
+    t0 = time.perf_counter()
+    
     scale_factor = 1.0
     downscaled = False
     
@@ -228,8 +262,12 @@ def run_afm_v2(height_img: np.ndarray, params: AfmV2Params, um_per_px: float = 0
         if um_per_px > 0:
             um_per_px = um_per_px / scale_factor
 
+    t1 = time.perf_counter()
+
     # 2) Cellpose segmentation
     labels, cp_audit = _segment_cellpose(norm, params, um_per_px)
+    
+    t2 = time.perf_counter()
 
     # 3) Rescale purely for the mask dimensions to match original array natively
     if downscaled:
@@ -239,6 +277,16 @@ def run_afm_v2(height_img: np.ndarray, params: AfmV2Params, um_per_px: float = 0
 
     # 4) Filter and generate rod table (done securely on the original image dimensions now)
     rod_labels, rod_table = rod_filter(labels, params)
+
+    t3 = time.perf_counter()
+    
+    timings_ms = {
+        "preprocess_ms": round((t1 - t0) * 1000.0, 1),
+        "cellpose_get_ms": cp_audit.pop("cellpose_get_ms", 0.0),
+        "cellpose_eval_ms": cp_audit.pop("cellpose_eval_ms", 0.0),
+        "postprocess_ms": round((t3 - t2) * 1000.0, 1),
+        "total_ms": round((t3 - t0) * 1000.0, 1)
+    }
 
     # Audit
     audit: Dict[str, Any] = {
@@ -256,6 +304,7 @@ def run_afm_v2(height_img: np.ndarray, params: AfmV2Params, um_per_px: float = 0
             "min_eccentricity": params.rods_min_eccentricity,
             "min_area_px": params.rods_min_area_px,
         },
+        "timings_ms": timings_ms,
         "cellpose": cp_audit
     }
 
