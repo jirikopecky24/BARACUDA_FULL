@@ -97,75 +97,90 @@ def load_spm_height(
     scan_size_um = _parse_scan_size_um(path)
     scan_size_source = "header" if scan_size_um is not None else "unknown"
 
-    last_err = None
-    for ch_name in prefer:
+    # Temporarily silence AFMReader spamming loguru with 'not found' errors
+    # while we organically iterate through fallback channels.
+    try:
+        from loguru import logger as loguru_logger
+        loguru_logger.disable("AFMReader")
+    except ImportError:
+        pass
+
+    try:
+        last_err = None
+        for ch_name in prefer:
+            try:
+                image, px_to_nm = _afmreader_load_spm(file_path=path, channel=ch_name)
+                img = np.asarray(image, dtype=np.float32)
+                width_px = img.shape[1] if img.ndim >= 2 else img.shape[0]
+
+                # ── Derive AFM scale (independent from OT) ───────────
+                pixel_to_nm = 0.0
+                px_source = "unknown"
+                um_per_px = 0.0
+                um_source = "unknown"
+
+                # Priority 1: Scan Size header
+                if scan_size_um is not None and scan_size_um > 0 and width_px > 0:
+                    um_per_px = scan_size_um / width_px
+                    um_source = "scan_size/header"
+                    logger.info(
+                        "Scale from header: scan_size=%.4f µm / %d px = %.6f µm/px",
+                        scan_size_um, width_px, um_per_px,
+                    )
+                # Priority 2: AFMReader px_to_nm
+                elif px_to_nm is not None and float(px_to_nm) > 0:
+                    pixel_to_nm = float(px_to_nm)
+                    px_source = "afmreader"
+                    um_per_px = pixel_to_nm / 1000.0
+                    um_source = "afmreader(px_to_nm)"
+                    logger.info(
+                        "Scale from AFMReader: px_to_nm=%.4f nm = %.6f µm/px",
+                        pixel_to_nm, um_per_px,
+                    )
+                # Priority 3: unknown
+                else:
+                    logger.warning(
+                        "No scale found for '%s'. Scan Size header not found, "
+                        "AFMReader returned no px_to_nm. Scale set to unknown.",
+                        path,
+                    )
+
+                # Also store px_to_nm from AFMReader regardless of which scale we used
+                if px_to_nm is not None and float(px_to_nm) > 0:
+                    pixel_to_nm = float(px_to_nm)
+                    px_source = "afmreader"
+
+                meta = {
+                    "selected_channel": ch_name,
+                    "shape": list(img.shape),
+                    "pixel_to_nm": pixel_to_nm,
+                    "pixel_to_nm_source": px_source,
+                    "afm_um_per_px": um_per_px,
+                    "afm_um_per_px_source": um_source,
+                    "afm_scan_size_um": scan_size_um if scan_size_um else 0.0,
+                    "afm_scan_size_source": scan_size_source,
+                    "loader": "afmreader",
+                    "afmreader_version": _AFMREADER_VERSION,
+                    "device": "AFM",
+                }
+                logger.info(
+                    "SPM loaded | ch=%s | shape=%s | um_per_px=%.6f (%s) | "
+                    "scan_size=%.4f µm (%s)",
+                    ch_name, img.shape, um_per_px, um_source,
+                    meta["afm_scan_size_um"], scan_size_source,
+                )
+                return img, meta
+            except Exception as exc:
+                last_err = exc
+                continue
+    finally:
         try:
-            image, px_to_nm = _afmreader_load_spm(file_path=path, channel=ch_name)
-            img = np.asarray(image, dtype=np.float32)
-            width_px = img.shape[1] if img.ndim >= 2 else img.shape[0]
+            from loguru import logger as loguru_logger
+            loguru_logger.enable("AFMReader")
+        except NameError:
+            pass
 
-            # ── Derive AFM scale (independent from OT) ───────────
-            pixel_to_nm = 0.0
-            px_source = "unknown"
-            um_per_px = 0.0
-            um_source = "unknown"
-
-            # Priority 1: Scan Size header
-            if scan_size_um is not None and scan_size_um > 0 and width_px > 0:
-                um_per_px = scan_size_um / width_px
-                um_source = "scan_size/header"
-                logger.info(
-                    "Scale from header: scan_size=%.4f µm / %d px = %.6f µm/px",
-                    scan_size_um, width_px, um_per_px,
-                )
-            # Priority 2: AFMReader px_to_nm
-            elif px_to_nm is not None and float(px_to_nm) > 0:
-                pixel_to_nm = float(px_to_nm)
-                px_source = "afmreader"
-                um_per_px = pixel_to_nm / 1000.0
-                um_source = "afmreader(px_to_nm)"
-                logger.info(
-                    "Scale from AFMReader: px_to_nm=%.4f nm = %.6f µm/px",
-                    pixel_to_nm, um_per_px,
-                )
-            # Priority 3: unknown
-            else:
-                logger.warning(
-                    "No scale found for '%s'. Scan Size header not found, "
-                    "AFMReader returned no px_to_nm. Scale set to unknown.",
-                    path,
-                )
-
-            # Also store px_to_nm from AFMReader regardless of which scale we used
-            if px_to_nm is not None and float(px_to_nm) > 0:
-                pixel_to_nm = float(px_to_nm)
-                px_source = "afmreader"
-
-            meta = {
-                "selected_channel": ch_name,
-                "shape": list(img.shape),
-                "pixel_to_nm": pixel_to_nm,
-                "pixel_to_nm_source": px_source,
-                "afm_um_per_px": um_per_px,
-                "afm_um_per_px_source": um_source,
-                "afm_scan_size_um": scan_size_um if scan_size_um is not None else 0.0,
-                "afm_scan_size_source": scan_size_source,
-                "loader": "afmreader",
-                "afmreader_version": _AFMREADER_VERSION,
-                "device": "AFM",
-            }
-            logger.info(
-                "SPM loaded | ch=%s | shape=%s | um_per_px=%.6f (%s) | "
-                "scan_size=%.4f µm (%s)",
-                ch_name, img.shape, um_per_px, um_source,
-                meta["afm_scan_size_um"], scan_size_source,
-            )
-            return img, meta
-        except Exception as exc:
-            last_err = exc
-            continue
-
-    raise RuntimeError(
-        f"AFMReader could not load any of channels {prefer} from '{path}'. "
-        f"Last error: {last_err!r}"
+    raise ValueError(
+        f"Could not load any preferred channel {prefer} from SPM file '{path}'. "
+        f"Last error: {last_err}"
     )

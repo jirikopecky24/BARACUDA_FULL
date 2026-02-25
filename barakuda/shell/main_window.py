@@ -527,9 +527,18 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id != "afm" or self._device_panel is None:
             return
 
-        if self._afm_preview_thread is not None and self._afm_preview_thread.isRunning():
-            self.log_panel.log("AFM Preview: already running.")
-            return
+        thread = self._afm_preview_thread
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    self.log_panel.log("AFM Preview: already running.")
+                    return
+                thread.quit()
+                thread.wait()
+                thread.deleteLater()
+            except RuntimeError:
+                pass
+            self._afm_preview_thread = None
 
         from PyQt6.QtCore import QThread
         from barakuda.shell.workers.afm_preview_worker import AfmPreviewWorker
@@ -568,6 +577,7 @@ class ShellMainWindow(QMainWindow):
 
         # Start thread
         self._afm_preview_thread = QThread()
+        self._afm_preview_thread.finished.connect(self._cleanup_afm_preview_thread)
         self._afm_preview_worker = AfmPreviewWorker(file_path, roi, afm_params)
         self._afm_preview_worker.moveToThread(self._afm_preview_thread)
 
@@ -581,7 +591,6 @@ class ShellMainWindow(QMainWindow):
         self._afm_preview_worker.finished.connect(self._afm_preview_thread.quit)
         self._afm_preview_worker.error.connect(self._afm_preview_thread.quit)
         self._afm_preview_thread.finished.connect(self._afm_preview_worker.deleteLater)
-        self._afm_preview_thread.finished.connect(self._afm_preview_thread.deleteLater)
 
         # start timer for smooth 20->79% progress
         from PyQt6.QtCore import QTimer
@@ -616,12 +625,19 @@ class ShellMainWindow(QMainWindow):
             return
 
         overlay_rgb = payload.get("overlay")
+        crop_img8 = payload.get("crop_img8")
         n_rods = payload.get("n_rods", "?")
         loader_meta = payload.get("loader_meta")
 
         if getattr(self, "batch", None):
             self.batch._last_afm_loader_meta = loader_meta
 
+        # Set the Before image to the cropped region so the overlay matches
+        if crop_img8 is not None:
+             self.preview._view_before.setImage(crop_img8, autoLevels=True)
+             if self.preview._roi is not None:
+                 self.preview._roi.hide()
+             
         if overlay_rgb is not None:
             self.preview.set_after_image(overlay_rgb)
         else:
@@ -688,4 +704,12 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Preview AFM: Cancelling...")
             if hasattr(self._device_panel, "set_status_message"):
                 self._device_panel.set_status_message("Cancelling...", is_error=True)  # type: ignore[attr-defined]
+
+    def _cleanup_afm_preview_thread(self) -> None:
+        if self._afm_preview_thread is not None:
+            try:
+                self._afm_preview_thread.deleteLater()
+            except RuntimeError:
+                pass
+            self._afm_preview_thread = None
 
