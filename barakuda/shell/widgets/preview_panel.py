@@ -228,9 +228,7 @@ class PreviewPanel(QWidget):
 
     def set_after_image(self, arr: np.ndarray) -> None:
         self._after_locked = True
-        self._set_iv(self._view_after, arr)
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self._view_after.view.autoRange(padding=0.0))
+        self._force_fit(self._view_after, arr)
 
     def set_after_from_file(self, path_str: str) -> bool:
         """Load an image via Qt and show it on AFTER tab.
@@ -327,9 +325,7 @@ class PreviewPanel(QWidget):
             self._current_frame_index = i
             self._last_before = frame_rgb
             
-            self._set_iv(self._view_before, frame_rgb)
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self._view_before.view.autoRange(padding=0.0))
+            self._force_fit(self._view_before, frame_rgb)
 
             self._ensure_roi_for_image(frame_rgb.shape[0], frame_rgb.shape[1])
             self._update_video_labels(i)
@@ -390,13 +386,9 @@ class PreviewPanel(QWidget):
         arr = np.asarray(arr)
         self._last_before = arr
         
-        self._set_iv(self._view_before, arr)
+        self._force_fit(self._view_before, arr)
         if not self._after_locked:
-            self._set_iv(self._view_after, arr)
-            
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self._view_before.view.autoRange(padding=0.0))
-        QTimer.singleShot(0, lambda: self._view_after.view.autoRange(padding=0.0))
+            self._force_fit(self._view_after, arr)
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -547,17 +539,17 @@ class PreviewPanel(QWidget):
         # 4) Make a deep copy to detach from QImage memory
         return arr.copy()
 
-    def _set_iv(self, iv, arr) -> None:
-        arr = np.asarray(arr)
-        if arr.ndim == 3 and arr.shape[2] == 3:
-            iv.setImage(arr, autoLevels=True, axes={'x': 1, 'y': 0, 'c': 2})
-        else:
-            iv.setImage(arr, autoLevels=True)
-        try:
-            iv.view.setAspectLocked(True)
-        except Exception:
-            pass
-        try:
-            iv.view.autoRange(padding=0.0)
-        except Exception:
-            pass
+    def _force_fit(self, iv: pg.ImageView, arr: np.ndarray) -> None:
+        a = np.asarray(arr)
+        H, W = int(a.shape[0]), int(a.shape[1])
+
+        iv.setImage(a, autoLevels=True)
+
+        vb = iv.getView()
+
+        # tvrdý reset všech range stavů
+        vb.enableAutoRange(x=False, y=False)
+        vb.setRange(xRange=(0, W), yRange=(0, H), padding=0)
+        vb.setLimits(xMin=0, xMax=W, yMin=0, yMax=H)
+
+        vb.setAspectLocked(True)
