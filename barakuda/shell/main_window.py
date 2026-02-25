@@ -43,6 +43,7 @@ class ShellMainWindow(QMainWindow):
         # Per-device preview thread/worker (never shared)
         self._afm_preview_thread = None
         self._afm_preview_worker = None
+        self._afm_preview_job_id = 0  # monotonic counter for job-id gating
 
         runs_folder = Path(__file__).resolve().parents[2] / "runs"
         self.batch = BatchController(runs_folder=runs_folder, log_fn=self.log_panel.log)
@@ -260,6 +261,8 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.btn_preview.clicked.connect(self._on_afm_preview)  # type: ignore[attr-defined]
                 if hasattr(self._device_panel, "btn_cancel"):
                     self._device_panel.btn_cancel.clicked.connect(self._on_afm_preview_cancel_clicked)  # type: ignore[attr-defined]
+                if hasattr(self._device_panel, "auto_preview_requested"):
+                    self._device_panel.auto_preview_requested.connect(self._on_afm_preview)  # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
 
@@ -549,14 +552,17 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id != "afm" or self._device_panel is None:
             return
 
+        if self._afm_preview_worker:
+            self._afm_preview_worker.cancel()
+
         thread = self._afm_preview_thread
         if thread is not None:
             try:
                 if thread.isRunning():
-                    self.log_panel.log("AFM Preview: already running.")
-                    return
+                    self.log_panel.log("AFM Preview: superseding running preview (auto-preview).")
+                    # Don't block — old worker will finish and be discarded via job_id gating
                 thread.quit()
-                thread.wait()
+                thread.wait(200)  # wait briefly, don't block UI
                 thread.deleteLater()
             except RuntimeError:
                 pass
@@ -603,6 +609,11 @@ class ShellMainWindow(QMainWindow):
         self._afm_preview_worker = AfmPreviewWorker(file_path, roi, afm_params)
         self._afm_preview_worker.moveToThread(self._afm_preview_thread)
 
+        # Job-id gating: tag this worker so callbacks can discard stale results
+        self._afm_preview_job_id += 1
+        current_job_id = self._afm_preview_job_id
+        self._afm_preview_worker._job_id = current_job_id  # type: ignore[attr-defined]
+
         self._afm_preview_thread.started.connect(self._afm_preview_worker.run)
         
         self._afm_preview_worker.progress_pct.connect(self._handle_afm_preview_progress)
@@ -646,6 +657,12 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.set_status_message("Cancelled", is_error=True)  # type: ignore[attr-defined]
             return
 
+        # Job-id gating: discard stale results from superseded previews
+        worker_job_id = getattr(self._afm_preview_worker, "_job_id", -1)
+        if worker_job_id != self._afm_preview_job_id:
+            self.log_panel.log(f"Preview AFM: stale result (job {worker_job_id} vs current {self._afm_preview_job_id}), discarded.")
+            return
+
         overlay_rgb = payload.get("overlay")
         n_rods = payload.get("n_rods", "?")
         loader_meta = payload.get("loader_meta")
@@ -678,12 +695,19 @@ class ShellMainWindow(QMainWindow):
         if self._afm_preview_worker and getattr(self._afm_preview_worker, "_is_cancelled", False):
             self.log_panel.log("Preview AFM: FAILED while cancelling")
             self._on_afm_preview_error("Cancelled")
-        else:
-            self.log_panel.log("Preview AFM: ERROR")
-            # Log stack trace
-            for line in tb_str.splitlines():
-                self.log_panel.log(line)
-            self._on_afm_preview_error(tb_str)
+            return
+
+        # Job-id gating: discard stale errors
+        worker_job_id = getattr(self._afm_preview_worker, "_job_id", -1)
+        if worker_job_id != self._afm_preview_job_id:
+            self.log_panel.log(f"Preview AFM: stale error (job {worker_job_id}), discarded.")
+            return
+
+        self.log_panel.log("Preview AFM: ERROR")
+        # Log stack trace
+        for line in tb_str.splitlines():
+            self.log_panel.log(line)
+        self._on_afm_preview_error(tb_str)
 
     def _afm_preview_cleanup(self) -> None:
         """Common cleanup for AFM preview."""

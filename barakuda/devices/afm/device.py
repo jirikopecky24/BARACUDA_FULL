@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal, QObject, QEvent, QLocale
+from PyQt6.QtCore import pyqtSignal, QObject, QEvent, QLocale, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFormLayout, QHBoxLayout,
     QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox,
@@ -22,6 +22,7 @@ class NoWheelValueChangeFilter(QObject):
 
 class AfmPanel(QWidget):
     run_batch_clicked = pyqtSignal()
+    auto_preview_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -290,6 +291,14 @@ class AfmPanel(QWidget):
         roi_hint.setWordWrap(True)
         actions.addWidget(roi_hint)
 
+        self.chk_auto_preview = QCheckBox("Auto Preview")
+        self.chk_auto_preview.setChecked(True)
+        self.chk_auto_preview.setToolTip(
+            "Automatically run preview after any AFM parameter change.\n"
+            "Uses 500 ms debounce to avoid redundant runs."
+        )
+        actions.addWidget(self.chk_auto_preview)
+
         self.btn_preview = QPushButton("Preview AFM")
         actions.addWidget(self.btn_preview)
 
@@ -308,9 +317,30 @@ class AfmPanel(QWidget):
         layout.addLayout(actions)
 
         # Apply defaults + tooltips on init
+        self._applying_defaults = True
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
         self._on_profile_changed() # Trigger initial hardware check
+        self._applying_defaults = False
+
+        # ── Debounce timer for auto-preview ───────────────────────
+        self._auto_preview_timer = QTimer(self)
+        self._auto_preview_timer.setSingleShot(True)
+        self._auto_preview_timer.setInterval(500)
+        self._auto_preview_timer.timeout.connect(self._fire_auto_preview)
+
+        # Connect all AFM parameter widgets to debounce trigger
+        for sb in (self.sp_clip_low, self.sp_clip_high,
+                   self.sp_cp_diam, self.sp_cp_flow, self.sp_cp_prob,
+                   self.sp_rods_min_major, self.sp_rods_min_ar,
+                   self.sp_rods_min_ecc,
+                   self.sp_ellipse_alpha):
+            sb.valueChanged.connect(self._schedule_auto_preview)
+        for sb_int in (self.sp_min_area, self.sp_ellipse_thick):
+            sb_int.valueChanged.connect(self._schedule_auto_preview)
+        for cb in (self.cb_invert, self.cb_rods_only):
+            cb.stateChanged.connect(self._schedule_auto_preview)
+        self.cb_cp_model.currentIndexChanged.connect(self._schedule_auto_preview)
 
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
@@ -545,16 +575,37 @@ class AfmPanel(QWidget):
 
     # ── Preset helpers ─────────────────────────────────────────────
     def _apply_preset_high_recall(self):
+        self._applying_defaults = True
         self.sp_rods_min_major.setValue(10.0)
         self.sp_rods_min_ar.setValue(1.60)
         self.sp_rods_min_ecc.setValue(0.60)
         self.sp_min_area.setValue(6)
+        self._applying_defaults = False
+        self._schedule_auto_preview()
 
     def _apply_preset_nature(self):
+        self._applying_defaults = True
         self.sp_rods_min_major.setValue(12.0)
         self.sp_rods_min_ar.setValue(1.80)
         self.sp_rods_min_ecc.setValue(0.65)
         self.sp_min_area.setValue(8)
+        self._applying_defaults = False
+        self._schedule_auto_preview()
+
+    # ── Auto-preview debounce ─────────────────────────────────────
+    def _schedule_auto_preview(self, *_args) -> None:
+        """Restart debounce timer; will fire auto_preview_requested after 500 ms idle."""
+        if getattr(self, "_applying_defaults", False):
+            return
+        if not self.chk_auto_preview.isChecked():
+            return
+        self._auto_preview_timer.stop()
+        self._auto_preview_timer.start()
+
+    def _fire_auto_preview(self) -> None:
+        """Called when debounce timer expires — emit the signal."""
+        if self.chk_auto_preview.isChecked():
+            self.auto_preview_requested.emit()
 
 
 def get_device_spec() -> DeviceSpec:
