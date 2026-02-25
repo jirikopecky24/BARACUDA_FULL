@@ -625,18 +625,11 @@ class ShellMainWindow(QMainWindow):
             return
 
         overlay_rgb = payload.get("overlay")
-        crop_img8 = payload.get("crop_img8")
         n_rods = payload.get("n_rods", "?")
         loader_meta = payload.get("loader_meta")
 
         if getattr(self, "batch", None):
             self.batch._last_afm_loader_meta = loader_meta
-
-        # Set the Before image to the cropped region so the overlay matches
-        if crop_img8 is not None:
-             self.preview._view_before.setImage(crop_img8, autoLevels=True)
-             if self.preview._roi is not None:
-                 self.preview._roi.hide()
              
         if overlay_rgb is not None:
             self.preview.set_after_image(overlay_rgb)
