@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTabWidget, QSlider, QHBoxLayout
@@ -230,7 +230,7 @@ class PreviewPanel(QWidget):
         self._after_locked = True
         arr_pg = arr.transpose((1, 0, 2)) if arr.ndim == 3 else arr.transpose()
         self._view_after.setImage(arr_pg, autoLevels=True, autoRange=False)
-        self._fit_views(arr.shape[0], arr.shape[1])
+        QTimer.singleShot(0, self._autofit_current)
 
     def set_after_from_file(self, path_str: str) -> bool:
         """Load an image via Qt and show it on AFTER tab.
@@ -329,6 +329,7 @@ class PreviewPanel(QWidget):
             
             arr_pg = frame_rgb.transpose((1, 0, 2)) if frame_rgb.ndim == 3 else frame_rgb.transpose()
             self._view_before.setImage(arr_pg, autoLevels=True, autoRange=False)
+            QTimer.singleShot(0, self._autofit_current)
 
             self._ensure_roi_for_image(frame_rgb.shape[0], frame_rgb.shape[1])
             self._update_video_labels(i)
@@ -392,17 +393,10 @@ class PreviewPanel(QWidget):
         # PyQtGraph expects (W, H, 3) or (W, H), otherwise images are displayed transposed.
         arr_pg = arr.transpose((1, 0, 2)) if arr.ndim == 3 else arr.transpose()
         
-        self._view_before.setImage(arr_pg, autoLevels=True, autoRange=False)
+        self._view_before.setImage(arr_pg, autoLevels=True)
         if not self._after_locked:
-            self._view_after.setImage(arr_pg, autoLevels=True, autoRange=False)
-
-        # Always fit views to image dimensions
-        H, W = arr.shape[0], arr.shape[1]
-        self._fit_views(H, W)
-
-        # Deferred fit for when widget hasn't received its final size yet
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self._fit_views(H, W))
+            self._view_after.setImage(arr_pg, autoLevels=True)
+        QTimer.singleShot(0, self._autofit_current)
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -440,6 +434,7 @@ class PreviewPanel(QWidget):
             self._roi.addScaleHandle([1, 0.5], [0, 0.5])  # right
 
             self._view_before.addItem(self._roi)
+            self._roi.setZValue(10)
             self._view_after.addItem(self._roi_after)
             
             self._roi.sigRegionChanged.connect(self._on_roi_changed)
@@ -552,11 +547,15 @@ class PreviewPanel(QWidget):
         # 4) Make a deep copy to detach from QImage memory
         return arr.copy()
 
-    def _fit_views(self, H: int, W: int) -> None:
-        """Reset both BEFORE and AFTER ViewBoxes to fit the image (0..W, 0..H)."""
+    def _autofit_current(self) -> None:
+        """Reset both BEFORE and AFTER ViewBoxes to fit the current image."""
+        if self._last_before is None:
+            return
+        arr = np.asarray(self._last_before)
+        H, W = int(arr.shape[0]), int(arr.shape[1])
         for v in (self._view_before, self._view_after):
             try:
-                vb = v.getView()  # ViewBox
+                vb = v.view  # ViewBox
                 vb.setRange(xRange=(0, W), yRange=(0, H), padding=0.0)
                 vb.autoRange(padding=0.0)
             except Exception:
