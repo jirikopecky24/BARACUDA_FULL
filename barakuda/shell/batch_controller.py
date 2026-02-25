@@ -1256,7 +1256,7 @@ class BatchController:
                             row.append(f"{val:.6f}" if isinstance(val, (float, np.floating)) else str(val))
                         wcsv.writerow(row)
 
-                # --- EXPORT: orientation histograms (Sturges, deterministic) ---
+                # --- EXPORT: orientation histograms (Sturges, 4 variants) ---
                 _ori_hist_audit = {}
                 if n_rods > 0:
                     try:
@@ -1267,42 +1267,106 @@ class BatchController:
 
                         sturges_k = max(1, _math2.ceil(_math2.log2(n_rods) + 1))
                         _ori_hist_audit = {"rule": "sturges", "n": n_rods, "bins": sturges_k}
+                        _R2D = 180.0 / _math2.pi
+                        _RWIDTH = 0.92
 
-                        # --- orientation_rad histogram ---
-                        counts_raw, edges_raw = np.histogram(
-                            ori_raw, bins=sturges_k, range=(-_math2.pi / 2, _math2.pi / 2)
+                        # ---------- helper: render one histogram ----------
+                        def _render_hist(data, bins, hist_range, xlabel, ylabel,
+                                         title, out_path, density=False):
+                            counts, edges = np.histogram(
+                                data, bins=bins, range=hist_range, density=density,
+                            )
+                            bw = np.diff(edges)
+                            fig, ax = plt.subplots(figsize=(6, 4))
+                            ax.bar(
+                                edges[:-1] + bw * (1.0 - _RWIDTH) / 2.0,
+                                counts, width=bw * _RWIDTH,
+                                align="edge",
+                                facecolor="none", edgecolor="black", linewidth=1.0,
+                            )
+                            ax.set_xlabel(xlabel)
+                            ax.set_ylabel(ylabel)
+                            ax.set_title(title)
+                            fig.tight_layout()
+                            fig.savefig(str(out_path), dpi=300, facecolor="white")
+                            plt.close(fig)
+                            return counts, edges
+
+                        # ---- orientation_rad ----
+                        range_raw = (-_math2.pi / 2, _math2.pi / 2)
+                        title_raw = f"Orientation (N={n_rods}, bins={sturges_k})"
+
+                        cnt_raw_c, edg_raw_c = _render_hist(
+                            ori_raw, sturges_k, range_raw,
+                            "Orientation (rad)", "Count", title_raw,
+                            run_dir / f"{stem}_orientation_hist_rad_count.png",
                         )
-                        fig, ax = plt.subplots(figsize=(6, 4))
-                        ax.bar(edges_raw[:-1], counts_raw, width=np.diff(edges_raw), align="edge", color="black", edgecolor="black")
-                        ax.set_xlabel("orientation_rad")
-                        ax.set_ylabel("count")
-                        ax.set_title(f"Orientation (N={n_rods}, bins={sturges_k})")
-                        fig.tight_layout()
-                        fig.savefig(str(run_dir / f"{stem}_orientation_hist.png"), dpi=150, facecolor="white")
-                        plt.close(fig)
-
-                        # --- orientation_folded_rad histogram ---
-                        counts_fld, edges_fld = np.histogram(
-                            ori_folded, bins=sturges_k, range=(0.0, _math2.pi / 2)
+                        cnt_raw_d, edg_raw_d = _render_hist(
+                            ori_raw, sturges_k, range_raw,
+                            "Orientation (deg)", "Probability density", title_raw,
+                            run_dir / f"{stem}_orientation_hist_deg_density.png",
+                            density=True,
                         )
-                        fig2, ax2 = plt.subplots(figsize=(6, 4))
-                        ax2.bar(edges_fld[:-1], counts_fld, width=np.diff(edges_fld), align="edge", color="black", edgecolor="black")
-                        ax2.set_xlabel("orientation_folded_rad")
-                        ax2.set_ylabel("count")
-                        ax2.set_title(f"Orientation Folded (N={n_rods}, bins={sturges_k})")
-                        fig2.tight_layout()
-                        fig2.savefig(str(run_dir / f"{stem}_orientation_folded_hist.png"), dpi=150, facecolor="white")
-                        plt.close(fig2)
+                        # fix x-axis to degrees for the density plot
+                        # (re-render with converted edges)
+                        cnt_raw_d2, _ = np.histogram(ori_raw * _R2D, bins=sturges_k,
+                                                     range=(range_raw[0]*_R2D, range_raw[1]*_R2D),
+                                                     density=True)
+                        edg_raw_d2 = edg_raw_d * _R2D
+                        fig_d, ax_d = plt.subplots(figsize=(6, 4))
+                        bw_d = np.diff(edg_raw_d2)
+                        ax_d.bar(edg_raw_d2[:-1] + bw_d*(1-_RWIDTH)/2, cnt_raw_d2,
+                                 width=bw_d*_RWIDTH, align="edge",
+                                 facecolor="none", edgecolor="black", linewidth=1.0)
+                        ax_d.set_xlabel("Orientation (deg)")
+                        ax_d.set_ylabel("Probability density")
+                        ax_d.set_title(title_raw)
+                        fig_d.tight_layout()
+                        fig_d.savefig(str(run_dir / f"{stem}_orientation_hist_deg_density.png"),
+                                      dpi=300, facecolor="white")
+                        plt.close(fig_d)
 
-                        # --- JSON metadata ---
+                        # ---- orientation_folded_rad ----
+                        range_fld = (0.0, _math2.pi / 2)
+                        title_fld = f"Folded orientation (N={n_rods}, bins={sturges_k})"
+
+                        cnt_fld_c, edg_fld_c = _render_hist(
+                            ori_folded, sturges_k, range_fld,
+                            "Folded orientation (rad)", "Count", title_fld,
+                            run_dir / f"{stem}_orientation_folded_hist_rad_count.png",
+                        )
+                        cnt_fld_d2, _ = np.histogram(ori_folded * _R2D, bins=sturges_k,
+                                                     range=(range_fld[0]*_R2D, range_fld[1]*_R2D),
+                                                     density=True)
+                        edg_fld_d2 = edg_fld_c * _R2D
+                        fig_f, ax_f = plt.subplots(figsize=(6, 4))
+                        bw_f = np.diff(edg_fld_d2)
+                        ax_f.bar(edg_fld_d2[:-1] + bw_f*(1-_RWIDTH)/2, cnt_fld_d2,
+                                 width=bw_f*_RWIDTH, align="edge",
+                                 facecolor="none", edgecolor="black", linewidth=1.0)
+                        ax_f.set_xlabel("Folded orientation (deg)")
+                        ax_f.set_ylabel("Probability density")
+                        ax_f.set_title(title_fld)
+                        fig_f.tight_layout()
+                        fig_f.savefig(str(run_dir / f"{stem}_orientation_folded_hist_deg_density.png"),
+                                      dpi=300, facecolor="white")
+                        plt.close(fig_f)
+
+                        # --- JSON metadata (extended) ---
                         hist_json_path = run_dir / f"{stem}_orientation_hist.json"
                         hist_json_path.write_text(json.dumps({
                             "orientation_rad": {
                                 "n_samples": n_rods,
                                 "sturges_bins": sturges_k,
-                                "range": [-_math2.pi / 2, _math2.pi / 2],
-                                "bin_edges": edges_raw.tolist(),
-                                "counts": counts_raw.tolist(),
+                                "range_rad": list(range_raw),
+                                "range_deg": [range_raw[0]*_R2D, range_raw[1]*_R2D],
+                                "bin_edges_rad": edg_raw_c.tolist(),
+                                "bin_edges_deg": edg_raw_d2.tolist(),
+                                "counts": cnt_raw_c.tolist(),
+                                "density": cnt_raw_d2.tolist(),
+                                "units": "rad",
+                                "y_mode": "count+density",
+                                "rwidth": _RWIDTH,
                                 "parameter": "orientation_rad",
                                 "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
                                 "compute_profile": cp_audit.get("compute_profile", "unknown"),
@@ -1310,9 +1374,15 @@ class BatchController:
                             "orientation_folded_rad": {
                                 "n_samples": n_rods,
                                 "sturges_bins": sturges_k,
-                                "range": [0.0, _math2.pi / 2],
-                                "bin_edges": edges_fld.tolist(),
-                                "counts": counts_fld.tolist(),
+                                "range_rad": list(range_fld),
+                                "range_deg": [range_fld[0]*_R2D, range_fld[1]*_R2D],
+                                "bin_edges_rad": edg_fld_c.tolist(),
+                                "bin_edges_deg": edg_fld_d2.tolist(),
+                                "counts": cnt_fld_c.tolist(),
+                                "density": cnt_fld_d2.tolist(),
+                                "units": "rad",
+                                "y_mode": "count+density",
+                                "rwidth": _RWIDTH,
                                 "parameter": "orientation_folded_rad",
                                 "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
                                 "compute_profile": cp_audit.get("compute_profile", "unknown"),
