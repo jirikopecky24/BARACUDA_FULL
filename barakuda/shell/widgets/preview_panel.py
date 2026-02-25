@@ -85,7 +85,7 @@ class PreviewPanel(QWidget):
 
         # ROI
         self._roi: pg.RectROI | None = None
-        self._roi_after: pg.RectROI | None = None
+        self._roi_added: bool = False
         self._roi_shape: tuple[int, int] | None = None  # (H,W)
         self._clamping_roi: bool = False
         self._syncing_roi: bool = False
@@ -228,6 +228,12 @@ class PreviewPanel(QWidget):
 
     def set_after_image(self, arr: np.ndarray) -> None:
         self._after_locked = True
+        
+        # Keep ONLY the ImageItem in AFTER viewbox
+        self._vb_after.clear()
+        self._img_after = pg.ImageItem()
+        self._vb_after.addItem(self._img_after)
+
         self._img_after.setImage(arr)
         self._vb_after.autoRange()
         self._fit_imageview(self._vb_after, self._img_after)
@@ -411,58 +417,21 @@ class PreviewPanel(QWidget):
             # BEFORE ROI (fully interactive)
             self._roi = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
 
-            # AFTER ROI (locked, display-only, tracks BEFORE)
-            from PyQt6.QtWidgets import QGraphicsRectItem
-            from PyQt6.QtWidgets import QGraphicsItem
-            
-            self._roi_after = QGraphicsRectItem(0, 0, W * 0.25, H * 0.25)
-            self._roi_after.setPen(pen)
-            
-            # Make AFTER ROI completely non-interactive
-            self._roi_after.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-            self._roi_after.setAcceptHoverEvents(False)
-            self._roi_after.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-            self._roi_after.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, False)
-
-            # Add handles ONLY to the interactive BEFORE ROI
-            self._roi.addScaleHandle([0, 0], [1, 1])  # top-left
-            self._roi.addScaleHandle([1, 0], [0, 1])  # top-right
-            self._roi.addScaleHandle([0, 1], [1, 0])  # bottom-left
-            self._roi.addScaleHandle([1, 1], [0, 0])  # bottom-right
-            self._roi.addScaleHandle([0.5, 0], [0.5, 1])  # top
-            self._roi.addScaleHandle([0.5, 1], [0.5, 0])  # bottom
-            self._roi.addScaleHandle([0, 0.5], [1, 0.5])  # left
-            self._roi.addScaleHandle([1, 0.5], [0, 0.5])  # right
-
-            self._vb_before.addItem(self._roi)
-            self._roi.setZValue(10)
-            self._vb_after.addItem(self._roi_after)
+            if not self._roi_added:
+                self._vb_before.addItem(self._roi)
+                self._roi.setZValue(10)
+                self._roi_added = True
             
             self._roi.sigRegionChanged.connect(self._on_roi_changed)
 
         self._roi_shape = (int(H), int(W))
         self._clamp_roi_to_image(self._roi)
-        self._sync_rois(self._roi, self._roi_after)
-
-    def _sync_rois(self, source, target):
-        if self._syncing_roi or source is None or target is None:
-            return
-        self._syncing_roi = True
-        try:
-            pos = source.pos()
-            size = source.size()
-            
-            # target is a QGraphicsRectItem, source is pg.RectROI
-            # To draw target, we set its internal rect from (0,0) to size and position it at pos
-            target.setRect(0, 0, float(size.x()), float(size.y()))
-            target.setPos(float(pos.x()), float(pos.y()))
-        finally:
-            self._syncing_roi = False
 
     def _on_roi_changed(self) -> None:
-        self._sync_rois(self._roi, self._roi_after)
         self._clamp_roi_to_image(self._roi)
         self._refresh_info_block()
+
+
 
     def _clamp_roi_to_image(self, target_roi=None) -> None:
         if target_roi is None:
@@ -514,8 +483,10 @@ class PreviewPanel(QWidget):
         self._img_before.clear()
         self._img_after.clear()
         # Reset ROI so stale range artefacts don't persist across files
+        if self._roi is not None and self._roi_added:
+            self._vb_before.removeItem(self._roi)
         self._roi = None
-        self._roi_after = None
+        self._roi_added = False
         self._roi_shape = None
 
     def _load_image_qt(self, path: Path) -> np.ndarray | None:
