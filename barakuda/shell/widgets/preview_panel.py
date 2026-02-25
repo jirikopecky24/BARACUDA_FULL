@@ -423,6 +423,13 @@ class PreviewPanel(QWidget):
                 handleHoverPen=pen
             )
             self._roi_after.translatable = False
+            
+            # Make AFTER ROI completely non-interactive
+            from PyQt6.QtWidgets import QGraphicsItem
+            self._roi_after.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._roi_after.setAcceptHoverEvents(False)
+            self._roi_after.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self._roi_after.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, False)
 
             # Add handles ONLY to the interactive BEFORE ROI
             self._roi.addScaleHandle([0, 0], [1, 1])  # top-left
