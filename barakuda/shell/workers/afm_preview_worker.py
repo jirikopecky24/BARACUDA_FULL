@@ -185,11 +185,16 @@ class AfmPreviewWorker(QObject):
             self.progress_pct.emit(95, "Rendering overlay...")
             n_rods = len(rod_table.get("label", []))
 
-            # Render overlay directly on the CROP
-            crop_norm = _normalize(roi_img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
-            crop_img8 = (crop_norm * 255.0).astype(np.uint8)
+            # Map rod centroids back to full image relative coords
+            if "centroid_x" in rod_table and len(rod_table.get("centroid_x", [])) > 0:
+                rod_table["centroid_x"] = rod_table["centroid_x"] + x
+                rod_table["centroid_y"] = rod_table["centroid_y"] + y
+
+            # Render overlay directly on the FULL image
+            full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
+            full_img8 = (full_norm * 255.0).astype(np.uint8)
             overlay = render_ellipse_overlay(
-                crop_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px)
+                full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px)
             )
 
             if not self._is_cancelled:
