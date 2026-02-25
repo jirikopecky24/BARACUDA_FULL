@@ -229,14 +229,9 @@ class PreviewPanel(QWidget):
     def set_after_image(self, arr: np.ndarray) -> None:
         self._after_locked = True
         
-        # Keep ONLY the ImageItem in AFTER viewbox
-        self._vb_after.clear()
-        self._img_after = pg.ImageItem()
-        self._vb_after.addItem(self._img_after)
-
+        # UI JUST REPLACES THE IMAGE ON THE EXISTING ITEM
+        # DOES NOT FIT, DOES NOT CLEAR ViewBox, DOES NOT CREATE NEW ITEM
         self._img_after.setImage(arr)
-        self._vb_after.autoRange()
-        self._fit_imageview(self._vb_after, self._img_after)
 
     def set_after_from_file(self, path_str: str) -> bool:
         """Load an image via Qt and show it on AFTER tab.
@@ -333,9 +328,9 @@ class PreviewPanel(QWidget):
             self._current_frame_index = i
             self._last_before = frame_rgb
             
-            self._img_before.setImage(frame_rgb)
-            self._vb_before.autoRange()
-            self._fit_imageview(self._vb_before, self._img_before)
+            # Slider change invalidates previous preview overlay
+            self.unlock_after()
+            self._set_before_and_after(frame_rgb, is_initial_load=False)
 
             self._ensure_roi_for_image(frame_rgb.shape[0], frame_rgb.shape[1])
             self._update_video_labels(i)
@@ -397,13 +392,17 @@ class PreviewPanel(QWidget):
         self._last_before = arr
         
         self._img_before.setImage(arr)
-        self._vb_before.autoRange()
-        self._fit_imageview(self._vb_before, self._img_before)
-
+        
         if not self._after_locked:
             self._img_after.setImage(arr)
-            self._vb_after.autoRange()
-            self._fit_imageview(self._vb_after, self._img_after)
+            
+        if is_initial_load:
+            self._vb_before.autoRange()
+            self._fit_imageview(self._vb_before, self._img_before)
+            
+            if not self._after_locked:
+                self._vb_after.autoRange()
+                self._fit_imageview(self._vb_after, self._img_after)
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
