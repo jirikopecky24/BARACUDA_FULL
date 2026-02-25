@@ -395,8 +395,11 @@ class PreviewPanel(QWidget):
             
         # Ensure the viewboxes actually zoom to fit explicitly on first load
         if is_initial_load:
-            self._view_before.getView().autoRange()
-            self._view_after.getView().autoRange()
+            from PyQt6.QtCore import QTimer
+            def _fit():
+                self._view_before.getView().autoRange()
+                self._view_after.getView().autoRange()
+            QTimer.singleShot(0, _fit)
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
