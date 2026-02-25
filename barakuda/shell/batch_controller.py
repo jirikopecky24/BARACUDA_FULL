@@ -1233,11 +1233,19 @@ class BatchController:
                 full_mask[y0:y0+h0, x0:x0+w0] = (rod_labels > 0).astype(np.uint8) * 255
                 iio.imwrite(rods_mask_path, full_mask)
 
-                # --- EXPORT: rods_props.csv ---
+                # --- EXPORT: rods_props.csv (with orientation_folded_rad) ---
                 rods_csv = run_dir / f"{stem}_rods_props.csv"
                 cols = ["label", "centroid_x", "centroid_y", "orientation_rad",
+                        "orientation_folded_rad",
                         "major_axis_px", "minor_axis_px", "aspect_ratio",
                         "eccentricity", "solidity", "area_px"]
+
+                # Compute folded orientation: (pi/2) - abs(orientation_rad)
+                import math as _math
+                ori_raw = np.asarray(rod_table.get("orientation_rad", []), dtype=np.float64)
+                ori_folded = ((_math.pi / 2.0) - np.abs(ori_raw))
+                rod_table["orientation_folded_rad"] = ori_folded
+
                 with rods_csv.open("w", encoding="utf-8", newline="") as f:
                     wcsv = csv.writer(f)
                     wcsv.writerow(cols)
@@ -1247,6 +1255,72 @@ class BatchController:
                             val = rod_table[c][k]
                             row.append(f"{val:.6f}" if isinstance(val, (float, np.floating)) else str(val))
                         wcsv.writerow(row)
+
+                # --- EXPORT: orientation histograms (Sturges, deterministic) ---
+                _ori_hist_audit = {}
+                if n_rods > 0:
+                    try:
+                        import math as _math2
+                        import matplotlib
+                        matplotlib.use("Agg")
+                        import matplotlib.pyplot as plt
+
+                        sturges_k = max(1, _math2.ceil(_math2.log2(n_rods) + 1))
+                        _ori_hist_audit = {"rule": "sturges", "n": n_rods, "bins": sturges_k}
+
+                        # --- orientation_rad histogram ---
+                        counts_raw, edges_raw = np.histogram(
+                            ori_raw, bins=sturges_k, range=(-_math2.pi / 2, _math2.pi / 2)
+                        )
+                        fig, ax = plt.subplots(figsize=(6, 4))
+                        ax.bar(edges_raw[:-1], counts_raw, width=np.diff(edges_raw), align="edge", color="black", edgecolor="black")
+                        ax.set_xlabel("orientation_rad")
+                        ax.set_ylabel("count")
+                        ax.set_title(f"Orientation (N={n_rods}, bins={sturges_k})")
+                        fig.tight_layout()
+                        fig.savefig(str(run_dir / f"{stem}_orientation_hist.png"), dpi=150, facecolor="white")
+                        plt.close(fig)
+
+                        # --- orientation_folded_rad histogram ---
+                        counts_fld, edges_fld = np.histogram(
+                            ori_folded, bins=sturges_k, range=(0.0, _math2.pi / 2)
+                        )
+                        fig2, ax2 = plt.subplots(figsize=(6, 4))
+                        ax2.bar(edges_fld[:-1], counts_fld, width=np.diff(edges_fld), align="edge", color="black", edgecolor="black")
+                        ax2.set_xlabel("orientation_folded_rad")
+                        ax2.set_ylabel("count")
+                        ax2.set_title(f"Orientation Folded (N={n_rods}, bins={sturges_k})")
+                        fig2.tight_layout()
+                        fig2.savefig(str(run_dir / f"{stem}_orientation_folded_hist.png"), dpi=150, facecolor="white")
+                        plt.close(fig2)
+
+                        # --- JSON metadata ---
+                        hist_json_path = run_dir / f"{stem}_orientation_hist.json"
+                        hist_json_path.write_text(json.dumps({
+                            "orientation_rad": {
+                                "n_samples": n_rods,
+                                "sturges_bins": sturges_k,
+                                "range": [-_math2.pi / 2, _math2.pi / 2],
+                                "bin_edges": edges_raw.tolist(),
+                                "counts": counts_raw.tolist(),
+                                "parameter": "orientation_rad",
+                                "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
+                                "compute_profile": cp_audit.get("compute_profile", "unknown"),
+                            },
+                            "orientation_folded_rad": {
+                                "n_samples": n_rods,
+                                "sturges_bins": sturges_k,
+                                "range": [0.0, _math2.pi / 2],
+                                "bin_edges": edges_fld.tolist(),
+                                "counts": counts_fld.tolist(),
+                                "parameter": "orientation_folded_rad",
+                                "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
+                                "compute_profile": cp_audit.get("compute_profile", "unknown"),
+                            },
+                        }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                    except Exception as e:
+                        self._log(f"WARN: orientation histogram failed ({p.name}): {e!r}")
 
                 # --- EXPORT: overlay.png (FULL SIZE with ROI box) ---
                 if bool(afm_params.get("save_overlay", True)):
@@ -1302,6 +1376,8 @@ class BatchController:
                     "n_rods": n_rods,
                     "roi_rect": [x0, y0, w0, h0],
                     "source_image": p.name,
+                    # Orientation histogram audit
+                    "orientation_histogram": _ori_hist_audit,
                     # Full audit trace (for granular bug reports)
                     "audit": audit,
                 }
