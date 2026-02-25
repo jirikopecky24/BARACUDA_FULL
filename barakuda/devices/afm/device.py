@@ -480,7 +480,7 @@ class AfmPanel(QWidget):
         self.sp_min_area.setValue(8)
 
         # Overlay
-        self.sp_ellipse_thick.setValue(2)
+        self.sp_ellipse_thick.setValue(1)
         self.sp_ellipse_alpha.setValue(0.60)
 
     # ── Tooltips ──────────────────────────────────────────────────
