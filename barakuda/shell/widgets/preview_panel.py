@@ -382,16 +382,21 @@ class PreviewPanel(QWidget):
         t = float(i) / fps
         self._frame_label.setText(f"frame: {i}/{total-1}   t: {t:.3f} s")
 
-    def _set_before_and_after(self, arr: np.ndarray, auto_range: bool = True) -> None:
+    def _set_before_and_after(self, arr: np.ndarray, is_initial_load: bool = True) -> None:
         arr = np.asarray(arr)
         self._last_before = arr
         
         # PyQtGraph expects (W, H, 3) or (W, H), otherwise images are displayed transposed.
         arr_pg = arr.transpose((1, 0, 2)) if arr.ndim == 3 else arr.transpose()
         
-        self._view_before.setImage(arr_pg, autoLevels=True, autoRange=auto_range)
+        self._view_before.setImage(arr_pg, autoLevels=True, autoRange=is_initial_load)
         if not self._after_locked:
-            self._view_after.setImage(arr_pg, autoLevels=True, autoRange=auto_range)
+            self._view_after.setImage(arr_pg, autoLevels=True, autoRange=is_initial_load)
+            
+        # Ensure the viewboxes actually zoom to fit explicitly on first load
+        if is_initial_load:
+            self._view_before.getView().autoRange()
+            self._view_after.getView().autoRange()
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -401,32 +406,42 @@ class PreviewPanel(QWidget):
         if self._roi is None:
             # Yellow ROI frame
             pen = pg.mkPen((255, 255, 0), width=2)
-
+            
+            # BEFORE ROI (fully interactive)
             self._roi = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
-            self._roi_after = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
 
-            for roi_obj in (self._roi, self._roi_after):
-                # Remove default single handle behavior and add explicit corner handles
-                roi_obj.addScaleHandle([0, 0], [1, 1])  # top-left
-                roi_obj.addScaleHandle([1, 0], [0, 1])  # top-right
-                roi_obj.addScaleHandle([0, 1], [1, 0])  # bottom-left
-                roi_obj.addScaleHandle([1, 1], [0, 0])  # bottom-right
+            # AFTER ROI (locked, display-only, tracks BEFORE)
+            self._roi_after = pg.RectROI(
+                [W * 0.25, H * 0.25], 
+                [W * 0.5, H * 0.5], 
+                pen=pen,
+                movable=False,
+                resizable=False,
+                rotatable=False,
+                hoverPen=pen,
+                handlePen=pen,
+                handleHoverPen=pen
+            )
+            self._roi_after.translatable = False
 
-                # Optional: side handles (more convenient for thin rectangles)
-                roi_obj.addScaleHandle([0.5, 0], [0.5, 1])  # top
-                roi_obj.addScaleHandle([0.5, 1], [0.5, 0])  # bottom
-                roi_obj.addScaleHandle([0, 0.5], [1, 0.5])  # left
-                roi_obj.addScaleHandle([1, 0.5], [0, 0.5])  # right
+            # Add handles ONLY to the interactive BEFORE ROI
+            self._roi.addScaleHandle([0, 0], [1, 1])  # top-left
+            self._roi.addScaleHandle([1, 0], [0, 1])  # top-right
+            self._roi.addScaleHandle([0, 1], [1, 0])  # bottom-left
+            self._roi.addScaleHandle([1, 1], [0, 0])  # bottom-right
+            self._roi.addScaleHandle([0.5, 0], [0.5, 1])  # top
+            self._roi.addScaleHandle([0.5, 1], [0.5, 0])  # bottom
+            self._roi.addScaleHandle([0, 0.5], [1, 0.5])  # left
+            self._roi.addScaleHandle([1, 0.5], [0, 0.5])  # right
 
             self._view_before.addItem(self._roi)
             self._view_after.addItem(self._roi_after)
             
             self._roi.sigRegionChanged.connect(self._on_roi_changed)
-            self._roi_after.sigRegionChanged.connect(self._on_roi_after_changed)
 
         self._roi_shape = (int(H), int(W))
         self._clamp_roi_to_image(self._roi)
-        self._clamp_roi_to_image(self._roi_after)
+        self._sync_rois(self._roi, self._roi_after)
 
     def _sync_rois(self, source, target):
         if self._syncing_roi or source is None or target is None:
@@ -441,11 +456,6 @@ class PreviewPanel(QWidget):
     def _on_roi_changed(self) -> None:
         self._sync_rois(self._roi, self._roi_after)
         self._clamp_roi_to_image(self._roi)
-        self._refresh_info_block()
-
-    def _on_roi_after_changed(self) -> None:
-        self._sync_rois(self._roi_after, self._roi)
-        self._clamp_roi_to_image(self._roi_after)
         self._refresh_info_block()
 
     def _clamp_roi_to_image(self, target_roi=None) -> None:
