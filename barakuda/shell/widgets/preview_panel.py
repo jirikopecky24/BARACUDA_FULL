@@ -23,22 +23,22 @@ class PreviewPanel(QWidget):
 
         self._tabs = QTabWidget()
 
-        self._view_before = pg.ImageView()
-        self._view_before.ui.roiBtn.hide()
-        self._view_before.ui.menuBtn.hide()
-        self._view_before.ui.histogram.hide()
+        self._view_before = pg.GraphicsLayoutWidget()
+        self._vb_before = self._view_before.addViewBox(lockAspect=True)
+        self._img_before = pg.ImageItem()
+        self._vb_before.addItem(self._img_before)
 
-        self._view_after = pg.ImageView()
-        self._view_after.ui.roiBtn.hide()
-        self._view_after.ui.menuBtn.hide()
-        self._view_after.ui.histogram.hide()
+        self._view_after = pg.GraphicsLayoutWidget()
+        self._vb_after = self._view_after.addViewBox(lockAspect=True)
+        self._img_after = pg.ImageItem()
+        self._vb_after.addItem(self._img_after)
 
         self._tabs.addTab(self._view_before, "BEFORE")
         self._tabs.addTab(self._view_after, "AFTER")
 
         # Link pan/zoom between tabs so the views perfectly align
-        self._view_after.getView().setXLink(self._view_before.getView())
-        self._view_after.getView().setYLink(self._view_before.getView())
+        self._vb_after.setXLink(self._vb_before)
+        self._vb_after.setYLink(self._vb_before)
 
         # --- video controls ---
         self._video_row = QWidget()
@@ -228,7 +228,9 @@ class PreviewPanel(QWidget):
 
     def set_after_image(self, arr: np.ndarray) -> None:
         self._after_locked = True
-        self._force_fit(self._view_after, arr)
+        self._img_after.setImage(arr)
+        self._vb_after.autoRange()
+        self._fit_imageview(self._vb_after, self._img_after)
 
     def set_after_from_file(self, path_str: str) -> bool:
         """Load an image via Qt and show it on AFTER tab.
@@ -293,10 +295,8 @@ class PreviewPanel(QWidget):
         # (which is the ViewBox or ImageItem). But to be perfectly safe, we map it
         # to the image item's coordinate system.
         
-        # pg.ImageView has .getImageItem() exposing the image coords natively
-        img_item = self._view_before.getImageItem()
         # map rect from ROI local (bounds) to ImageItem local
-        mapped_rect = img_item.mapRectFromItem(self._roi, self._roi.boundingRect())
+        mapped_rect = self._img_before.mapRectFromItem(self._roi, self._roi.boundingRect())
         
         x = int(round(float(mapped_rect.x())))
         y = int(round(float(mapped_rect.y())))
@@ -325,7 +325,9 @@ class PreviewPanel(QWidget):
             self._current_frame_index = i
             self._last_before = frame_rgb
             
-            self._force_fit(self._view_before, frame_rgb)
+            self._img_before.setImage(frame_rgb)
+            self._vb_before.autoRange()
+            self._fit_imageview(self._vb_before, self._img_before)
 
             self._ensure_roi_for_image(frame_rgb.shape[0], frame_rgb.shape[1])
             self._update_video_labels(i)
@@ -386,9 +388,14 @@ class PreviewPanel(QWidget):
         arr = np.asarray(arr)
         self._last_before = arr
         
-        self._force_fit(self._view_before, arr)
+        self._img_before.setImage(arr)
+        self._vb_before.autoRange()
+        self._fit_imageview(self._vb_before, self._img_before)
+
         if not self._after_locked:
-            self._force_fit(self._view_after, arr)
+            self._img_after.setImage(arr)
+            self._vb_after.autoRange()
+            self._fit_imageview(self._vb_after, self._img_after)
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -425,9 +432,9 @@ class PreviewPanel(QWidget):
             self._roi.addScaleHandle([0, 0.5], [1, 0.5])  # left
             self._roi.addScaleHandle([1, 0.5], [0, 0.5])  # right
 
-            self._view_before.addItem(self._roi)
+            self._vb_before.addItem(self._roi)
             self._roi.setZValue(10)
-            self._view_after.addItem(self._roi_after)
+            self._vb_after.addItem(self._roi_after)
             
             self._roi.sigRegionChanged.connect(self._on_roi_changed)
 
@@ -502,8 +509,8 @@ class PreviewPanel(QWidget):
     def _clear_views(self) -> None:
         self._last_before = None
         self._after_locked = False
-        self._view_before.clear()
-        self._view_after.clear()
+        self._img_before.clear()
+        self._img_after.clear()
         # Reset ROI so stale range artefacts don't persist across files
         self._roi = None
         self._roi_after = None
@@ -539,17 +546,12 @@ class PreviewPanel(QWidget):
         # 4) Make a deep copy to detach from QImage memory
         return arr.copy()
 
-    def _force_fit(self, iv: pg.ImageView, arr: np.ndarray) -> None:
-        a = np.asarray(arr)
-        H, W = int(a.shape[0]), int(a.shape[1])
+    def _fit_imageview(self, vb: pg.ViewBox, img: pg.ImageItem) -> None:
+        try:
+            # get image bounds only (ignore ROI)
+            rect = img.mapRectToView(img.boundingRect())
 
-        iv.setImage(a, autoLevels=True)
-
-        vb = iv.getView()
-
-        # tvrdý reset všech range stavů
-        vb.enableAutoRange(x=False, y=False)
-        vb.setRange(xRange=(0, W), yRange=(0, H), padding=0)
-        vb.setLimits(xMin=0, xMax=W, yMin=0, yMax=H)
-
-        vb.setAspectLocked(True)
+            vb.setAspectLocked(True)
+            vb.setRange(rect, padding=0.02)
+        except Exception:
+            pass
