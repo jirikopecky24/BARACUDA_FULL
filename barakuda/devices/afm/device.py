@@ -316,8 +316,8 @@ class AfmPanel(QWidget):
 
         layout.addLayout(actions)
 
-        # Apply defaults + tooltips on init
         self._applying_defaults = True
+        self._auto_preview_armed = False  # armed after 1st manual Preview
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
         self._on_profile_changed() # Trigger initial hardware check
@@ -599,13 +599,24 @@ class AfmPanel(QWidget):
             return
         if not self.chk_auto_preview.isChecked():
             return
+        if not getattr(self, "_auto_preview_armed", False):
+            return
         self._auto_preview_timer.stop()
         self._auto_preview_timer.start()
 
     def _fire_auto_preview(self) -> None:
         """Called when debounce timer expires — emit the signal."""
-        if self.chk_auto_preview.isChecked():
+        if self.chk_auto_preview.isChecked() and self._auto_preview_armed:
             self.auto_preview_requested.emit()
+
+    def arm_auto_preview(self) -> None:
+        """Call after first manual Preview to enable auto-preview."""
+        self._auto_preview_armed = True
+
+    def disarm_auto_preview(self) -> None:
+        """Call on dataset change to reset auto-preview armed state."""
+        self._auto_preview_armed = False
+        self._auto_preview_timer.stop()
 
 
 def get_device_spec() -> DeviceSpec:

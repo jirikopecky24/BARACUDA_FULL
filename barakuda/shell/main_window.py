@@ -211,6 +211,9 @@ class ShellMainWindow(QMainWindow):
 
         # Auto-load AFM scale/metadata into panel on selection to avoid "unknown"
         if self._active_device_id == "afm" and self._device_panel is not None:
+            # Disarm auto-preview on new dataset item (re-armed on first manual Preview)
+            if hasattr(self._device_panel, "disarm_auto_preview"):
+                self._device_panel.disarm_auto_preview()  # type: ignore[attr-defined]
             if str(path).lower().endswith(".spm"):
                 try:
                     from barakuda.devices.afm.io.afmreader_loader import load_spm_height
@@ -598,6 +601,10 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log(f"Preview AFM: ROI not set → using full frame {roi[2]}×{roi[3]}")
 
         self.log_panel.log(f"Preview AFM: START | file={paths[0].name} | roi={roi}")
+
+        # Arm auto-preview after first manual Preview click
+        if hasattr(self._device_panel, "arm_auto_preview"):
+            self._device_panel.arm_auto_preview()  # type: ignore[attr-defined]
         
         # update UI state
         if hasattr(self._device_panel, "set_preview_state"):
