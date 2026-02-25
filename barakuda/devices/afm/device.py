@@ -455,10 +455,12 @@ class AfmPanel(QWidget):
             self.lbl_dev_info.setText(f"Device: Error\n{e}")
             self.lbl_dev_info.setStyleSheet("color: #d32f2f; font-size: 11px;")
 
-    # ── Defaults (high recall) ────────────────────────────────────
+    # ── Defaults (from kanalek-novy reference run) ──────────────────
     def apply_afm_defaults(self):
         # Compute default
         self.cb_profile.setCurrentText("Auto")
+        self.chk_fast_preview.setChecked(False)
+        self.cb_downscale.setCurrentText("1.0")
         # Preprocessing
         self.cb_invert.setChecked(False)
         self.sp_clip_low.setValue(1.0)
@@ -466,12 +468,12 @@ class AfmPanel(QWidget):
 
         # Cellpose
         self.cb_cp_model.setCurrentText("cyto3")
-        self.sp_cp_diam.setValue(0.0)       # auto
+        self.sp_cp_diam.setValue(18.0)      # fixed 18 px
         self.sp_cp_flow.setValue(0.4)
-        self.sp_cp_prob.setValue(-0.5)
+        self.sp_cp_prob.setValue(0.3)
 
-        # Rod filter (high recall)
-        self.cb_rods_only.setChecked(True)
+        # Rod filter
+        self.cb_rods_only.setChecked(False)
         self.sp_rods_min_major.setValue(12.0)
         self.sp_rods_min_ar.setValue(1.8)
         self.sp_rods_min_ecc.setValue(0.65)
