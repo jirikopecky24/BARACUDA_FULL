@@ -86,9 +86,11 @@ class PreviewPanel(QWidget):
 
         self._setting_slider: bool = False
 
-        # ROI
-        self._roi: pg.RectROI | None = None
-        self._roi_added: bool = False
+        # Per-device ROI (never shared between AFM and OT)
+        self._roi_afm: pg.RectROI | None = None
+        self._roi_ot: pg.RectROI | None = None
+        self._roi_afm_added: bool = False
+        self._roi_ot_added: bool = False
         self._roi_shape: tuple[int, int] | None = None  # (H,W)
         self._clamping_roi: bool = False
         self._syncing_roi: bool = False
@@ -295,10 +297,13 @@ class PreviewPanel(QWidget):
             return None
         return float(self._reader.meta.fps)
 
+    def _active_roi(self) -> pg.RectROI | None:
+        """Return the ROI for the current device_kind."""
+        return self._roi_afm if self._device_kind == "AFM" else self._roi_ot
+
     def get_roi_rect(self) -> tuple[int, int, int, int] | None:
-        if self._device_kind != "AFM":
-            return None
-        if self._roi is None or self._last_before is None:
+        roi = self._active_roi()
+        if roi is None or self._last_before is None:
             return None
 
         img = self._last_before  # shape (H, W) or (H, W, 3)
@@ -306,7 +311,7 @@ class PreviewPanel(QWidget):
 
         # IMPORTANT: use getArraySlice via the BEFORE ImageItem
         # so pyqtgraph handles all coordinate transforms internally.
-        sl, _ = self._roi.getArraySlice(img, self._img_before)
+        sl, _ = roi.getArraySlice(img, self._img_before)
 
         y0, y1 = int(sl[0].start), int(sl[0].stop)
         x0, x1 = int(sl[1].start), int(sl[1].stop)
@@ -412,43 +417,51 @@ class PreviewPanel(QWidget):
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
-        Create ROI once and ensure it stays inside image bounds.
-        IMPORTANT: Add 4 corner scale handles so ROI is easy to reshape.
-        Only created for AFM panels.
+        Create per-device ROI once and ensure it stays inside image bounds.
+        AFM: 4 corner scale handles (no translate).
+        OT:  4 corner scale handles + center translate handle.
         """
-        if self._device_kind != "AFM":
-            return
-        if self._roi is None:
-            # Yellow ROI frame
-            pen = pg.mkPen((255, 255, 0), width=2)
-            
-            # BEFORE ROI (fully interactive)
-            self._roi = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
-            self._roi.addScaleHandle([0, 0], [1, 1])
-            self._roi.addScaleHandle([1, 0], [0, 1])
-            self._roi.addScaleHandle([0, 1], [1, 0])
-            self._roi.addScaleHandle([1, 1], [0, 0])
-
-
-            if not self._roi_added:
-                self._vb_before.addItem(self._roi)
-                self._roi.setZValue(10)
-                self._roi_added = True
-            
-            self._roi.sigRegionChanged.connect(self._on_roi_changed)
+        if self._device_kind == "AFM":
+            if self._roi_afm is None:
+                pen = pg.mkPen((255, 255, 0), width=2)
+                self._roi_afm = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
+                self._roi_afm.addScaleHandle([0, 0], [1, 1])
+                self._roi_afm.addScaleHandle([1, 0], [0, 1])
+                self._roi_afm.addScaleHandle([0, 1], [1, 0])
+                self._roi_afm.addScaleHandle([1, 1], [0, 0])
+                if not self._roi_afm_added:
+                    self._vb_before.addItem(self._roi_afm)
+                    self._roi_afm.setZValue(10)
+                    self._roi_afm_added = True
+                self._roi_afm.sigRegionChanged.connect(self._on_roi_changed)
+        else:
+            # OT: corners + center translate
+            if self._roi_ot is None:
+                pen = pg.mkPen((0, 200, 255), width=2)  # cyan to distinguish from AFM
+                self._roi_ot = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
+                self._roi_ot.addScaleHandle([0, 0], [1, 1])
+                self._roi_ot.addScaleHandle([1, 0], [0, 1])
+                self._roi_ot.addScaleHandle([0, 1], [1, 0])
+                self._roi_ot.addScaleHandle([1, 1], [0, 0])
+                self._roi_ot.addTranslateHandle([0.5, 0.5])
+                if not self._roi_ot_added:
+                    self._vb_before.addItem(self._roi_ot)
+                    self._roi_ot.setZValue(10)
+                    self._roi_ot_added = True
+                self._roi_ot.sigRegionChanged.connect(self._on_roi_changed)
 
         self._roi_shape = (int(H), int(W))
-        self._clamp_roi_to_image(self._roi)
+        self._clamp_roi_to_image(self._active_roi())
 
     def _on_roi_changed(self) -> None:
-        self._clamp_roi_to_image(self._roi)
+        self._clamp_roi_to_image(self._active_roi())
         self._refresh_info_block()
 
 
 
     def _clamp_roi_to_image(self, target_roi=None) -> None:
         if target_roi is None:
-            target_roi = self._roi
+            target_roi = self._active_roi()
         if target_roi is None or self._roi_shape is None or self._clamping_roi:
             return
         h, w = self._roi_shape
@@ -495,11 +508,17 @@ class PreviewPanel(QWidget):
         self._after_locked = False
         self._img_before.clear()
         self._img_after.clear()
-        # Reset ROI so stale range artefacts don't persist across files
-        if self._roi is not None and self._roi_added:
-            self._vb_before.removeItem(self._roi)
-        self._roi = None
-        self._roi_added = False
+        # Reset the active device's ROI
+        if self._device_kind == "AFM":
+            if self._roi_afm is not None and self._roi_afm_added:
+                self._vb_before.removeItem(self._roi_afm)
+            self._roi_afm = None
+            self._roi_afm_added = False
+        else:
+            if self._roi_ot is not None and self._roi_ot_added:
+                self._vb_before.removeItem(self._roi_ot)
+            self._roi_ot = None
+            self._roi_ot_added = False
         self._roi_shape = None
 
     def _load_image_qt(self, path: Path) -> np.ndarray | None:
