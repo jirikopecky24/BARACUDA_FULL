@@ -26,10 +26,12 @@ class PreviewPanel(QWidget):
         self._view_before = pg.ImageView()
         self._view_before.ui.roiBtn.hide()
         self._view_before.ui.menuBtn.hide()
+        self._view_before.ui.histogram.hide()
 
         self._view_after = pg.ImageView()
         self._view_after.ui.roiBtn.hide()
         self._view_after.ui.menuBtn.hide()
+        self._view_after.ui.histogram.hide()
 
         self._tabs.addTab(self._view_before, "BEFORE")
         self._tabs.addTab(self._view_after, "AFTER")
@@ -228,6 +230,7 @@ class PreviewPanel(QWidget):
         self._after_locked = True
         arr_pg = arr.transpose((1, 0, 2)) if arr.ndim == 3 else arr.transpose()
         self._view_after.setImage(arr_pg, autoLevels=True, autoRange=False)
+        self._fit_views(arr.shape[0], arr.shape[1])
 
     def set_after_from_file(self, path_str: str) -> bool:
         """Load an image via Qt and show it on AFTER tab.
@@ -392,16 +395,14 @@ class PreviewPanel(QWidget):
         self._view_before.setImage(arr_pg, autoLevels=True, autoRange=False)
         if not self._after_locked:
             self._view_after.setImage(arr_pg, autoLevels=True, autoRange=False)
-            
-        # Ensure the viewboxes actually zoom to fit explicitly on first load
-        if is_initial_load:
-            from PyQt6.QtCore import QTimer
-            def _fit():
-                self._view_before.getView().autoRange(padding=0.0)
-                self._view_after.getView().autoRange(padding=0.0)
-                
-            # A 50ms delay guarantees the UI layout has expanded the widget from 0x0
-            QTimer.singleShot(50, _fit)
+
+        # Always fit views to image dimensions
+        H, W = arr.shape[0], arr.shape[1]
+        self._fit_views(H, W)
+
+        # Deferred fit for when widget hasn't received its final size yet
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self._fit_views(H, W))
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -516,6 +517,10 @@ class PreviewPanel(QWidget):
         self._after_locked = False
         self._view_before.clear()
         self._view_after.clear()
+        # Reset ROI so stale range artefacts don't persist across files
+        self._roi = None
+        self._roi_after = None
+        self._roi_shape = None
 
     def _load_image_qt(self, path: Path) -> np.ndarray | None:
         img = QImage(str(path))
@@ -546,3 +551,13 @@ class PreviewPanel(QWidget):
         
         # 4) Make a deep copy to detach from QImage memory
         return arr.copy()
+
+    def _fit_views(self, H: int, W: int) -> None:
+        """Reset both BEFORE and AFTER ViewBoxes to fit the image (0..W, 0..H)."""
+        for v in (self._view_before, self._view_after):
+            try:
+                vb = v.getView()  # ViewBox
+                vb.setRange(xRange=(0, W), yRange=(0, H), padding=0.0)
+                vb.autoRange(padding=0.0)
+            except Exception:
+                pass
