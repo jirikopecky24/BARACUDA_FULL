@@ -25,11 +25,13 @@ class PreviewPanel(QWidget):
 
         self._view_before = pg.GraphicsLayoutWidget()
         self._vb_before = self._view_before.addViewBox(lockAspect=True)
+        self._vb_before.invertY(True)
         self._img_before = pg.ImageItem()
         self._vb_before.addItem(self._img_before)
 
         self._view_after = pg.GraphicsLayoutWidget()
         self._vb_after = self._view_after.addViewBox(lockAspect=True)
+        self._vb_after.invertY(True)
         self._img_after = pg.ImageItem()
         self._vb_after.addItem(self._img_after)
 
@@ -293,25 +295,26 @@ class PreviewPanel(QWidget):
         return float(self._reader.meta.fps)
 
     def get_roi_rect(self) -> tuple[int, int, int, int] | None:
-        if self._roi is None or self._roi_shape is None:
+        if self._roi is None or self._last_before is None:
             return None
 
-        h, w = self._roi_shape
-        
-        pos = self._roi.pos()
-        size = self._roi.size()
-        
-        x = int(round(float(pos.x())))
-        y = int(round(float(pos.y())))
-        rw = int(round(float(size.x())))
-        rh = int(round(float(size.y())))
+        img = self._last_before  # shape (H, W) or (H, W, 3)
+        H, W = img.shape[:2]
 
-        x = max(0, min(x, w - 1))
-        y = max(0, min(y, h - 1))
-        rw = max(1, min(rw, w - x))
-        rh = max(1, min(rh, h - y))
+        # IMPORTANT: use getArraySlice via the BEFORE ImageItem
+        # so pyqtgraph handles all coordinate transforms internally.
+        sl, _ = self._roi.getArraySlice(img, self._img_before)
 
-        return (x, y, rw, rh)
+        y0, y1 = int(sl[0].start), int(sl[0].stop)
+        x0, x1 = int(sl[1].start), int(sl[1].stop)
+
+        # clamp safety
+        x0 = max(0, min(x0, W - 1))
+        x1 = max(1, min(x1, W))
+        y0 = max(0, min(y0, H - 1))
+        y1 = max(1, min(y1, H))
+
+        return (x0, y0, x1 - x0, y1 - y0)
 
     # ---------------- slider ----------------
 
@@ -415,6 +418,11 @@ class PreviewPanel(QWidget):
             
             # BEFORE ROI (fully interactive)
             self._roi = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
+            self._roi.addScaleHandle([0, 0], [1, 1])
+            self._roi.addScaleHandle([1, 0], [0, 1])
+            self._roi.addScaleHandle([0, 1], [1, 0])
+            self._roi.addScaleHandle([1, 1], [0, 0])
+
 
             if not self._roi_added:
                 self._vb_before.addItem(self._roi)
