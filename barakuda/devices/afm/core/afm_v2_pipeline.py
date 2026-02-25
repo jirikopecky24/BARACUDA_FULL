@@ -60,6 +60,7 @@ class AfmV2Params:
 
     # overlay
     ellipse_thickness_px: int = 2
+    ellipse_alpha: float = 0.6
 
 
 # ── Internal helpers ─────────────────────────────────────────────────

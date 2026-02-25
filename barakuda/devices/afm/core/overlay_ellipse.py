@@ -13,6 +13,7 @@ def render_ellipse_overlay(
     base_gray_or_rgb: np.ndarray,
     rod_table: dict,
     thickness_px: int = 2,
+    ellipse_alpha: float = 0.6,
 ) -> np.ndarray:
     """Draw yellow ellipse perimeters for each row in rod_table.
 
@@ -25,6 +26,9 @@ def render_ellipse_overlay(
         major_axis_px, minor_axis_px, orientation_rad.
     thickness_px : int
         Stroke thickness in pixels (>= 1).
+    ellipse_alpha : float
+        Opacity of the yellow ellipse strokes [0.0 .. 1.0].
+        1.0 = fully opaque (legacy), 0.6 = recommended Nature-grade.
 
     Returns
     -------
@@ -88,7 +92,9 @@ def render_ellipse_overlay(
     if thickness_px > 1:
         ell = morphology.binary_dilation(ell, morphology.disk(thickness_px - 1))
 
-    # Paint yellow
-    overlay[ell] = (255, 255, 0)
+    # Alpha-blend yellow onto base
+    alpha = float(np.clip(ellipse_alpha, 0.0, 1.0))
+    yellow = np.array([255, 255, 0], dtype=np.float32)
+    overlay[ell] = (alpha * yellow + (1.0 - alpha) * overlay[ell].astype(np.float32)).astype(np.uint8)
 
     return overlay

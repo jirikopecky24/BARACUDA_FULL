@@ -130,6 +130,7 @@ class AfmPreviewWorker(QObject):
                 rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
                 rods_min_area_px=_i("rods_min_area_px", 8),
                 ellipse_thickness_px=_i("ellipse_thickness_px", 2),
+                ellipse_alpha=_f("ellipse_alpha", 0.6),
             )
 
             # ── Data Prep (5%) ──────────────────────────────
@@ -194,7 +195,9 @@ class AfmPreviewWorker(QObject):
             full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
             full_img8 = (full_norm * 255.0).astype(np.uint8)
             overlay = render_ellipse_overlay(
-                full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px)
+                full_img8, rod_table,
+                thickness_px=int(p_v2.ellipse_thickness_px),
+                ellipse_alpha=float(p_v2.ellipse_alpha),
             )
 
             if not self._is_cancelled:

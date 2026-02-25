@@ -1200,6 +1200,7 @@ class BatchController:
                     rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
                     rods_min_area_px=_i("rods_min_area_px", 8),
                     ellipse_thickness_px=_i("ellipse_thickness_px", 2),
+                    ellipse_alpha=_f("ellipse_alpha", 0.6),
                 )
 
                 # --- RUN V2 PIPELINE ---
@@ -1252,7 +1253,7 @@ class BatchController:
                     from barakuda.devices.afm.core.afm_v2_pipeline import _normalize
                     full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
                     full_img8 = (full_norm * 255.0).astype(np.uint8)
-                    overlay = render_ellipse_overlay(full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px))
+                    overlay = render_ellipse_overlay(full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px), ellipse_alpha=float(p_v2.ellipse_alpha))
                     
                     import cv2
                     cv2.rectangle(overlay, (x0, y0), (x0+w0, y0+h0), (255, 255, 0), max(1, int(p_v2.ellipse_thickness_px)))
@@ -1380,6 +1381,7 @@ class BatchController:
             rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
             rods_min_area_px=_i("rods_min_area_px", 8),
             ellipse_thickness_px=_i("ellipse_thickness_px", 2),
+            ellipse_alpha=_f("ellipse_alpha", 0.6),
         )
 
         res = run_afm_v2(roi_img, p_v2)
@@ -1388,7 +1390,7 @@ class BatchController:
         n_rods = len(rod_table.get("label", []))
 
         # Overlay: single call to render_ellipse_overlay (no inline drawing)
-        overlay = render_ellipse_overlay(roi_img, rod_table, thickness_px=int(p_v2.ellipse_thickness_px))
+        overlay = render_ellipse_overlay(roi_img, rod_table, thickness_px=int(p_v2.ellipse_thickness_px), ellipse_alpha=float(p_v2.ellipse_alpha))
 
         return {"overlay": overlay, "n_rods": n_rods}
 

@@ -228,6 +228,18 @@ class AfmPanel(QWidget):
         self.sp_min_area.setValue(8)
         form_rod.addRow("Min area (px)", self.sp_min_area)
 
+        preset_row = QHBoxLayout()
+        self.btn_preset_recall = QPushButton("High Recall")
+        self.btn_preset_recall.setToolTip("min_major=10, min_ar=1.6, min_ecc=0.60, min_area=6")
+        self.btn_preset_recall.clicked.connect(self._apply_preset_high_recall)
+        preset_row.addWidget(self.btn_preset_recall)
+
+        self.btn_preset_nature = QPushButton("Nature Overlay")
+        self.btn_preset_nature.setToolTip("min_major=12, min_ar=1.8, min_ecc=0.65, min_area=8")
+        self.btn_preset_nature.clicked.connect(self._apply_preset_nature)
+        preset_row.addWidget(self.btn_preset_nature)
+        form_rod.addRow(preset_row)
+
         scroll_layout.addLayout(form_rod)
 
         # ── Overlay ───────────────────────────────────────────────
@@ -242,6 +254,14 @@ class AfmPanel(QWidget):
         self.sp_ellipse_thick.setSingleStep(1)
         self.sp_ellipse_thick.setValue(2)
         form_ov.addRow("Ellipse thickness (px)", self.sp_ellipse_thick)
+
+        self.sp_ellipse_alpha = QDoubleSpinBox()
+        self.sp_ellipse_alpha.setLocale(self._loc)
+        self.sp_ellipse_alpha.setRange(0.20, 1.00)
+        self.sp_ellipse_alpha.setDecimals(2)
+        self.sp_ellipse_alpha.setSingleStep(0.05)
+        self.sp_ellipse_alpha.setValue(0.60)
+        form_ov.addRow("Ellipse alpha", self.sp_ellipse_alpha)
 
         ov_info = QLabel("Overlay renders ellipse fit from rod_table (no boundaries).")
         ov_info.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
@@ -429,6 +449,7 @@ class AfmPanel(QWidget):
 
         # Overlay
         self.sp_ellipse_thick.setValue(2)
+        self.sp_ellipse_alpha.setValue(0.60)
 
     # ── Tooltips ──────────────────────────────────────────────────
     def apply_afm_tooltips(self):
@@ -477,6 +498,11 @@ class AfmPanel(QWidget):
         self.sp_ellipse_thick.setToolTip(
             "Ellipse thickness [px].\n1 = thin, 2 = recommended, 3 = thick."
         )
+        self.sp_ellipse_alpha.setToolTip(
+            "Ellipse alpha [0.2–1.0].\n"
+            "0.6 = semi-transparent (Nature-grade).\n"
+            "1.0 = fully opaque (legacy)."
+        )
 
     # ── Parameter collection ──────────────────────────────────────
     def get_afm_params(self) -> dict:
@@ -514,7 +540,21 @@ class AfmPanel(QWidget):
             "rods_min_eccentricity": float(self.sp_rods_min_ecc.value()),
             "rods_min_area_px": int(self.sp_min_area.value()),
             "ellipse_thickness_px": int(self.sp_ellipse_thick.value()),
+            "ellipse_alpha": float(self.sp_ellipse_alpha.value()),
         }
+
+    # ── Preset helpers ─────────────────────────────────────────────
+    def _apply_preset_high_recall(self):
+        self.sp_rods_min_major.setValue(10.0)
+        self.sp_rods_min_ar.setValue(1.60)
+        self.sp_rods_min_ecc.setValue(0.60)
+        self.sp_min_area.setValue(6)
+
+    def _apply_preset_nature(self):
+        self.sp_rods_min_major.setValue(12.0)
+        self.sp_rods_min_ar.setValue(1.80)
+        self.sp_rods_min_ecc.setValue(0.65)
+        self.sp_min_area.setValue(8)
 
 
 def get_device_spec() -> DeviceSpec:
