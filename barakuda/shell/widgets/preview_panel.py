@@ -259,6 +259,11 @@ class PreviewPanel(QWidget):
     def get_before_image(self) -> np.ndarray | None:
         return self._last_before
 
+    def get_image_size(self) -> tuple[int, int] | None:
+        if self._last_before is not None:
+            return (self._last_before.shape[0], self._last_before.shape[1])
+        return None
+
     def get_current_frame_index(self) -> int:
         return int(self._current_frame_index)
 
@@ -291,17 +296,14 @@ class PreviewPanel(QWidget):
             return None
 
         h, w = self._roi_shape
-        # NOTE: pg.RectROI pos() is usually in the coordinate system of its parent 
-        # (which is the ViewBox or ImageItem). But to be perfectly safe, we map it
-        # to the image item's coordinate system.
         
-        # map rect from ROI local (bounds) to ImageItem local
-        mapped_rect = self._img_before.mapRectFromItem(self._roi, self._roi.boundingRect())
+        pos = self._roi.pos()
+        size = self._roi.size()
         
-        x = int(round(float(mapped_rect.x())))
-        y = int(round(float(mapped_rect.y())))
-        rw = int(round(float(mapped_rect.width())))
-        rh = int(round(float(mapped_rect.height())))
+        x = int(round(float(pos.x())))
+        y = int(round(float(pos.y())))
+        rw = int(round(float(size.x())))
+        rh = int(round(float(size.y())))
 
         x = max(0, min(x, w - 1))
         y = max(0, min(y, h - 1))

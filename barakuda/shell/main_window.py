@@ -571,6 +571,14 @@ class ShellMainWindow(QMainWindow):
 
         self.log_panel.log(f"Preview AFM: START | file={paths[0].name} | roi={roi}")
         
+        # Add requested debug log
+        img_size = self.preview.get_image_size() if hasattr(self.preview, "get_image_size") else None
+        if img_size:
+            H, W = int(img_size[0]), int(img_size[1])
+            self.log_panel.log(f"roi={roi}")
+            self.log_panel.log(f"img_shape=({H},{W})")
+            self.log_panel.log(f"crop_shape=({roi[3]},{roi[2]})")
+        
         # update UI state
         if hasattr(self._device_panel, "set_preview_state"):
             self._device_panel.set_preview_state(True)  # type: ignore[attr-defined]
