@@ -15,8 +15,9 @@ from barakuda.core.video_reader import VideoReader
 
 
 class PreviewPanel(QWidget):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, device_kind: str = "AFM") -> None:
         super().__init__(parent)
+        self._device_kind = device_kind
 
         self._title = QLabel("Preview")
         self._title.setStyleSheet("font-weight: 600;")
@@ -295,6 +296,8 @@ class PreviewPanel(QWidget):
         return float(self._reader.meta.fps)
 
     def get_roi_rect(self) -> tuple[int, int, int, int] | None:
+        if self._device_kind != "AFM":
+            return None
         if self._roi is None or self._last_before is None:
             return None
 
@@ -411,7 +414,10 @@ class PreviewPanel(QWidget):
         """
         Create ROI once and ensure it stays inside image bounds.
         IMPORTANT: Add 4 corner scale handles so ROI is easy to reshape.
+        Only created for AFM panels.
         """
+        if self._device_kind != "AFM":
+            return
         if self._roi is None:
             # Yellow ROI frame
             pen = pg.mkPen((255, 255, 0), width=2)

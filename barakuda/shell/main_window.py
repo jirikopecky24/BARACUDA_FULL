@@ -6,7 +6,7 @@ from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget
+    QHBoxLayout, QDockWidget, QStackedWidget
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -29,7 +29,8 @@ class ShellMainWindow(QMainWindow):
         self.resize(1400, 860)
 
         self.dataset = DatasetPanel()
-        self.preview = PreviewPanel()
+        self._afm_preview = PreviewPanel(device_kind="AFM")
+        self._ot_preview = PreviewPanel(device_kind="OT")
         self.log_panel = LogPanel()
 
         self.dataset.item_selected.connect(self._on_item_selected)
@@ -39,6 +40,7 @@ class ShellMainWindow(QMainWindow):
         self._active_device_id: str = ""
         self._device_panel: Optional[QWidget] = None
 
+        # Per-device preview thread/worker (never shared)
         self._afm_preview_thread = None
         self._afm_preview_worker = None
 
@@ -49,13 +51,18 @@ class ShellMainWindow(QMainWindow):
         self._device_container_layout = QVBoxLayout(self._device_container)
         self._device_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        # ---------------- Central (preview only) ----------------
+        # ---------------- Central (stacked preview panels) ----------------
+        self._preview_stack = QStackedWidget()
+        self._preview_stack.addWidget(self._afm_preview)
+        self._preview_stack.addWidget(self._ot_preview)
+        self._preview_stack.setCurrentWidget(self._afm_preview)
+
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        root_layout.addWidget(self.preview, 1)
+        root_layout.addWidget(self._preview_stack, 1)
         self.setCentralWidget(root)
 
         # ---------------- Method dock (above Dataset) ----------------
@@ -150,6 +157,15 @@ class ShellMainWindow(QMainWindow):
 
         self.log_panel.log("Shell started.")
         self._set_device_by_index(0)
+
+    # -- active preview routing (per-device) --
+
+    @property
+    def preview(self) -> PreviewPanel:
+        """Return the preview panel for the currently active device."""
+        if self._active_device_id == "afm":
+            return self._afm_preview
+        return self._ot_preview
 
     # ---------------- dataset -> preview ----------------
 
@@ -248,6 +264,12 @@ class ShellMainWindow(QMainWindow):
                 self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
 
         self.log_panel.log(f"Device selected: {spec.display_name}")
+
+        # Switch the preview stack to the correct panel
+        if self._active_device_id == "afm":
+            self._preview_stack.setCurrentWidget(self._afm_preview)
+        else:
+            self._preview_stack.setCurrentWidget(self._ot_preview)
 
         # Top-bar method selector (device-specific)
         if self._active_device_id == "optical_tweezers":
@@ -519,7 +541,7 @@ class ShellMainWindow(QMainWindow):
             after_path = getattr(self.batch, "last_after_overlay_path", None)
             if after_path:
                 try:
-                    self.preview.set_after_from_file(after_path)
+                    self._ot_preview.set_after_from_file(after_path)
                 except Exception:
                     pass
 
@@ -632,11 +654,11 @@ class ShellMainWindow(QMainWindow):
             self.batch._last_afm_loader_meta = loader_meta
              
         if overlay_rgb is not None:
-            self.preview.set_after_image(overlay_rgb)
+            self._afm_preview.set_after_image(overlay_rgb)
         else:
             self.log_panel.log("Preview AFM: overlay is None, AFTER tab will be empty.")
 
-        self.preview.show_after_tab()
+        self._afm_preview.show_after_tab()
         self.log_panel.log(f"Preview AFM: DONE (n_rods={n_rods})")
 
         if hasattr(self._device_panel, "update_loader_info"):
