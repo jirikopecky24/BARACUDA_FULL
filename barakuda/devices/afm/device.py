@@ -39,7 +39,7 @@ class AfmPanel(QWidget):
         top_bar = QVBoxLayout()
         top_bar.setContentsMargins(8, 6, 8, 2)
 
-        title = QLabel("AFM — Cellpose V2 Rod-Fit Pipeline")
+        title = QLabel("AFM Analysis Pipeline")
         title.setStyleSheet("font-weight: 600; font-size: 13px;")
         top_bar.addWidget(title)
 
@@ -51,6 +51,22 @@ class AfmPanel(QWidget):
             warn.setStyleSheet("color: #d32f2f; font-weight: 600; padding: 6px;")
             warn.setWordWrap(True)
             top_bar.addWidget(warn)
+
+        # Method selector
+        from PyQt6.QtWidgets import QFormLayout as _QFL
+        method_row = _QFL()
+        self.cb_method = QComboBox()
+        self.cb_method.addItem("Rod Bacteria (Cellpose + Rod Fit)", "rod_bacteria")
+        self.cb_method.addItem("Hydrogel Porosity (coming soon)", "hydrogel_porosity")
+        # Disable hydrogel (index 1) — not yet implemented
+        model = self.cb_method.model()
+        if model is not None:
+            item = model.item(1)
+            if item is not None:
+                item.setEnabled(False)
+        self.cb_method.setCurrentIndex(0)
+        method_row.addRow("Method:", self.cb_method)
+        top_bar.addLayout(method_row)
 
         layout.addLayout(top_bar)
 
@@ -286,7 +302,7 @@ class AfmPanel(QWidget):
         actions = QVBoxLayout()
         actions.setContentsMargins(8, 4, 8, 6)
 
-        roi_hint = QLabel("ROI z Preview se použije jako výpočetní oblast.")
+        roi_hint = QLabel("Preview ROI defines the computation region.")
         roi_hint.setStyleSheet("color: #888; font-size: 11px;")
         roi_hint.setWordWrap(True)
         actions.addWidget(roi_hint)
@@ -310,7 +326,7 @@ class AfmPanel(QWidget):
         self.btn_reset.clicked.connect(self.apply_afm_defaults)
         actions.addWidget(self.btn_reset)
 
-        self.btn_run = QPushButton("Spustit AFM Batch")
+        self.btn_run = QPushButton("Run AFM Batch")
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         actions.addWidget(self.btn_run)
 
@@ -555,6 +571,7 @@ class AfmPanel(QWidget):
             prof = "auto"
 
         return {
+            "afm_method": str(self.cb_method.currentData() or "rod_bacteria"),
             "compute_profile": prof,
             "preview_fast_mode": bool(self.chk_fast_preview.isChecked()),
             "preview_downscale": float(self.cb_downscale.currentText()),

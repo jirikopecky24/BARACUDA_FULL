@@ -32,7 +32,7 @@ class DatasetPanel(QWidget):
         title = QLabel("Dataset")
         title.setStyleSheet("font-weight: 600;")
 
-        # TLAČÍTKA (pořadí: Import -> Select All -> Remove -> Clear)
+        # Buttons (order: Import -> Select All -> Remove -> Clear)
         self._btn_import = QPushButton("Import Files…")
         self._btn_import.clicked.connect(self._on_import)
 
@@ -40,11 +40,11 @@ class DatasetPanel(QWidget):
         self._btn_select_all.clicked.connect(self.select_all)
 
         self._btn_remove_selected = QPushButton("Remove Selected")
-        self._btn_remove_selected.setToolTip("Odstraní označené položky ze seznamu (nesahá na disk)")
+        self._btn_remove_selected.setToolTip("Remove selected items from list (does not delete files from disk)")
         self._btn_remove_selected.clicked.connect(self.remove_selected)
 
         self._btn_clear_list = QPushButton("Clear List")
-        self._btn_clear_list.setToolTip("Vymaže celý seznam importovaných položek (nesahá na disk)")
+        self._btn_clear_list.setToolTip("Clear the entire imported file list (does not delete files from disk)")
         self._btn_clear_list.clicked.connect(self.clear_list)
 
         header = QHBoxLayout()
@@ -103,15 +103,15 @@ class DatasetPanel(QWidget):
         selected = self._list.selectedItems()
         return [Path(it.data(Qt.ItemDataRole.UserRole)) for it in selected]
 
-    # --- NOVÉ: mazání z listu (bez smazání souborů na disku) ---
+    # --- List item removal (files on disk are not affected) ---
 
     def remove_selected(self) -> None:
-        """Odstraní vybrané položky ze seznamu (nesahá na disk)."""
+        """Remove selected items from the list (does not delete files from disk)."""
         selected = self._list.selectedItems()
         if not selected:
             return
 
-        # postup od konce kvůli indexům
+        # iterate from end to keep indices stable
         for it in selected:
             key = it.data(Qt.ItemDataRole.UserRole)
 
@@ -120,16 +120,16 @@ class DatasetPanel(QWidget):
 
             self._path_to_item.pop(key, None)
 
-            # smaž i z _items
+            # also remove from _items
             self._items = [d for d in self._items if str(d.path) != key]
 
     def clear_list(self) -> None:
-        """Vymaže celý seznam importovaných položek (nesahá na disk)."""
+        """Clear the entire imported file list (does not delete files from disk)."""
         self._list.clear()
         self._items.clear()
         self._path_to_item.clear()
 
-    # --- STATUS API (volá MainWindow) ---
+    # --- STATUS API (called by MainWindow) ---
 
     def set_status(self, path: Path, status: str) -> None:
         """
@@ -153,7 +153,7 @@ class DatasetPanel(QWidget):
         }.get(status, "•")
         return f"{icon} {name}"
 
-    # --- GATE RESULT API (volá MainWindow) ---
+    # --- GATE RESULT API (called by MainWindow) ---
 
     def _find_item_by_path(self, path: Path):
         p = str(Path(path))

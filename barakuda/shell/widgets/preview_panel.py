@@ -64,7 +64,7 @@ class PreviewPanel(QWidget):
 
         self._video_row.setVisible(False)
 
-        self._info = QLabel("Vyber soubor vlevo.")
+        self._info = QLabel("Select a file on the left.")
         self._info.setStyleSheet("color: #666;")
         self._info.setWordWrap(True)
 
@@ -161,7 +161,7 @@ class PreviewPanel(QWidget):
             except Exception as e:
                 self._clear_views()
                 self._video_row.setVisible(False)
-                self._info.setText(f"{path}\n\nVIDEO: chyba načtení\n{e!r}")
+                self._info.setText(f"{path}\n\nVIDEO: load error\n{e!r}")
             return
 
         self._video_row.setVisible(False)
@@ -210,14 +210,14 @@ class PreviewPanel(QWidget):
                 return
             except Exception as e:
                 self._clear_views()
-                self._info.setText(f"{path}\n\nSPM: chyba načtení\n{e!r}")
+                self._info.setText(f"{path}\n\nSPM: load error\n{e!r}")
                 return
 
         # --- Standard image file: load via Qt QImage ---
         arr = self._load_image_qt(path)
         if arr is None:
             self._clear_views()
-            self._info.setText(f"{path}\n\nNelze zobrazit jako obrázek (Qt QImage to nenačetl).")
+            self._info.setText(f"{path}\n\nCannot display as image (Qt QImage failed to load).")
             return
 
         self._current_frame_index = 0
@@ -351,7 +351,7 @@ class PreviewPanel(QWidget):
                 self._refresh_info_block()
 
         except Exception as e:
-            self._info.setText(f"{self._video_path}\n\nVIDEO: chyba při čtení snímku\n{e!r}")
+            self._info.setText(f"{self._video_path}\n\nVIDEO: frame read error\n{e!r}")
 
     # ---------------- internal UI helpers ----------------
 
