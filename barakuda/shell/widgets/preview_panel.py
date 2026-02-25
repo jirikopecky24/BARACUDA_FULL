@@ -389,17 +389,19 @@ class PreviewPanel(QWidget):
         # PyQtGraph expects (W, H, 3) or (W, H), otherwise images are displayed transposed.
         arr_pg = arr.transpose((1, 0, 2)) if arr.ndim == 3 else arr.transpose()
         
-        self._view_before.setImage(arr_pg, autoLevels=True, autoRange=is_initial_load)
+        self._view_before.setImage(arr_pg, autoLevels=True, autoRange=False)
         if not self._after_locked:
-            self._view_after.setImage(arr_pg, autoLevels=True, autoRange=is_initial_load)
+            self._view_after.setImage(arr_pg, autoLevels=True, autoRange=False)
             
         # Ensure the viewboxes actually zoom to fit explicitly on first load
         if is_initial_load:
             from PyQt6.QtCore import QTimer
             def _fit():
-                self._view_before.getView().autoRange()
-                self._view_after.getView().autoRange()
-            QTimer.singleShot(0, _fit)
+                self._view_before.getView().autoRange(padding=0.0)
+                self._view_after.getView().autoRange(padding=0.0)
+                
+            # A 50ms delay guarantees the UI layout has expanded the widget from 0x0
+            QTimer.singleShot(50, _fit)
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -414,21 +416,13 @@ class PreviewPanel(QWidget):
             self._roi = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
 
             # AFTER ROI (locked, display-only, tracks BEFORE)
-            self._roi_after = pg.RectROI(
-                [W * 0.25, H * 0.25], 
-                [W * 0.5, H * 0.5], 
-                pen=pen,
-                movable=False,
-                resizable=False,
-                rotatable=False,
-                hoverPen=pen,
-                handlePen=pen,
-                handleHoverPen=pen
-            )
-            self._roi_after.translatable = False
+            from PyQt6.QtWidgets import QGraphicsRectItem
+            from PyQt6.QtWidgets import QGraphicsItem
+            
+            self._roi_after = QGraphicsRectItem(0, 0, W * 0.25, H * 0.25)
+            self._roi_after.setPen(pen)
             
             # Make AFTER ROI completely non-interactive
-            from PyQt6.QtWidgets import QGraphicsItem
             self._roi_after.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             self._roi_after.setAcceptHoverEvents(False)
             self._roi_after.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
@@ -458,8 +452,13 @@ class PreviewPanel(QWidget):
             return
         self._syncing_roi = True
         try:
-            target.setPos(source.pos(), update=False)
-            target.setSize(source.size(), update=False)
+            pos = source.pos()
+            size = source.size()
+            
+            # target is a QGraphicsRectItem, source is pg.RectROI
+            # To draw target, we set its internal rect from (0,0) to size and position it at pos
+            target.setRect(0, 0, float(size.x()), float(size.y()))
+            target.setPos(float(pos.x()), float(pos.y()))
         finally:
             self._syncing_roi = False
 
