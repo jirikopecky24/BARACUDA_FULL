@@ -228,9 +228,9 @@ class PreviewPanel(QWidget):
 
     def set_after_image(self, arr: np.ndarray) -> None:
         self._after_locked = True
-        arr_pg = arr.transpose((1, 0, 2)) if arr.ndim == 3 else arr.transpose()
-        self._view_after.setImage(arr_pg, autoLevels=True, autoRange=False)
-        QTimer.singleShot(0, self._autofit_current)
+        self._set_iv(self._view_after, arr)
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self._view_after.view.autoRange(padding=0.0))
 
     def set_after_from_file(self, path_str: str) -> bool:
         """Load an image via Qt and show it on AFTER tab.
@@ -327,9 +327,9 @@ class PreviewPanel(QWidget):
             self._current_frame_index = i
             self._last_before = frame_rgb
             
-            arr_pg = frame_rgb.transpose((1, 0, 2)) if frame_rgb.ndim == 3 else frame_rgb.transpose()
-            self._view_before.setImage(arr_pg, autoLevels=True, autoRange=False)
-            QTimer.singleShot(0, self._autofit_current)
+            self._set_iv(self._view_before, frame_rgb)
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._view_before.view.autoRange(padding=0.0))
 
             self._ensure_roi_for_image(frame_rgb.shape[0], frame_rgb.shape[1])
             self._update_video_labels(i)
@@ -390,13 +390,13 @@ class PreviewPanel(QWidget):
         arr = np.asarray(arr)
         self._last_before = arr
         
-        # PyQtGraph expects (W, H, 3) or (W, H), otherwise images are displayed transposed.
-        arr_pg = arr.transpose((1, 0, 2)) if arr.ndim == 3 else arr.transpose()
-        
-        self._view_before.setImage(arr_pg, autoLevels=True)
+        self._set_iv(self._view_before, arr)
         if not self._after_locked:
-            self._view_after.setImage(arr_pg, autoLevels=True)
-        QTimer.singleShot(0, self._autofit_current)
+            self._set_iv(self._view_after, arr)
+            
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self._view_before.view.autoRange(padding=0.0))
+        QTimer.singleShot(0, lambda: self._view_after.view.autoRange(padding=0.0))
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -547,16 +547,17 @@ class PreviewPanel(QWidget):
         # 4) Make a deep copy to detach from QImage memory
         return arr.copy()
 
-    def _autofit_current(self) -> None:
-        """Reset both BEFORE and AFTER ViewBoxes to fit the current image."""
-        if self._last_before is None:
-            return
-        arr = np.asarray(self._last_before)
-        H, W = int(arr.shape[0]), int(arr.shape[1])
-        for v in (self._view_before, self._view_after):
-            try:
-                vb = v.view  # ViewBox
-                vb.setRange(xRange=(0, W), yRange=(0, H), padding=0.0)
-                vb.autoRange(padding=0.0)
-            except Exception:
-                pass
+    def _set_iv(self, iv, arr) -> None:
+        arr = np.asarray(arr)
+        if arr.ndim == 3 and arr.shape[2] == 3:
+            iv.setImage(arr, autoLevels=True, axes={'x': 1, 'y': 0, 'c': 2})
+        else:
+            iv.setImage(arr, autoLevels=True)
+        try:
+            iv.view.setAspectLocked(True)
+        except Exception:
+            pass
+        try:
+            iv.view.autoRange(padding=0.0)
+        except Exception:
+            pass
