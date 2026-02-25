@@ -1303,23 +1303,24 @@ class BatchController:
                         )
                         cnt_raw_d, edg_raw_d = _render_hist(
                             ori_raw, sturges_k, range_raw,
-                            "Orientation (deg)", "Probability density", title_raw,
+                            "Orientation (°)", "Frequency (%)", title_raw,
                             run_dir / f"{stem}_orientation_hist_deg_density.png",
                             density=True,
                         )
                         # fix x-axis to degrees for the density plot
-                        # (re-render with converted edges)
+                        # (re-render with converted edges + percentage y)
                         cnt_raw_d2, _ = np.histogram(ori_raw * _R2D, bins=sturges_k,
                                                      range=(range_raw[0]*_R2D, range_raw[1]*_R2D),
                                                      density=True)
+                        cnt_raw_d2_pct = cnt_raw_d2 * 100.0
                         edg_raw_d2 = edg_raw_d * _R2D
                         fig_d, ax_d = plt.subplots(figsize=(6, 4))
                         bw_d = np.diff(edg_raw_d2)
-                        ax_d.bar(edg_raw_d2[:-1] + bw_d*(1-_RWIDTH)/2, cnt_raw_d2,
+                        ax_d.bar(edg_raw_d2[:-1] + bw_d*(1-_RWIDTH)/2, cnt_raw_d2_pct,
                                  width=bw_d*_RWIDTH, align="edge",
                                  facecolor="none", edgecolor="black", linewidth=1.0)
-                        ax_d.set_xlabel("Orientation (deg)")
-                        ax_d.set_ylabel("Probability density")
+                        ax_d.set_xlabel("Orientation (°)")
+                        ax_d.set_ylabel("Frequency (%)")
                         ax_d.set_title(title_raw)
                         fig_d.tight_layout()
                         fig_d.savefig(str(run_dir / f"{stem}_orientation_hist_deg_density.png"),
@@ -1338,14 +1339,15 @@ class BatchController:
                         cnt_fld_d2, _ = np.histogram(ori_folded * _R2D, bins=sturges_k,
                                                      range=(range_fld[0]*_R2D, range_fld[1]*_R2D),
                                                      density=True)
+                        cnt_fld_d2_pct = cnt_fld_d2 * 100.0
                         edg_fld_d2 = edg_fld_c * _R2D
                         fig_f, ax_f = plt.subplots(figsize=(6, 4))
                         bw_f = np.diff(edg_fld_d2)
-                        ax_f.bar(edg_fld_d2[:-1] + bw_f*(1-_RWIDTH)/2, cnt_fld_d2,
+                        ax_f.bar(edg_fld_d2[:-1] + bw_f*(1-_RWIDTH)/2, cnt_fld_d2_pct,
                                  width=bw_f*_RWIDTH, align="edge",
                                  facecolor="none", edgecolor="black", linewidth=1.0)
-                        ax_f.set_xlabel("Folded orientation (deg)")
-                        ax_f.set_ylabel("Probability density")
+                        ax_f.set_xlabel("Folded orientation (°)")
+                        ax_f.set_ylabel("Frequency (%)")
                         ax_f.set_title(title_fld)
                         fig_f.tight_layout()
                         fig_f.savefig(str(run_dir / f"{stem}_orientation_folded_hist_deg_density.png"),
