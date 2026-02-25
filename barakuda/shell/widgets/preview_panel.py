@@ -281,13 +281,19 @@ class PreviewPanel(QWidget):
             return None
 
         h, w = self._roi_shape
-        pos = self._roi.pos()
-        size = self._roi.size()
-
-        x = int(round(float(pos.x())))
-        y = int(round(float(pos.y())))
-        rw = int(round(float(size.x())))
-        rh = int(round(float(size.y())))
+        # NOTE: pg.RectROI pos() is usually in the coordinate system of its parent 
+        # (which is the ViewBox or ImageItem). But to be perfectly safe, we map it
+        # to the image item's coordinate system.
+        
+        # pg.ImageView has .getImageItem() exposing the image coords natively
+        img_item = self._view_before.getImageItem()
+        # map rect from ROI local (bounds) to ImageItem local
+        mapped_rect = img_item.mapRectFromItem(self._roi, self._roi.boundingRect())
+        
+        x = int(round(float(mapped_rect.x())))
+        y = int(round(float(mapped_rect.y())))
+        rw = int(round(float(mapped_rect.width())))
+        rh = int(round(float(mapped_rect.height())))
 
         x = max(0, min(x, w - 1))
         y = max(0, min(y, h - 1))
@@ -347,8 +353,13 @@ class PreviewPanel(QWidget):
         else:
             lines.append(f"shape={meta.get('shape', 'n/a')}")
 
-        # ALWAYS show scale at bottom
-        lines.append(self._scale_text)
+        # ALWAYS show scale at bottom, except for SPM where it's native to the device panel
+        if meta.get("type") != "spm":
+            lines.append(self._scale_text)
+
+        roi = self.get_roi_rect()
+        if roi is not None:
+            lines.append(f"ROI: x={roi[0]}, y={roi[1]}, w={roi[2]}, h={roi[3]}")
 
         self._info.setText("\n".join(lines))
 
@@ -402,6 +413,8 @@ class PreviewPanel(QWidget):
 
     def _on_roi_changed(self) -> None:
         self._clamp_roi_to_image()
+        # Refresh info block to display live ROI coordinates
+        self._refresh_info_block()
 
     def _clamp_roi_to_image(self) -> None:
         if self._roi is None or self._roi_shape is None or self._clamping_roi:

@@ -101,6 +101,10 @@ class AfmPreviewWorker(QObject):
             w = max(1, min(w, W - x))
             h = max(1, min(h, H - y))
             roi_img = img[y:y + h, x:x + w]
+            
+            self.progress_pct.emit(0, f"Diag: raw shape=({H}, {W})")
+            self.progress_pct.emit(0, f"Diag: ROI raw px=(x={x}, y={y}, w={w}, h={h})")
+            self.progress_pct.emit(0, f"Diag: cropped shape={roi_img.shape}")
 
             def _f(key, default): return float(self.afm_params.get(key, default))
             def _i(key, default): return int(self.afm_params.get(key, default))
@@ -182,9 +186,9 @@ class AfmPreviewWorker(QObject):
             n_rods = len(rod_table.get("label", []))
 
             # Map rod centroids back to full image relative coords
-            if "centroid_x" in rod_table and len(rod_table["centroid_x"]) > 0:
-                rod_table["centroid_x"] += x
-                rod_table["centroid_y"] += y
+            if "centroid_x" in rod_table and len(rod_table.get("centroid_x", [])) > 0:
+                rod_table["centroid_x"] = rod_table["centroid_x"] + x
+                rod_table["centroid_y"] = rod_table["centroid_y"] + y
 
             # Render overlay on the FULL image for context
             full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
