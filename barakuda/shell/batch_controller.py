@@ -1407,6 +1407,37 @@ class BatchController:
                     overlay_path = run_dir / f"{stem}_overlay.png"
                     iio.imwrite(overlay_path, overlay)
 
+                    # --- EXPORT: contours-only PNG (transparent background) ---
+                    # Render ellipse outlines on a transparent RGBA canvas
+                    contours_rgba = np.zeros((H, W, 4), dtype=np.uint8)  # fully transparent
+                    # Reuse ellipse perimeter mask from overlay_ellipse logic
+                    from skimage import draw as sk_draw, morphology as sk_morph
+                    ell_mask = np.zeros((H, W), dtype=bool)
+                    for _ki in range(n_rods):
+                        _cy = float(rod_table["centroid_y"][_ki])
+                        _cx = float(rod_table["centroid_x"][_ki])
+                        _maj = float(rod_table["major_axis_px"][_ki])
+                        _mio = float(rod_table["minor_axis_px"][_ki])
+                        _ang = float(rod_table["orientation_rad"][_ki])
+                        _rr = max(1, int(round(_maj / 2.0)))
+                        _rc = max(1, int(round(_mio / 2.0)))
+                        try:
+                            _pr, _pc = sk_draw.ellipse_perimeter(
+                                int(round(_cy)), int(round(_cx)),
+                                _rr, _rc, orientation=-_ang, shape=(H, W),
+                            )
+                            ell_mask[_pr, _pc] = True
+                        except Exception:
+                            continue
+                    if int(p_v2.ellipse_thickness_px) > 1:
+                        ell_mask = sk_morph.binary_dilation(ell_mask, sk_morph.disk(int(p_v2.ellipse_thickness_px) - 1))
+                    contours_rgba[ell_mask, 0] = 255  # R
+                    contours_rgba[ell_mask, 1] = 255  # G
+                    contours_rgba[ell_mask, 2] = 0    # B
+                    contours_rgba[ell_mask, 3] = 255  # A (opaque where ellipse)
+                    contours_path = run_dir / f"{stem}_contours.png"
+                    iio.imwrite(contours_path, contours_rgba)
+
                 # --- EXPORT: summary.json (full audit + top-level must-have) ---
                 summary_json = run_dir / f"{stem}_summary.json"
                 
