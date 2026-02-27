@@ -324,6 +324,18 @@ class PreviewPanel(QWidget):
 
         return (x0, y0, x1 - x0, y1 - y0)
 
+    def set_roi_rect(self, x: int, y: int, w: int, h: int) -> None:
+        roi = self._active_roi()
+        if roi is not None:
+            self._clamping_roi = True
+            try:
+                roi.setPos([float(x), float(y)], update=True)
+                roi.setSize([float(w), float(h)], update=True)
+            finally:
+                self._clamping_roi = False
+            self._clamp_roi_to_image(roi)
+            self._refresh_info_block()
+
     # ---------------- slider ----------------
 
     def _on_slider_changed(self, value: int) -> None:

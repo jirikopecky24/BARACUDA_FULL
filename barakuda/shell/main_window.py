@@ -213,6 +213,12 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.set_end_frame(int(fc - 1))  # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: end-frame autoload failed: {e!r}")
+                
+            try:
+                if hasattr(self._device_panel, "is_auto_roi_on_load") and self._device_panel.is_auto_roi_on_load():
+                    self._on_auto_roi()
+            except Exception as e:
+                self.log_panel.log(f"WARN: auto ROI failed: {e!r}")
 
         self.batch.reset_gate()
 
@@ -279,6 +285,8 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.run_batch_clicked.connect(self._on_run_batch)           # type: ignore[attr-defined]
                 self._device_panel.stop_clicked.connect(self.batch.stop)                   # type: ignore[attr-defined]
                 self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
+                if hasattr(self._device_panel, "auto_roi_clicked"):
+                    self._device_panel.auto_roi_clicked.connect(self._on_auto_roi)
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
@@ -360,6 +368,24 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log(f"Saved dataset scale: {p.name} -> {info.um_per_px:.6f} µm/px")
         except Exception as e:
             self.log_panel.log(f"Save scale ERROR: {e!r}")
+
+    def _on_auto_roi(self) -> None:
+        if self._active_device_id != "optical_tweezers" or self._device_panel is None:
+            return
+
+        frame = self._ot_preview.get_before_image()
+        if frame is None:
+            self.log_panel.log("Auto ROI: No image loaded.")
+            return
+
+        from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_detect_particle
+        
+        try:
+            rx, ry, rw, rh = auto_detect_particle(frame, roi_size=50)
+            self._ot_preview.set_roi_rect(rx, ry, rw, rh)
+            self.log_panel.log(f"Auto ROI: Found particle at x={rx}, y={ry}")
+        except Exception as e:
+            self.log_panel.log(f"Auto ROI ERROR: {e!r}")
 
 
 

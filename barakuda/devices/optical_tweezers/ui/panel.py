@@ -19,6 +19,7 @@ class PipelinePanel(QWidget):
     track_range_clicked = pyqtSignal()
 
     save_dataset_scale_clicked = pyqtSignal()
+    auto_roi_clicked = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -84,6 +85,11 @@ class PipelinePanel(QWidget):
         self._normalize_strength.setValue(1.0)
 
         # tracking params
+        self.btn_auto_roi = QPushButton("Auto-detect particle")
+        self.auto_roi_on_load_cb = QCheckBox("Auto ROI on load")
+        self.auto_roi_on_load_cb.setChecked(False)
+        self.btn_auto_roi.clicked.connect(self.auto_roi_clicked.emit)
+
         # Adaptive ROI is critical for kmitající částice (drift + Brownian motion).
         self._adaptive_roi = QCheckBox("Adaptive ROI (follow particle)")
         self._adaptive_roi.setChecked(True)
@@ -255,6 +261,8 @@ class PipelinePanel(QWidget):
         params_box_layout = QFormLayout(params_box)
 
         params_box_layout.addRow("Normalize strength", self._normalize_strength)
+        params_box_layout.addRow("", self.btn_auto_roi)
+        params_box_layout.addRow("", self.auto_roi_on_load_cb)
         params_box_layout.addRow("", self._adaptive_roi)
         params_box_layout.addRow("Blur sigma", self._blur_sigma)
         params_box_layout.addRow("Radial grad threshold", self._radial_grad_threshold)
@@ -447,3 +455,6 @@ class PipelinePanel(QWidget):
 
     def set_tracking_method(self, method: str) -> None:
         self._tracking_method = str(method)
+
+    def is_auto_roi_on_load(self) -> bool:
+        return self.auto_roi_on_load_cb.isChecked()
