@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
     QHBoxLayout, QDockWidget, QStackedWidget
@@ -44,6 +44,14 @@ class ShellMainWindow(QMainWindow):
         self._afm_preview_thread = None
         self._afm_preview_worker = None
         self._afm_preview_job_id = 0  # monotonic counter for job-id gating
+
+        # AFM RUN thread/worker (separate from preview)
+        self._afm_run_thread = None
+        self._afm_run_worker = None
+
+        # OT RUN thread/worker
+        self._ot_run_thread = None
+        self._ot_run_worker = None
 
         runs_folder = Path(__file__).resolve().parents[2] / "runs"
         self.batch = BatchController(runs_folder=runs_folder, log_fn=self.log_panel.log)
@@ -134,6 +142,16 @@ class ShellMainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dataset_dock)
         self.splitDockWidget(self.method_dock, self.dataset_dock, Qt.Orientation.Vertical)
 
+        # Heartbeat ticker
+        self._tick_counter = 0
+        self._tick_label = QLabel("Tick: 0")
+        self.statusBar().addPermanentWidget(self._tick_label)
+        self._tick_timer = QTimer(self)
+        self._tick_timer.timeout.connect(self._on_tick)
+        self._tick_timer.start(250)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
         # Ensure method dock stays visible above Dataset (avoid collapsing to ~0px).
         try:
             self.method_dock.setMinimumHeight(48)
@@ -158,6 +176,10 @@ class ShellMainWindow(QMainWindow):
 
         self.log_panel.log("Shell started.")
         self._set_device_by_index(0)
+
+    def _on_tick(self) -> None:
+        self._tick_counter += 1
+        self._tick_label.setText(f"Tick: {self._tick_counter}")
 
     # -- active preview routing (per-device) --
 
@@ -433,6 +455,16 @@ class ShellMainWindow(QMainWindow):
         self.log_panel.log(f"RUN pressed for device: {self._active_device_id}")
 
         if self._active_device_id == "afm":
+            # Guard: if RUN thread is already running, ignore
+            if self._afm_run_thread is not None:
+                try:
+                    if self._afm_run_thread.isRunning():
+                        self.log_panel.log("AFM RUN: already running, ignoring.")
+                        return
+                except RuntimeError:
+                    pass
+                self._afm_run_thread = None
+
             roi = self.preview.get_roi_rect()
             if roi is None:
                 self.log_panel.log("AFM RUN: ROI is required.")
@@ -449,28 +481,45 @@ class ShellMainWindow(QMainWindow):
             except Exception:
                 pass
 
-            # Disable UI if possible
-            if hasattr(self._device_panel, 'set_batch_running'):
-                 self._device_panel.set_batch_running(True) # type: ignore[attr-defined]
+            self.log_panel.log(f"AFM RUN: START | {len(paths)} file(s) | roi={roi}")
 
-            def progress_fn_afm(done: int, total: int, filename: str = "", pct: int = 0) -> None:
-                self.log_panel.log(f"AFM progress: {done}/{total} {pct}%" + (f" ({filename})" if filename else ""))
-                if hasattr(self._device_panel, "set_batch_progress"):
-                    self._device_panel.set_batch_progress(done, total, filename, pct)  # type: ignore[attr-defined]
+            # Set UI state
+            if hasattr(self._device_panel, 'set_run_state'):
+                self._device_panel.set_run_state(True)  # type: ignore[attr-defined]
 
-            try:
-                self.batch.run_afm_batch(
-                    file_paths=paths,
-                    roi_rect=roi,
-                    afm_params=params,
-                    dataset_set_status_fn=self.dataset.set_status,
-                    progress_fn=progress_fn_afm,
-                )
-            except Exception as e:
-                self.log_panel.log(f"AFM Batch ERROR: {e!r}")
-            finally:
-                if hasattr(self._device_panel, 'set_batch_running'):
-                     self._device_panel.set_batch_running(False) # type: ignore[attr-defined]
+            from PyQt6.QtCore import QThread, QTimer
+            from barakuda.shell.workers.afm_run_worker import AfmRunWorker
+
+            self._afm_run_thread = QThread()
+            self._afm_run_worker = AfmRunWorker(
+                batch_controller=self.batch,
+                file_paths=paths,
+                roi_rect=roi,
+                afm_params=params,
+                dataset_set_status_fn=self.dataset.set_status,
+            )
+            self._afm_run_worker.moveToThread(self._afm_run_thread)
+
+            self._afm_run_thread.started.connect(self._afm_run_worker.run)
+
+            self._afm_run_worker.progress_pct.connect(self._handle_afm_run_progress)
+            self._afm_run_worker.finished.connect(self._afm_run_done)
+            self._afm_run_worker.error.connect(self._afm_run_failed)
+
+            # cleanup wiring
+            self._afm_run_worker.finished.connect(self._afm_run_thread.quit)
+            self._afm_run_worker.error.connect(self._afm_run_thread.quit)
+            self._afm_run_thread.finished.connect(self._afm_run_worker.deleteLater)
+            self._afm_run_thread.finished.connect(self._cleanup_afm_run_thread)
+
+            # Smooth timer for 20->79% during inference
+            if not hasattr(self, '_afm_run_timer'):
+                self._afm_run_timer = QTimer(self)
+                self._afm_run_timer.timeout.connect(self._afm_run_on_timer)
+            self._afm_run_progress_val = 0
+            self._afm_run_timer.start(500)
+
+            self._afm_run_thread.start()
             return
         if not self.batch.preview_done:
             # Optical Tweezers require Preview Gate PASS (hard rule).
@@ -482,6 +531,16 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Run Batch: no active panel.")
             return
 
+        if self._active_device_id == "optical_tweezers":
+            if getattr(self, "_ot_run_thread", None) is not None:
+                try:
+                    if self._ot_run_thread.isRunning():
+                        self.log_panel.log("OT RUN: already running, ignoring.")
+                        return
+                except RuntimeError:
+                    pass
+                self._ot_run_thread = None
+
         roi = self.preview.get_roi_rect()
         if roi is None and self._active_device_id in ("optical_tweezers", "afm"):
             self.log_panel.log("Run Batch: ROI is required.")
@@ -491,65 +550,60 @@ class ShellMainWindow(QMainWindow):
         if hasattr(self._device_panel, 'btn_run'):
             self._device_panel.btn_run.setEnabled(False)  # type: ignore[attr-defined]
 
-        try:
-            if hasattr(self._device_panel, "set_batch_running"):
-                self._device_panel.set_batch_running(True)  # type: ignore[attr-defined]
+        if self._active_device_id == "optical_tweezers":
+            from PyQt6.QtCore import QThread
+            from barakuda.shell.workers.ot_run_worker import OTRunWorker
 
-            def progress_fn(done: int, total: int, filename: str = "", pct: int = 0) -> None:
-                self.log_panel.log(f"Batch progress: {done}/{total} {pct}%" + (f" ({filename})" if filename else ""))
+            panel_data = {
+                "tracking": self._device_panel.get_tracking_params(),
+                "postprocess": self._device_panel.get_postprocess_params(),
+                "scale": self._device_panel.get_scale_params(),
+                "frame_range": self._device_panel.get_frame_range(),
+            }
+
+            self._ot_run_thread = QThread()
+            self._ot_run_worker = OTRunWorker(
+                batch_controller=self.batch,
+                device_id=self._active_device_id,
+                roi_rect=roi if roi is not None else (0, 0, 0, 0),
+                panel_data=panel_data,
+            )
+            self._ot_run_worker.moveToThread(self._ot_run_thread)
+            self._ot_run_thread.started.connect(self._ot_run_worker.run)
+
+            # Route signals to UI updates
+            def _on_ot_prog(pct: int, msg: str):
+                self.log_panel.log(f"OT batch progress: {pct}% {msg}")
                 if hasattr(self._device_panel, "set_batch_progress"):
-                    self._device_panel.set_batch_progress(done, total, filename, pct)  # type: ignore[attr-defined]
+                    self._device_panel.set_batch_progress(0, 100, msg, pct)
+            self._ot_run_worker.progress_pct.connect(_on_ot_prog)
+            self._ot_run_worker.log_msg.connect(self.log_panel.log)
+            self._ot_run_worker.status_update.connect(self.dataset.set_status)
 
-            if self._active_device_id == "afm":
-                params = {}
-                try:
-                    params = self._device_panel.get_afm_params()  # type: ignore[attr-defined]
-                except Exception:
-                    params = {}
+            def _on_ot_done():
+                if hasattr(self._device_panel, 'btn_run'):
+                    self._device_panel.btn_run.setEnabled(True)
+                after_path = getattr(self.batch, "last_after_overlay_path", None)
+                if after_path:
+                    try:
+                        self._ot_preview.set_after_from_file(after_path)
+                    except Exception:
+                        pass
+                self._ot_run_thread.quit()
 
-                def progress_fn_afm(done: int, total: int, filename: str = "", pct: int = 0) -> None:
-                    self.log_panel.log(f"AFM progress: {done}/{total} {pct}%" + (f" ({filename})" if filename else ""))
-                    if hasattr(self._device_panel, "set_batch_progress"):
-                        self._device_panel.set_batch_progress(done, total, filename, pct)  # type: ignore[attr-defined]
+            def _on_ot_err(err: str):
+                self.log_panel.log(f"OT RUN ERROR: {err}")
+                if hasattr(self._device_panel, 'btn_run'):
+                    self._device_panel.btn_run.setEnabled(True)
+                self._ot_run_thread.quit()
 
-                paths = self.dataset.get_selected_paths()
-                if not paths:
-                    self.log_panel.log("AFM RUN: no selected files.")
-                    return
+            self._ot_run_worker.finished.connect(_on_ot_done)
+            self._ot_run_worker.error.connect(_on_ot_err)
 
-                self.batch.run_afm_batch(
-                    file_paths=paths,
-                    roi_rect=roi,
-                    afm_params=params,
-                    dataset_set_status_fn=self.dataset.set_status,
-                    progress_fn=progress_fn_afm,
-                )
-            else:
-                self.batch.run_batch(
-                    device_id=self._active_device_id,
-                    device_panel=self._device_panel,
-                    roi_rect=roi if roi is not None else (0, 0, 0, 0),
-                    dataset_set_status_fn=self.dataset.set_status,
-                    progress_fn=progress_fn,
-                )
-        except Exception as e:
-            self.log_panel.log(f"Run Batch ERROR: {e!r}")
-        finally:
-            try:
-                if hasattr(self._device_panel, "set_batch_running"):
-                    self._device_panel.set_batch_running(False)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            if hasattr(self._device_panel, 'btn_run'):
-                self._device_panel.btn_run.setEnabled(True)  # type: ignore[attr-defined]
+            self._ot_run_thread.finished.connect(self._ot_run_worker.deleteLater)
+            self._ot_run_thread.finished.connect(lambda: setattr(self, "_ot_run_thread", None))
 
-            # Show last after overlay in AFTER tab (crosshair + adaptive ROI)
-            after_path = getattr(self.batch, "last_after_overlay_path", None)
-            if after_path:
-                try:
-                    self._ot_preview.set_after_from_file(after_path)
-                except Exception:
-                    pass
+            self._ot_run_thread.start()
 
     def _on_afm_preview(self) -> None:
         if self._active_device_id != "afm" or self._device_panel is None:
@@ -758,4 +812,79 @@ class ShellMainWindow(QMainWindow):
             except RuntimeError:
                 pass
             self._afm_preview_thread = None
+
+    # ============================================================ #
+    #  AFM RUN — threaded batch with progress bar (same UX as Preview)
+    # ============================================================ #
+
+    def _handle_afm_run_progress(self, pct: int, msg: str) -> None:
+        """Handle progress updates from AfmRunWorker."""
+        # Never go backward (protects the QTimer smooth range)
+        current = getattr(self, '_afm_run_progress_val', 0)
+        if pct < current and pct < 100:
+            return
+        self._afm_run_progress_val = pct
+        self.log_panel.log(f"RUN {pct}% — {msg}")
+        if hasattr(self._device_panel, 'set_preview_progress'):
+            self._device_panel.set_preview_progress(pct, msg)  # type: ignore[attr-defined]
+
+        # Start smooth timer when entering inference phase (20%)
+        if pct >= 20 and pct < 80:
+            if hasattr(self, '_afm_run_timer') and not self._afm_run_timer.isActive():
+                self._afm_run_timer.start(500)
+        # Stop smooth timer when inference done (>=80%)
+        if pct >= 80:
+            if hasattr(self, '_afm_run_timer'):
+                self._afm_run_timer.stop()
+
+    def _afm_run_on_timer(self) -> None:
+        """Smooth increment 20->79 during inference."""
+        val = getattr(self, '_afm_run_progress_val', 0)
+        if 20 <= val < 79:
+            val += 1
+            self._afm_run_progress_val = val
+            if hasattr(self._device_panel, 'set_preview_progress'):
+                self._device_panel.set_preview_progress(val, "RUN: computing...")  # type: ignore[attr-defined]
+
+    def _afm_run_done(self) -> None:
+        """AFM RUN completed successfully."""
+        if hasattr(self, '_afm_run_timer'):
+            self._afm_run_timer.stop()
+
+        self.log_panel.log("AFM RUN: DONE ✅")
+
+        if hasattr(self._device_panel, 'set_preview_progress'):
+            self._device_panel.set_preview_progress(100, "RUN: Done")  # type: ignore[attr-defined]
+        if hasattr(self._device_panel, 'reset_preview_progress'):
+            self._device_panel.reset_preview_progress()  # type: ignore[attr-defined]
+        if hasattr(self._device_panel, 'set_run_state'):
+            self._device_panel.set_run_state(False)  # type: ignore[attr-defined]
+        if hasattr(self._device_panel, 'set_status_message'):
+            self._device_panel.set_status_message("RUN: Done")  # type: ignore[attr-defined]
+
+    def _afm_run_failed(self, tb_str: str) -> None:
+        """AFM RUN failed with error."""
+        if hasattr(self, '_afm_run_timer'):
+            self._afm_run_timer.stop()
+
+        self.log_panel.log("AFM RUN: ERROR")
+        for line in tb_str.splitlines():
+            self.log_panel.log(line)
+
+        if hasattr(self._device_panel, 'reset_preview_progress'):
+            self._device_panel.reset_preview_progress()  # type: ignore[attr-defined]
+        if hasattr(self._device_panel, 'set_run_state'):
+            self._device_panel.set_run_state(False)  # type: ignore[attr-defined]
+        if hasattr(self._device_panel, 'set_status_message'):
+            self._device_panel.set_status_message(f"RUN Error", is_error=True)  # type: ignore[attr-defined]
+
+    def _cleanup_afm_run_thread(self) -> None:
+        """Clean up RUN thread after it finishes."""
+        if self._afm_run_thread is not None:
+            try:
+                self._afm_run_thread.deleteLater()
+            except RuntimeError:
+                pass
+            self._afm_run_thread = None
+            self._afm_run_worker = None
 
