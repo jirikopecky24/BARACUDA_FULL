@@ -293,14 +293,16 @@ class PipelinePanel(QWidget):
         params_box = QWidget()
         params_box_layout = QFormLayout(params_box)
 
-        params_box_layout.addRow("Normalize strength", self._normalize_strength)
         params_box_layout.addRow("", self.btn_auto_roi)
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
         params_box_layout.addRow("", self._adaptive_roi)
         params_box_layout.addRow("Blur sigma", self._blur_sigma)
         params_box_layout.addRow("Radial grad threshold", self._radial_grad_threshold)
-        params_box_layout.addRow("", self._auto_polarity)
-        params_box_layout.addRow("", self._invert)
+        
+        # Hide debug/advanced preprocessing controls
+        self._normalize_strength.setVisible(False)
+        self._auto_polarity.setVisible(False)
+        self._invert.setVisible(False)
 
         params_box_layout.addRow("", self._use_annulus)
         params_box_layout.addRow("", self._annulus_auto)
@@ -309,9 +311,11 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("Annulus smooth (bins)", self._annulus_profile_smooth)
 
         params_box_layout.addRow("Gate samples", self._gate_sample_count)
-        params_box_layout.addRow("Gate pass min ratio", self._gate_pass_min_ratio)
-        params_box_layout.addRow("Gate q_min", self._gate_q_min)
-        params_box_layout.addRow("Gate jump_max (px)", self._gate_jump_max)
+        
+        # Hide debug/advanced gate controls
+        self._gate_pass_min_ratio.setVisible(False)
+        self._gate_q_min.setVisible(False)
+        self._gate_jump_max.setVisible(False)
 
         params_box_layout.addRow("Start frame", self._start_frame)
         params_box_layout.addRow("End frame", self._end_frame)
@@ -325,8 +329,11 @@ class PipelinePanel(QWidget):
         post_box_layout = QFormLayout(post_box)
         post_box_layout.addRow("", self._pp_enabled)
         post_box_layout.addRow("", self._qc_enabled)
-        post_box_layout.addRow("QC q_min", self._qc_q_min)
-        post_box_layout.addRow("QC jump_max (px)", self._qc_jump_max)
+        
+        # Hide debug/advanced postprocessing controls
+        self._qc_q_min.setVisible(False)
+        self._qc_jump_max.setVisible(False)
+
         post_box_layout.addRow("Drift mode", self._drift_mode)
         post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
         post_box_layout.addRow("Calibration Strategy", self._strategy_selector)
