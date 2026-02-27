@@ -318,7 +318,6 @@ class ShellMainWindow(QMainWindow):
             try:
                 self.method_combo.clear()
                 self.method_combo.addItem("RADIAL_SYMMETRY", "RADIAL_SYMMETRY")
-                self.method_combo.addItem("INTENSITY_PEAK", "INTENSITY_PEAK")
                 self.method_combo.setCurrentIndex(0)
                 self.method_combo.setVisible(True)
 

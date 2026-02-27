@@ -100,11 +100,6 @@ class PipelinePanel(QWidget):
         self.cb_profile.addItems(["Auto", "GPU (force)", "CPU (force)"])
         self.cb_profile.setCurrentText("Auto")
         self.cb_profile.setToolTip("Select compute backend (Auto recommended). Only affects compatible track methods.")
-        self.cb_profile.currentTextChanged.connect(self._on_profile_changed)
-
-        self.lbl_dev_info = QLabel("Device: ?\nTorch: ?\nCellpose: ?")
-        self.lbl_dev_info.setStyleSheet("color: #666; font-size: 11px;")
-        self.lbl_dev_info.setWordWrap(True)
 
         # tracking params
         self.btn_auto_roi = QPushButton("Auto-detect particle")
@@ -314,7 +309,6 @@ class PipelinePanel(QWidget):
         params_box_layout = QFormLayout(params_box)
 
         params_box_layout.addRow("Compute Profile", self.cb_profile)
-        params_box_layout.addRow(self.lbl_dev_info)
         params_box_layout.addRow("", self.btn_auto_roi)
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
         params_box_layout.addRow("", self._adaptive_roi)
@@ -445,35 +439,6 @@ class PipelinePanel(QWidget):
             w.installEventFilter(self._wheel_blocker)
             
         self.apply_ot_defaults()
-        self._on_profile_changed()
-
-    def _on_profile_changed(self, text: str = ""):
-        txt = self.cb_profile.currentText()
-        if "GPU" in txt:
-            prof = "gpu"
-        elif "CPU" in txt:
-            prof = "cpu"
-        else:
-            prof = "auto"
-
-        try:
-            from barakuda.devices.afm.core.compute import resolve_device
-            info = resolve_device(prof)
-            dev = info.get("device", "unknown")
-            t_ver = info.get("torch_version", "?")
-            c_ver = info.get("cellpose_version", "?")
-            gpu_n = info.get("gpu_name", "")
-            
-            if dev == "cuda" and gpu_n and gpu_n != "unknown":
-                dev_str = f"cuda ({gpu_n})"
-            else:
-                dev_str = dev
-                
-            self.lbl_dev_info.setText(f"Device: {dev_str}\nTorch: {t_ver}\nCellpose: {c_ver}")
-
-        except Exception as e:
-            self.lbl_dev_info.setText(f"Device: Error\n{e}")
-            self.lbl_dev_info.setStyleSheet("color: #d32f2f; font-size: 11px;")
 
     def apply_ot_defaults(self) -> None:
         """Apply requested sensible defaults to the OT user parameters."""
