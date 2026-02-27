@@ -86,35 +86,43 @@ class PipelinePanel(QWidget):
 
         # tracking params
         self.btn_auto_roi = QPushButton("Auto-detect particle")
+        self.btn_auto_roi.setToolTip("Automatically find and center the ROI on the most prominent particle.")
         self.auto_roi_on_load_cb = QCheckBox("Auto ROI on load")
+        self.auto_roi_on_load_cb.setToolTip("If checked, automatically run Auto-detect when a new video is selected.")
         self.auto_roi_on_load_cb.setChecked(False)
         self.btn_auto_roi.clicked.connect(self.auto_roi_clicked.emit)
 
-        # Adaptive ROI is critical for kmitající částice (drift + Brownian motion).
         self._adaptive_roi = QCheckBox("Adaptive ROI (follow particle)")
+        self._adaptive_roi.setToolTip("Automatically track particle center to maintain it within the ROI during motion.")
         self._adaptive_roi.setChecked(True)
 
         self._invert = QCheckBox("Invert particle (dark spot)")
+        self._invert.setToolTip("Check if the particle appears darker than the background.")
         self._invert.setChecked(True)
 
         self._blur_sigma = QDoubleSpinBox()
         self._blur_sigma.setRange(0.0, 10.0)
         self._blur_sigma.setSingleStep(0.2)
         self._blur_sigma.setValue(1.2)
+        self._blur_sigma.setToolTip("Gaussian blur sigma applied before tracking to reduce noise. 0 = no blur.")
 
         self._radial_grad_threshold = QDoubleSpinBox()
         self._radial_grad_threshold.setRange(0.0, 1000.0)
         self._radial_grad_threshold.setSingleStep(0.5)
         self._radial_grad_threshold.setValue(2.0)
+        self._radial_grad_threshold.setToolTip("Threshold for the radial gradient. Ignores weak edges.")
 
-        self._auto_polarity = QCheckBox("Auto polarity (try invert True/False)")
+        self._auto_polarity = QCheckBox("Auto polarity (detect bright/dark)")
+        self._auto_polarity.setToolTip("Automatically determine the correct 'Invert' setting by scoring both.")
         self._auto_polarity.setChecked(True)
 
         # annulus refinement
-        self._use_annulus = QCheckBox("Use annulus refinement (RS)")
+        self._use_annulus = QCheckBox("Annulus refinement (RS)")
+        self._use_annulus.setToolTip("Use an annular background region to improve Radial Symmetry tracking accuracy.")
         self._use_annulus.setChecked(True)
 
-        self._annulus_auto = QCheckBox("Auto annulus (estimate ring)")
+        self._annulus_auto = QCheckBox("Auto annulus (estimate size)")
+        self._annulus_auto.setToolTip("Automatically estimate optimal inner and outer radii for the annulus.")
         self._annulus_auto.setChecked(True)
 
         self._annulus_r_inner = QDoubleSpinBox()
@@ -122,27 +130,32 @@ class PipelinePanel(QWidget):
         self._annulus_r_inner.setDecimals(2)
         self._annulus_r_inner.setSingleStep(0.5)
         self._annulus_r_inner.setValue(0.0)
+        self._annulus_r_inner.setToolTip("Inner radius of the background annulus in pixels (if not Auto).")
 
         self._annulus_r_outer = QDoubleSpinBox()
         self._annulus_r_outer.setRange(0.0, 1e6)
         self._annulus_r_outer.setDecimals(2)
         self._annulus_r_outer.setSingleStep(0.5)
         self._annulus_r_outer.setValue(0.0)
+        self._annulus_r_outer.setToolTip("Outer radius of the background annulus in pixels (if not Auto).")
 
         self._annulus_profile_smooth = QSpinBox()
         self._annulus_profile_smooth.setRange(0, 999)
         self._annulus_profile_smooth.setValue(3)
+        self._annulus_profile_smooth.setToolTip("Smoothing factor for the radial intensity profile.")
 
         # Preview Gate QC thresholds (applies to multi-frame gate)
         self._gate_sample_count = QSpinBox()
         self._gate_sample_count.setRange(1, 99)
         self._gate_sample_count.setValue(7)
+        self._gate_sample_count.setToolTip("Number of frames to evaluate for the preview gate.")
 
         self._gate_pass_min_ratio = QDoubleSpinBox()
         self._gate_pass_min_ratio.setRange(0.0, 1.0)
         self._gate_pass_min_ratio.setDecimals(3)
         self._gate_pass_min_ratio.setSingleStep(0.05)
         self._gate_pass_min_ratio.setValue(1.0)
+        self._gate_pass_min_ratio.setToolTip("Minimum ratio of frames that must pass QC to accept the particle.")
 
         self._gate_q_min = QDoubleSpinBox()
         self._gate_q_min.setRange(0.0, 1e12)
@@ -155,18 +168,22 @@ class PipelinePanel(QWidget):
         self._gate_jump_max.setDecimals(3)
         self._gate_jump_max.setSingleStep(1.0)
         self._gate_jump_max.setValue(50.0)
+        self._gate_jump_max.setToolTip("Maximum allowed position jump between frames in pixels before failing QC.")
 
         # range
         self._start_frame = QSpinBox()
         self._start_frame.setRange(0, 10**9)
         self._start_frame.setValue(0)
+        self._start_frame.setToolTip("First frame to process.")
 
         self._end_frame = QSpinBox()
         self._end_frame.setRange(0, 10**9)
         self._end_frame.setValue(0)
+        self._end_frame.setToolTip("Last frame to process.")
 
         # scale
         self._use_dataset_scale = QCheckBox("Use dataset scale (µm/px)")
+        self._use_dataset_scale.setToolTip("Use the scale factor saved with this dataset, if available.")
         self._use_dataset_scale.setChecked(True)
 
         self._um_per_px = QDoubleSpinBox()
@@ -175,18 +192,22 @@ class PipelinePanel(QWidget):
         self._um_per_px.setSingleStep(0.000001)
         # Default scale for OT (µm/px) — requested baseline.
         self._um_per_px.setValue(0.066528)
+        self._um_per_px.setToolTip("Manual pixel scale in micrometers per pixel.")
 
         self._scale_status = QLabel("Scale: not set (px only)")
         self._scale_status.setStyleSheet("color: #666;")
 
         self.btn_save_scale = QPushButton("Save current scale as dataset default")
+        self.btn_save_scale.setToolTip("Save the above scale value to the current dataset's sidecar file.")
         self.btn_save_scale.clicked.connect(self.save_dataset_scale_clicked.emit)
 
         # OT-3.1 postprocess (QC + drift)
         self._pp_enabled = QCheckBox("Enable OT-3.1 postprocess (QC + drift)")
+        self._pp_enabled.setToolTip("Apply quality control and drift correction after tracking.")
         self._pp_enabled.setChecked(True)
 
         self._qc_enabled = QCheckBox("Track-loss flag (QC)")
+        self._qc_enabled.setToolTip("Flag tracking results that fail quality control criteria.")
         self._qc_enabled.setChecked(True)
 
         self._qc_q_min = QDoubleSpinBox()
@@ -194,24 +215,28 @@ class PipelinePanel(QWidget):
         self._qc_q_min.setDecimals(6)
         self._qc_q_min.setSingleStep(0.1)
         self._qc_q_min.setValue(0.0)
+        self._qc_q_min.setToolTip("Minimum acceptable quality score for tracking.")
 
         self._qc_jump_max = QDoubleSpinBox()
         self._qc_jump_max.setRange(0.0, 1e6)
         self._qc_jump_max.setDecimals(3)
         self._qc_jump_max.setSingleStep(1.0)
         self._qc_jump_max.setValue(50.0)
+        self._qc_jump_max.setToolTip("Maximum allowed position jump between frames in pixels before failing QC.")
 
         self._drift_mode = QComboBox()
         self._drift_mode.addItem("None (passthrough)", "none")
         self._drift_mode.addItem("Lowpass filter subtract", "lowpass_subtract")
         self._drift_mode.addItem("Linear detrend subtract", "detrend_linear")
         self._drift_mode.setCurrentIndex(1)  # Default: lowpass_subtract
+        self._drift_mode.setToolTip("Method to remove low-frequency drift from the particle trajectory.")
 
         self._drift_window_s = QDoubleSpinBox()
         self._drift_window_s.setRange(0.0, 1e6)
         self._drift_window_s.setDecimals(3)
         self._drift_window_s.setSingleStep(0.1)
         self._drift_window_s.setValue(1.0)
+        self._drift_window_s.setToolTip("Time window in seconds for the drift correction filter.")
 
         # Strategy Selector
         self._strategy_selector = QComboBox()
@@ -219,6 +244,7 @@ class PipelinePanel(QWidget):
         self._strategy_selector.addItem("PSD_ProcFFT (MATLAB)", "PSD_ProcFFT")
         self._strategy_selector.addItem("Drag (Constant Velocity)", "Drag_ConstantVelocity")
         self._strategy_selector.addItem("Piezo Oscillation (Coming soon...)", "Piezo_Oscillation")
+        self._strategy_selector.setToolTip("Calibration strategy used to compute stiffness and conversion factors.")
         
         # Disable the Piezo option
         model = self._strategy_selector.model()
@@ -233,29 +259,34 @@ class PipelinePanel(QWidget):
         self._stage_speed.setDecimals(6)
         self._stage_speed.setSingleStep(1.0)
         self._stage_speed.setValue(0.0)
+        self._stage_speed.setToolTip("Stage speed in µm/s (used for Drag calibration).")
 
         self._drag_axis = QComboBox()
         self._drag_axis.addItem("x", "x")
         self._drag_axis.addItem("y", "y")
         self._drag_axis.setCurrentIndex(0)
+        self._drag_axis.setToolTip("Axis along which the manual drag was performed.")
 
         self._viscosity = QDoubleSpinBox()
         self._viscosity.setRange(0.0, 10.0)
         self._viscosity.setDecimals(6)
         self._viscosity.setSingleStep(0.0005)
         self._viscosity.setValue(0.001)  # Pa·s
+        self._viscosity.setToolTip("Dynamic viscosity of the medium in Pascal-seconds (Pa·s). Default is water.")
 
         self._temperature_c = QDoubleSpinBox()
         self._temperature_c.setRange(-10.0, 100.0)
         self._temperature_c.setDecimals(2)
         self._temperature_c.setSingleStep(0.5)
         self._temperature_c.setValue(25.0)
+        self._temperature_c.setToolTip("Temperature in Celsius. Effects viscosity calculation if enabled.")
 
         self._bead_diameter_um = QDoubleSpinBox()
         self._bead_diameter_um.setRange(0.1, 100.0)
         self._bead_diameter_um.setDecimals(3)
         self._bead_diameter_um.setSingleStep(0.1)
         self._bead_diameter_um.setValue(1.0)  # DEFAULT as requested (most common)
+        self._bead_diameter_um.setToolTip("Diameter of the trapped bead in micrometers.")
 
         params_box = QWidget()
         params_box_layout = QFormLayout(params_box)
