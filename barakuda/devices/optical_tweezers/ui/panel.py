@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QObject, QEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
-    QToolButton, QHBoxLayout, QMenu, QComboBox
+    QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
+    QSizePolicy, QAbstractSpinBox
 )
+
+class NoWheelValueChangeFilter(QObject):
+    """Event filter that blocks mouse wheel from changing values in scrollable panels."""
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel:
+            event.ignore()
+            return True
+        return False
 
 
 class PipelinePanel(QWidget):
@@ -372,19 +381,56 @@ class PipelinePanel(QWidget):
         self._tracking_method = "RADIAL_SYMMETRY"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 0, 8, 8)  # top margin 0 => starts at preview edge
-        layout.setSpacing(6)
-        layout.addWidget(_collapsible("Parameters", params_box, expanded=False))
-        layout.addWidget(_collapsible("Postprocess", post_box, expanded=False))
-        layout.addStretch(1)
-        layout.addWidget(self.btn_preview_gate)
-        layout.addWidget(self.btn_gate_report)
-        layout.addWidget(self.btn_reset)
-        layout.addWidget(self.btn_run)
-        layout.addWidget(self.btn_stop)
-        layout.addWidget(self._progress_label)
-        layout.addWidget(self.progress)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ══════════════════════════════════════════════════════════
+        # SCROLLABLE: all parameter sections
+        # ══════════════════════════════════════════════════════════
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(8, 4, 8, 4)
+        scroll_layout.setSpacing(6)
+
+        scroll_layout.addWidget(_collapsible("Parameters", params_box, expanded=False))
+        scroll_layout.addWidget(_collapsible("Postprocess", post_box, expanded=False))
+        scroll_layout.addStretch(1)
+
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, stretch=1)
+
+        # ══════════════════════════════════════════════════════════
+        # FIXED BOTTOM: action buttons
+        # ══════════════════════════════════════════════════════════
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #ccc;")
+        layout.addWidget(sep)
+
+        actions = QVBoxLayout()
+        actions.setContentsMargins(8, 4, 8, 6)
+
+        actions.addWidget(self.btn_preview_gate)
+        actions.addWidget(self.btn_gate_report)
+        actions.addWidget(self.btn_reset)
+        actions.addWidget(self.btn_run)
+        actions.addWidget(self.btn_stop)
+        actions.addWidget(self._progress_label)
+        actions.addWidget(self.progress)
         
+        layout.addLayout(actions)
+        
+        # ── Wheel Blocker ─────────────────────────────────────────
+        self._wheel_blocker = NoWheelValueChangeFilter(self)
+        for w in self.findChildren(QAbstractSpinBox):
+            w.installEventFilter(self._wheel_blocker)
+        for w in self.findChildren(QComboBox):
+            w.installEventFilter(self._wheel_blocker)
+            
         self.apply_ot_defaults()
 
     def apply_ot_defaults(self) -> None:
