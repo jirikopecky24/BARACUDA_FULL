@@ -69,10 +69,12 @@ class PipelinePanel(QWidget):
         self.btn_gate_report.setEnabled(False)
         self.btn_run = QPushButton("RUN")
         self.btn_stop = QPushButton("STOP")
+        self.btn_reset = QPushButton("Reset OT Defaults")
 
         self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
+        self.btn_reset.clicked.connect(self.apply_ot_defaults)
 
         self._progress_label = QLabel("Ready")
         self.progress = QProgressBar()
@@ -370,10 +372,58 @@ class PipelinePanel(QWidget):
         layout.addStretch(1)
         layout.addWidget(self.btn_preview_gate)
         layout.addWidget(self.btn_gate_report)
+        layout.addWidget(self.btn_reset)
         layout.addWidget(self.btn_run)
         layout.addWidget(self.btn_stop)
         layout.addWidget(self._progress_label)
         layout.addWidget(self.progress)
+        
+        self.apply_ot_defaults()
+
+    def apply_ot_defaults(self) -> None:
+        """Apply requested sensible defaults to the OT user parameters."""
+        self._preview_gate_policy = "STRICT"
+        self.btn_preview_gate.setText("Preview Gate \u25b8 STRICT")
+        self._normalize_strength.setValue(1.0)
+        
+        # Tracking Defaults
+        self.auto_roi_on_load_cb.setChecked(False)
+        self._adaptive_roi.setChecked(True)
+        self._invert.setChecked(True)
+        self._blur_sigma.setValue(1.2)
+        self._radial_grad_threshold.setValue(2.0)
+        self._auto_polarity.setChecked(True)
+        
+        # Annulus Defaults
+        self._use_annulus.setChecked(True)
+        self._annulus_auto.setChecked(True)
+        self._annulus_r_inner.setValue(0.0)
+        self._annulus_r_outer.setValue(0.0)
+        self._annulus_profile_smooth.setValue(3)
+        
+        # Gate Defaults
+        self._gate_sample_count.setValue(7)
+        self._gate_pass_min_ratio.setValue(1.0)
+        self._gate_q_min.setValue(0.0)
+        self._gate_jump_max.setValue(50.0)
+        
+        # Scale Defaults
+        self._use_dataset_scale.setChecked(True)
+        self._um_per_px.setValue(0.066528)
+        
+        # Postprocess Defaults
+        self._pp_enabled.setChecked(True)
+        self._qc_enabled.setChecked(True)
+        self._qc_q_min.setValue(0.0)
+        self._qc_jump_max.setValue(50.0)
+        self._drift_mode.setCurrentIndex(1)  # lowpass_subtract
+        self._drift_window_s.setValue(1.0)
+        self._strategy_selector.setCurrentIndex(0)
+        self._stage_speed.setValue(0.0)
+        self._drag_axis.setCurrentIndex(0)
+        self._viscosity.setValue(0.001)
+        self._temperature_c.setValue(25.0)
+        self._bead_diameter_um.setValue(1.0)
 
     # -------------------- API pro Shell --------------------
 
