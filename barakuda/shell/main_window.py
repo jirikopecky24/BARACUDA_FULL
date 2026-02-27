@@ -149,33 +149,38 @@ class ShellMainWindow(QMainWindow):
         self._tick_timer = QTimer(self)
         self._tick_timer.timeout.connect(self._on_tick)
         self._tick_timer.start(250)
+        
+        self._first_show = True
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Ensure method dock stays visible above Dataset (avoid collapsing to ~0px).
-        try:
-            self.method_dock.setMinimumHeight(48)
-            self.method_dock.setMaximumHeight(80)
-            self.resizeDocks(
-                [self.method_dock, self.dataset_dock],
-                [60, 600],
-                Qt.Orientation.Vertical,
-            )
-        except Exception:
-            pass
+        
+        if self._first_show:
+            self._first_show = False
+            # Ensure method dock stays visible above Dataset (avoid collapsing to ~0px).
+            try:
+                self.method_dock.setMinimumHeight(48)
+                self.method_dock.setMaximumHeight(80)
+                self.resizeDocks(
+                    [self.method_dock, self.dataset_dock],
+                    [60, 600],
+                    Qt.Orientation.Vertical,
+                )
+            except Exception:
+                pass
 
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.pipeline_dock)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.pipeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
 
-        # Reasonable default proportions (can be adjusted by user)
-        try:
-            self.resizeDocks([self.dataset_dock, self.pipeline_dock], [300, 360], Qt.Orientation.Horizontal)
-            self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
-        except Exception:
-            pass
+            # Reasonable default proportions (can be adjusted by user)
+            try:
+                self.resizeDocks([self.dataset_dock, self.pipeline_dock], [300, 360], Qt.Orientation.Horizontal)
+                self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
+            except Exception:
+                pass
 
-        self.log_panel.log("Shell started.")
-        self._set_device_by_index(0)
+            self.log_panel.log("Shell started.")
+            self._set_device_by_index(0)
 
     def _on_tick(self) -> None:
         self._tick_counter += 1

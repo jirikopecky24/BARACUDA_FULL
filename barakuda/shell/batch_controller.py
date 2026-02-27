@@ -22,6 +22,9 @@ from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
 from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
 
+# Feature flag for the new OT pipeline (Bible v2.1)
+_USE_OT_PIPELINE = False
+
 
 @dataclass(frozen=True)
 class PreviewResult:
@@ -506,7 +509,6 @@ class BatchController:
         self._stop_requested = False
         self.last_after_overlay_path = None
         progress_fn(0, len(ok_paths), "", 0)
-        QApplication.processEvents()
 
         if device_id != "optical_tweezers":
             self._log(f"Run Batch: device '{device_id}' not implemented yet.")
@@ -576,7 +578,6 @@ class BatchController:
 
             file_path = Path(file_path)
             dataset_set_status_fn(file_path, "running")
-            QApplication.processEvents()
 
             try:
                 reader = VideoReader(file_path)
@@ -652,7 +653,72 @@ class BatchController:
                 result = self.run_manager.create_run(file_path, config)
                 run_dir = result.run_dir
                 stem = Path(file_path).stem
+                
+                # --- OT Pipeline v2.1 Shadow Run ---
+                _USE_OT_PIPELINE = True  # TEMPORARY
+                if _USE_OT_PIPELINE:
+                    def _trace(msg: str) -> None:
+                        try:
+                            with open("ot_shadow_trace.log", "a", encoding="utf-8") as f:
+                                f.write(msg + "\n")
+                        except Exception:
+                            pass
+                    
+                    try:
+                        _trace(f"ENTER shadow for <{file_path.name}>")
+                        self._log(f"[OT shadow] Running OTPipeline v2.1 for {file_path.name}...")
+                        from barakuda.devices.optical_tweezers.pipeline.orchestrator import OTPipeline
+                        from barakuda.devices.optical_tweezers.export.exporter import OTExporter
+                        
+                        strat_name = str(post_params.get("strategy", "PSD_Welch"))
+                        if strat_name == "Drag_ConstantVelocity":
+                            from barakuda.devices.optical_tweezers.strategies.drag_constant_velocity import DragConstantVelocityStrategy
+                            strat = DragConstantVelocityStrategy()
+                        elif strat_name == "Piezo_Oscillation":
+                            from barakuda.devices.optical_tweezers.strategies.piezo_oscillation import PiezoOscillationStrategy
+                            strat = PiezoOscillationStrategy()
+                        elif strat_name == "PSD_ProcFFT":
+                            from barakuda.devices.optical_tweezers.strategies.psd_procfft import PsdProcFftStrategy
+                            strat = PsdProcFftStrategy()
+                        else:  # PSD_Welch or PSD_Lorentzian fallback
+                            from barakuda.devices.optical_tweezers.strategies.psd_welch import PsdWelchStrategy
+                            strat = PsdWelchStrategy()
+                            
+                        shadow_dir = run_dir / "ot_v2_shadow"
+                        shadow_dir.mkdir(parents=True, exist_ok=True)
+                        exporter = OTExporter(shadow_dir)
+                        pipeline = OTPipeline(strat, exporter, self._log)
+                        
+                        shadow_config = {
+                            "tracking": config["tracking"],
+                            "calibration": config["calibration"],
+                            "preprocess": {
+                                "drift_mode": str(post_params.get("drift_mode", "none")),
+                                "cutoff_hz": 3.0,
+                                "filter_type": "butterworth",
+                                "order": 4
+                            },
+                            "qc": {
+                                "qc_enabled": bool(post_params.get("qc_enabled", True)),
+                                "q_min": float(post_params.get("q_min", 0.0)),
+                                "jump_max_px": float(post_params.get("jump_max_px", 50.0))
+                            },
+                            "strategy_params": post_params
+                        }
+                        
+                        pipeline.run(str(file_path), shadow_config)
+                        
+                        _trace("EXIT shadow OK")
+                        self._log(f"[OT shadow] OTPipeline finished successfully for {file_path.name}.")
+                    except Exception as err:
+                        _trace(f"EXIT shadow FAIL: {err!r}")
+                        import traceback
+                        self._log(f"[OT shadow] OTPipeline failed: {err!r}")
+                        self._log(traceback.format_exc())
+                # -----------------------------------
+
                 traj_path = run_dir / f"{stem}_trajectory.csv"
+
 
                 # Tracking loop bookkeeping for overlays:
                 first_frame = None
@@ -700,7 +766,6 @@ class BatchController:
                         if frame_idx % 10 == 0 or fi == e:
                             pct = int(100 * frame_idx / total_frames)
                             progress_fn(done, len(ok_paths), file_path.name, pct)
-                            QApplication.processEvents()
 
                         frame = reader.get_frame(fi)
                         roi_obj = current_roi
@@ -741,7 +806,6 @@ class BatchController:
                             f"{det.peak:.6f}",
                             int(roi_obj.x), int(roi_obj.y), int(roi_obj.w), int(roi_obj.h),
                         ])
-                        QApplication.processEvents()
 
                 reader.close()
 
@@ -749,7 +813,6 @@ class BatchController:
                     dataset_set_status_fn(file_path, "stopped")
                     done += 1
                     progress_fn(done, len(ok_paths), file_path.name, 100)
-                    QApplication.processEvents()
                     break
 
                 # Save overlays (never crash the run)
@@ -1098,7 +1161,6 @@ class BatchController:
 
             done += 1
             progress_fn(done, len(ok_paths), file_path.name, 100)
-            QApplication.processEvents()
 
         self._log("Run Batch done ✅")
 

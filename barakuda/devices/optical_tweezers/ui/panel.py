@@ -195,8 +195,11 @@ class PipelinePanel(QWidget):
         self._qc_jump_max.setSingleStep(1.0)
         self._qc_jump_max.setValue(50.0)
 
-        self._drift_enabled = QCheckBox("Drift correction")
-        self._drift_enabled.setChecked(True)
+        self._drift_mode = QComboBox()
+        self._drift_mode.addItem("None (passthrough)", "none")
+        self._drift_mode.addItem("Lowpass filter subtract", "lowpass_subtract")
+        self._drift_mode.addItem("Linear detrend subtract", "detrend_linear")
+        self._drift_mode.setCurrentIndex(1)  # Default: lowpass_subtract
 
         self._drift_window_s = QDoubleSpinBox()
         self._drift_window_s.setRange(0.0, 1e6)
@@ -204,11 +207,20 @@ class PipelinePanel(QWidget):
         self._drift_window_s.setSingleStep(0.1)
         self._drift_window_s.setValue(1.0)
 
-        # Physics mode (Brownian vs Dragging)
-        self._physics_mode = QComboBox()
-        self._physics_mode.addItem("BROWNIAN (equilibrium)", "BROWNIAN")
-        self._physics_mode.addItem("DRAGGING (stage pulling)", "DRAGGING")
-        self._physics_mode.setCurrentIndex(0)
+        # Strategy Selector
+        self._strategy_selector = QComboBox()
+        self._strategy_selector.addItem("PSD_Welch (Scipy/Hann)", "PSD_Welch")
+        self._strategy_selector.addItem("PSD_ProcFFT (MATLAB)", "PSD_ProcFFT")
+        self._strategy_selector.addItem("Drag (Constant Velocity)", "Drag_ConstantVelocity")
+        self._strategy_selector.addItem("Piezo Oscillation (Coming soon...)", "Piezo_Oscillation")
+        
+        # Disable the Piezo option
+        model = self._strategy_selector.model()
+        if hasattr(model, 'item'): 
+            item = model.item(3)
+            if item:
+                item.setEnabled(False)
+        self._strategy_selector.setCurrentIndex(0)
 
         self._stage_speed = QDoubleSpinBox()
         self._stage_speed.setRange(0.0, 1e9)
@@ -274,9 +286,9 @@ class PipelinePanel(QWidget):
         post_box_layout.addRow("", self._qc_enabled)
         post_box_layout.addRow("QC q_min", self._qc_q_min)
         post_box_layout.addRow("QC jump_max (px)", self._qc_jump_max)
-        post_box_layout.addRow("", self._drift_enabled)
-        post_box_layout.addRow("Drift window (s)", self._drift_window_s)
-        post_box_layout.addRow("Physics mode", self._physics_mode)
+        post_box_layout.addRow("Drift mode", self._drift_mode)
+        post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
+        post_box_layout.addRow("Calibration Strategy", self._strategy_selector)
         post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         post_box_layout.addRow("Drag axis", self._drag_axis)
         post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
@@ -385,15 +397,25 @@ class PipelinePanel(QWidget):
             "qc_enabled": bool(self._qc_enabled.isChecked()),
             "q_min": float(self._qc_q_min.value()),
             "jump_max_px": float(self._qc_jump_max.value()),
-            "drift_enabled": bool(self._drift_enabled.isChecked()),
+            "drift_mode": str(self._drift_mode.currentData()),
             "drift_window_s": float(self._drift_window_s.value()),
             "export_um_columns": True,
-            "physics_mode": str(self._physics_mode.currentData()),
+            "strategy": str(self._strategy_selector.currentData()),
             "stage_speed_um_s": float(self._stage_speed.value()),
             "drag_axis": str(self._drag_axis.currentData()),
             "viscosity_pa_s": float(self._viscosity.value()),
             "temperature_c": float(self._temperature_c.value()),
             "bead_diameter_um": float(self._bead_diameter_um.value()),
+        }
+
+    def get_strategy_params(self) -> dict:
+        return {
+            "strategy": str(self._strategy_selector.currentData()),
+            "temperature_c": float(self._temperature_c.value()),
+            "bead_diameter_um": float(self._bead_diameter_um.value()),
+            "viscosity_pa_s": float(self._viscosity.value()),
+            "stage_speed_um_s": float(self._stage_speed.value()),
+            "drag_axis": str(self._drag_axis.currentData()),
         }
 
     def get_scale_params(self) -> dict:
