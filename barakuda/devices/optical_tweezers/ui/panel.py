@@ -40,6 +40,7 @@ class PipelinePanel(QWidget):
 
         self.btn_preview_gate = QToolButton()
         self.btn_preview_gate.setText("Preview Gate")
+        self.btn_preview_gate.setToolTip("Evaluate tracking quality on a few frames before full run.")
         self.btn_preview_gate.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.btn_preview_gate.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         from PyQt6.QtWidgets import QSizePolicy
@@ -75,10 +76,14 @@ class PipelinePanel(QWidget):
         self.btn_preview_gate.clicked.connect(self.preview_gate_clicked.emit)
 
         self.btn_gate_report = QPushButton("Report\u2026")
+        self.btn_gate_report.setToolTip("View detailed report of the Preview Gate results.")
         self.btn_gate_report.setEnabled(False)
         self.btn_run = QPushButton("RUN")
+        self.btn_run.setToolTip("Start processing the selected files.")
         self.btn_stop = QPushButton("STOP")
+        self.btn_stop.setToolTip("Stop the current batch processing.")
         self.btn_reset = QPushButton("Reset OT Defaults")
+        self.btn_reset.setToolTip("Reset all settings to their default values.")
 
         self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
@@ -96,10 +101,6 @@ class PipelinePanel(QWidget):
         self._normalize_strength.setValue(1.0)
 
         # ── Compute ───────────────────────────────────────────────
-        self.cb_profile = QComboBox()
-        self.cb_profile.addItems(["Auto", "GPU (force)", "CPU (force)"])
-        self.cb_profile.setCurrentText("Auto")
-        self.cb_profile.setToolTip("Select compute backend (Auto recommended). Only affects compatible track methods.")
 
         # tracking params
         self._tracking_lbl = QLabel("Tracking: Radial Symmetry")
@@ -311,7 +312,6 @@ class PipelinePanel(QWidget):
         params_box = QWidget()
         params_box_layout = QFormLayout(params_box)
 
-        params_box_layout.addRow("Compute Profile", self.cb_profile)
         params_box_layout.addRow("", self._tracking_lbl)
         params_box_layout.addRow("", self.btn_auto_roi)
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
@@ -449,7 +449,6 @@ class PipelinePanel(QWidget):
         self._preview_gate_policy = "STRICT"
         self.btn_preview_gate.setText("Preview Gate \u25b8 STRICT")
         self._normalize_strength.setValue(1.0)
-        self.cb_profile.setCurrentText("Auto")
         
         # Tracking Defaults
         self.auto_roi_on_load_cb.setChecked(False)
@@ -527,22 +526,14 @@ class PipelinePanel(QWidget):
         self.progress.setValue(pct)
 
     def get_tracking_params(self) -> dict:
-        # method UI zatím nemáme → držíme RS jako default
+# method UI is removed, keep RS as default
         use_ann = bool(self._use_annulus.isChecked())
         r_in = float(self._annulus_r_inner.value())
         r_out = float(self._annulus_r_outer.value())
-        
-        prof_txt = self.cb_profile.currentText()
-        if "GPU" in prof_txt:
-            prof = "gpu"
-        elif "CPU" in prof_txt:
-            prof = "cpu"
-        else:
-            prof = "auto"
             
         return {
             "method": "RADIAL_SYMMETRY",
-            "compute_profile": prof,
+            "compute_profile": "auto",
             "adaptive_roi": bool(self._adaptive_roi.isChecked()),
             "invert": bool(self._invert.isChecked()),
             "blur_sigma": float(self._blur_sigma.value()),
