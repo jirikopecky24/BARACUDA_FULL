@@ -28,6 +28,7 @@ class DatasetPanel(QWidget):
 
         self._items: List[DatasetItem] = []
         self._path_to_item: Dict[str, QListWidgetItem] = {}
+        self._item_params: Dict[str, dict] = {}
 
         title = QLabel("Dataset")
         title.setStyleSheet("font-weight: 600;")
@@ -129,6 +130,20 @@ class DatasetPanel(QWidget):
             })
         return res
 
+    # --- PER-ITEM PARAMS API ---
+
+    def get_item_params(self, path: Path | str) -> dict | None:
+        key = str(Path(path))
+        return self._item_params.get(key)
+
+    def set_item_params(self, path: Path | str, params: dict) -> None:
+        key = str(Path(path))
+        self._item_params[key] = params
+
+    def has_item(self, path: Path | str) -> bool:
+        key = str(Path(path))
+        return key in self._path_to_item
+
     # --- List item removal (files on disk are not affected) ---
 
     def remove_selected(self) -> None:
@@ -145,6 +160,7 @@ class DatasetPanel(QWidget):
             self._list.takeItem(row)
 
             self._path_to_item.pop(key, None)
+            self._item_params.pop(key, None)
 
             # also remove from _items
             self._items = [d for d in self._items if str(d.path) != key]
@@ -154,6 +170,7 @@ class DatasetPanel(QWidget):
         self._list.clear()
         self._items.clear()
         self._path_to_item.clear()
+        self._item_params.clear()
 
     # --- STATUS API (called by MainWindow) ---
 
