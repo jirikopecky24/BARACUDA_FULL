@@ -22,6 +22,32 @@ def centered_roi(cx: float, cy: float, roi_size: int, frame_shape: Tuple[int, ..
     
     return Roi(x=rx, y=ry, w=roi_size, h=roi_size)
 
+def refine(frame: np.ndarray, roi: Roi) -> Tuple[Roi, object]:
+    """Helper to detect within ROI and recenter if det is good."""
+    det = track_particle(
+        frame,
+        roi=roi,
+        method=TrackingMethod.RADIAL_SYMMETRY,
+        auto_polarity=True,
+        blur_sigma=1.2,
+        radial_grad_threshold=2.0
+    )
+    if det.quality < 0.1:
+        return roi, det
+        
+    # track_particle currently returns global coordinates because it adds ox, oy internally.
+    # self-check guard just in case it returned local:
+    cx, cy = det.x_px, det.y_px
+    if cx < 0 or (cx <= roi.w and cy <= roi.h and roi.x > 0 and roi.y > 0):
+        # A tiny heuristic in case we missed a local-coord edge case (though code looks global)
+        # If it's suspiciously local (e.g. x < roi.w despite ROI being far from 0)
+        # Actually tracking.py line 367 states: x = float(ox) + float(cx) which means it's GLOBAL.
+        # So we leave cx, cy as is.
+        pass
+        
+    roi2 = centered_roi(cx, cy, roi.w, frame.shape)
+    return roi2, det
+
 def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, int, int, int]:
     """
     Finds the most prominent dark or bright spot and returns a centered ROI.
@@ -87,19 +113,15 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
         roi_size_try |= 1
 
         roi_try = centered_roi(det.x_px, det.y_px, roi_size_try, frame.shape)
-        det_ref = track_particle(
-            frame, 
-            roi=roi_try, 
-            method=TrackingMethod.RADIAL_SYMMETRY, 
-            auto_polarity=True,
-            blur_sigma=1.2,
-            radial_grad_threshold=2.0
-        )
-        if det_ref.quality >= 0.1:
-            # Here det_ref coordinates are locally inside roi_try. We will unify this in Step 3.
-            # But the requirement asks us to use the helper.
-            # We skip using the helper for the result of refine() until Step 2/3.
-            roi2 = roi_follow_center(frame.shape, roi_try, det_ref.x_px, det_ref.y_px)
+        
+        # Pass 1
+        roi1, det1 = refine(frame, roi_try)
+        if det1.quality < 0.1:
+            continue
+            
+        # Pass 2
+        roi2, det2 = refine(frame, roi1)
+        if det2.quality >= 0.1:
             return (roi2.x, roi2.y, roi2.w, roi2.h)
 
     # Fallback
@@ -109,13 +131,5 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
     
     fx, fy, fw, fh = auto_detect_particle(frame, roi_size=roi_size_try)
     fallback_roi = Roi(x=fx, y=fy, w=fw, h=fh)
-    det_fall = track_particle(
-        frame,
-        roi=fallback_roi,
-        method=TrackingMethod.RADIAL_SYMMETRY,
-        auto_polarity=True,
-        blur_sigma=1.2,
-        radial_grad_threshold=2.0
-    )
-    roi_fin = roi_follow_center(frame.shape, fallback_roi, det_fall.x_px, det_fall.y_px)
+    roi_fin, _ = refine(frame, fallback_roi)
     return (roi_fin.x, roi_fin.y, roi_fin.w, roi_fin.h)
