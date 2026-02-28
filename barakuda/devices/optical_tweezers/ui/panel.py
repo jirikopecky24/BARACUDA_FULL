@@ -346,22 +346,22 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("", self.btn_save_scale)
 
         post_box = QWidget()
-        post_box_layout = QFormLayout(post_box)
-        post_box_layout.addRow("", self._pp_enabled)
-        post_box_layout.addRow("", self._qc_enabled)
+        self.post_box_layout = QFormLayout(post_box)
+        self.post_box_layout.addRow("", self._pp_enabled)
+        self.post_box_layout.addRow("", self._qc_enabled)
         
         # Hide debug/advanced postprocessing controls
         self._qc_q_min.setVisible(False)
         self._qc_jump_max.setVisible(False)
 
-        post_box_layout.addRow("Drift mode", self._drift_mode)
-        post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
-        post_box_layout.addRow("Calibration Strategy", self._strategy_selector)
-        post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
-        post_box_layout.addRow("Drag axis", self._drag_axis)
-        post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
-        post_box_layout.addRow("Temperature (°C)", self._temperature_c)
-        post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
+        self.post_box_layout.addRow("Drift mode", self._drift_mode)
+        self.post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
+        self.post_box_layout.addRow("Calibration Strategy", self._strategy_selector)
+        self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
+        self.post_box_layout.addRow("Drag axis", self._drag_axis)
+        self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
+        self.post_box_layout.addRow("Temperature (°C)", self._temperature_c)
+        self.post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
 
         def _collapsible(title_text: str, inner: QWidget, expanded: bool) -> QWidget:
             wrap = QWidget()
@@ -556,7 +556,8 @@ class PipelinePanel(QWidget):
         }
 
     def get_postprocess_params(self) -> dict:
-        return {
+        mode = getattr(self, "_calibration_mode", "Brownian")
+        params = {
             "enabled": bool(self._pp_enabled.isChecked()),
             "qc_enabled": bool(self._qc_enabled.isChecked()),
             "q_min": float(self._qc_q_min.value()),
@@ -564,24 +565,34 @@ class PipelinePanel(QWidget):
             "drift_mode": str(self._drift_mode.currentData()),
             "drift_window_s": float(self._drift_window_s.value()),
             "export_um_columns": True,
-            "calibration_mode": getattr(self, "_calibration_mode", "Brownian"),
+            "calibration_mode": mode,
             "strategy": str(self._strategy_selector.currentData()),
-            "stage_speed_um_s": float(self._stage_speed.value()),
-            "drag_axis": str(self._drag_axis.currentData()),
-            "viscosity_pa_s": float(self._viscosity.value()),
             "temperature_c": float(self._temperature_c.value()),
-            "bead_diameter_um": float(self._bead_diameter_um.value()),
         }
+        if mode == "Drag":
+            params.update({
+                "stage_speed_um_s": float(self._stage_speed.value()),
+                "drag_axis": str(self._drag_axis.currentData()),
+                "viscosity_pa_s": float(self._viscosity.value()),
+                "bead_diameter_um": float(self._bead_diameter_um.value()),
+            })
+        return params
 
     def get_strategy_params(self) -> dict:
-        return {
+        mode = getattr(self, "_calibration_mode", "Brownian")
+        params = {
+            "calibration_mode": mode,
             "strategy": str(self._strategy_selector.currentData()),
             "temperature_c": float(self._temperature_c.value()),
-            "bead_diameter_um": float(self._bead_diameter_um.value()),
-            "viscosity_pa_s": float(self._viscosity.value()),
-            "stage_speed_um_s": float(self._stage_speed.value()),
-            "drag_axis": str(self._drag_axis.currentData()),
         }
+        if mode == "Drag":
+            params.update({
+                "stage_speed_um_s": float(self._stage_speed.value()),
+                "drag_axis": str(self._drag_axis.currentData()),
+                "viscosity_pa_s": float(self._viscosity.value()),
+                "bead_diameter_um": float(self._bead_diameter_um.value()),
+            })
+        return params
 
     def get_scale_params(self) -> dict:
         return {
@@ -610,16 +621,31 @@ class PipelinePanel(QWidget):
     def set_end_frame(self, end_frame: int) -> None:
         self._end_frame.setValue(int(end_frame))
 
+    def _set_row_visible(self, field: QWidget, visible: bool) -> None:
+        field.setVisible(visible)
+        if hasattr(self, "post_box_layout"):
+            label = self.post_box_layout.labelForField(field)
+            if label:
+                label.setVisible(visible)
+
     def set_calibration_mode(self, mode: str) -> None:
         self._calibration_mode = str(mode)
         if mode == "Brownian":
             idx = self._strategy_selector.findText("PSD_Welch (Scipy/Hann)")
             if idx >= 0:
                 self._strategy_selector.setCurrentIndex(idx)
+            self._set_row_visible(self._stage_speed, False)
+            self._set_row_visible(self._drag_axis, False)
+            self._set_row_visible(self._viscosity, False)
+            self._set_row_visible(self._bead_diameter_um, False)
         elif mode == "Drag":
             idx = self._strategy_selector.findText("Drag (Constant Velocity)")
             if idx >= 0:
                 self._strategy_selector.setCurrentIndex(idx)
+            self._set_row_visible(self._stage_speed, True)
+            self._set_row_visible(self._drag_axis, True)
+            self._set_row_visible(self._viscosity, True)
+            self._set_row_visible(self._bead_diameter_um, True)
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()
