@@ -648,7 +648,7 @@ class PipelinePanel(QWidget):
             self._set_row_visible(self._stage_speed, False)
             self._set_row_visible(self._drag_axis, False)
             self._set_row_visible(self._viscosity, False)
-            self._set_row_visible(self._bead_diameter_um, False)
+            self._set_row_visible(self._bead_diameter_um, True)
         elif mode == "Drag":
             self._set_row_visible(self._stage_speed, True)
             self._set_row_visible(self._drag_axis, True)
