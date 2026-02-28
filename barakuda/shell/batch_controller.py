@@ -792,7 +792,7 @@ class BatchController:
                         last_xy = (float(det.x_px), float(det.y_px))
                         last_roi = (roi_obj.x, roi_obj.y, roi_obj.w, roi_obj.h)
 
-                        if adaptive_roi:
+                        if adaptive_roi and first_frame is not None and fi > s:
                             # Follow the detected center with fixed window size.
                             current_roi = roi_follow_center(frame.shape, current_roi, det.x_px, det.y_px)
 

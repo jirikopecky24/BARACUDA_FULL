@@ -439,6 +439,7 @@ class ShellMainWindow(QMainWindow):
             
             if hasattr(self._device_panel, "_adaptive_roi"):
                 self._device_panel._adaptive_roi.setChecked(True)
+            self._skip_adaptive_first_frame = True
         except Exception as e:
             self.log_panel.log(f"Auto ROI ERROR: {e!r}")
 
