@@ -30,8 +30,11 @@ class PipelinePanel(QWidget):
     save_dataset_scale_clicked = pyqtSignal()
     auto_roi_clicked = pyqtSignal()
     
-    # Emitted whenever a tracked value changes
-    value_changed = pyqtSignal()
+    
+    # Emitted when a user asks to load a specific profile (str: profile_name)
+    load_profile_requested = pyqtSignal(str)
+    # Emitted when a user asks to save the current settings into a profile (str: profile_name)
+    save_profile_requested = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -402,7 +405,41 @@ class PipelinePanel(QWidget):
         tab_run_layout = QVBoxLayout(tab_run)
         tab_run_layout.setContentsMargins(8, 8, 8, 8)
         
-        # Move action buttons into Run tab
+        # ── Profile Management ──
+        prof_box = QWidget()
+        prof_layout = QVBoxLayout(prof_box)
+        prof_layout.setContentsMargins(0, 0, 0, 10)
+        
+        prof_lbl = QLabel("OT Pipeline Profile")
+        prof_lbl.setStyleSheet("font-weight: bold; color: #555;")
+        
+        row1 = QHBoxLayout()
+        self._profile_combo = QComboBox()
+        self._profile_combo.setToolTip("Select a processing profile.")
+        self._profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        row1.addWidget(self._profile_combo)
+        
+        row2 = QHBoxLayout()
+        self.btn_save_profile = QPushButton("Save Profile")
+        self.btn_save_profile.setToolTip("Save current settings to the active profile.")
+        self.btn_save_profile_as = QPushButton("Save As...")
+        self.btn_save_profile_as.setToolTip("Save current settings as a new profile.")
+        row2.addWidget(self.btn_save_profile)
+        row2.addWidget(self.btn_save_profile_as)
+        row2.addStretch(1)
+
+        prof_layout.addWidget(prof_lbl)
+        prof_layout.addLayout(row1)
+        prof_layout.addLayout(row2)
+        
+        tab_run_layout.addWidget(prof_box)
+        
+        sep_prof = QFrame()
+        sep_prof.setFrameShape(QFrame.Shape.HLine)
+        sep_prof.setStyleSheet("color: #ddd;")
+        tab_run_layout.addWidget(sep_prof)
+        
+        # ── Action buttons ──
         tab_run_layout.addWidget(self.btn_preview_gate)
         tab_run_layout.addWidget(self.btn_gate_report)
         tab_run_layout.addWidget(self.btn_run)
@@ -505,6 +542,54 @@ class PipelinePanel(QWidget):
         self._bead_diameter_um.setValue(1.0)
         
         self._wire_value_changed_signals()
+        
+        # Profile signals
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
+        self.btn_save_profile.clicked.connect(self._on_save_profile_clicked)
+        self.btn_save_profile_as.clicked.connect(self._on_save_profile_as_clicked)
+
+    # -------------------- Profile UI wiring --------------------
+
+    def update_profile_list(self, profiles: list[str], active_profile: str = "") -> None:
+        """Update the combo box block signalling to prevent load_profile_requested triggers."""
+        was_blocked = self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        
+        if not profiles:
+            self._profile_combo.addItem("<No profiles found>")
+            self._profile_combo.setEnabled(False)
+            self.btn_save_profile.setEnabled(False)
+        else:
+            self._profile_combo.setEnabled(True)
+            self.btn_save_profile.setEnabled(True)
+            for p in profiles:
+                self._profile_combo.addItem(p)
+                
+            if active_profile:
+                idx = self._profile_combo.findText(active_profile)
+                if idx >= 0:
+                    self._profile_combo.setCurrentIndex(idx)
+                    
+        self._profile_combo.blockSignals(was_blocked)
+
+    def _on_profile_combo_changed(self, idx: int) -> None:
+        if idx < 0 or not self._profile_combo.isEnabled():
+            return
+        prof_name = self._profile_combo.currentText()
+        if prof_name:
+            self.load_profile_requested.emit(prof_name)
+            
+    def _on_save_profile_clicked(self) -> None:
+        if not self._profile_combo.isEnabled(): return
+        prof_name = self._profile_combo.currentText()
+        if prof_name:
+            self.save_profile_requested.emit(prof_name)
+            
+    def _on_save_profile_as_clicked(self) -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        prof_name, ok = QInputDialog.getText(self, "Save Profile As", "New profile name:")
+        if ok and prof_name.strip():
+            self.save_profile_requested.emit(prof_name.strip())
 
     # -------------------- Per-video UI wiring --------------------
 

@@ -326,11 +326,19 @@ class ShellMainWindow(QMainWindow):
                     
                 if hasattr(self._device_panel, "auto_roi_clicked"):
                     self._device_panel.auto_roi_clicked.connect(self._on_auto_roi)
+                    
+                if hasattr(self._device_panel, "load_profile_requested"):
+                    self._device_panel.load_profile_requested.connect(self._on_ot_load_profile)
+                    self._device_panel.save_profile_requested.connect(self._on_ot_save_profile)
+                    
                 try:
                     self._ot_preview.roi_changed.disconnect()
                 except Exception:
                     pass
                 self._ot_preview.roi_changed.connect(self._on_manual_roi_edit)
+                
+                # Fetch profiles and populate UI
+                self._update_ot_profile_list()
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
