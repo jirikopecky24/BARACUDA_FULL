@@ -564,6 +564,7 @@ class PipelinePanel(QWidget):
             "drift_mode": str(self._drift_mode.currentData()),
             "drift_window_s": float(self._drift_window_s.value()),
             "export_um_columns": True,
+            "calibration_mode": getattr(self, "_calibration_mode", "Brownian"),
             "strategy": str(self._strategy_selector.currentData()),
             "stage_speed_um_s": float(self._stage_speed.value()),
             "drag_axis": str(self._drag_axis.currentData()),
@@ -611,6 +612,14 @@ class PipelinePanel(QWidget):
 
     def set_calibration_mode(self, mode: str) -> None:
         self._calibration_mode = str(mode)
+        if mode == "Brownian":
+            idx = self._strategy_selector.findText("PSD_Welch (Scipy/Hann)")
+            if idx >= 0:
+                self._strategy_selector.setCurrentIndex(idx)
+        elif mode == "Drag":
+            idx = self._strategy_selector.findText("Drag (Constant Velocity)")
+            if idx >= 0:
+                self._strategy_selector.setCurrentIndex(idx)
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()

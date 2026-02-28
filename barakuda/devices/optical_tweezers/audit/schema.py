@@ -25,6 +25,7 @@ def build_ot_summary(
         "qc": qc_audit,
         "strategy": {
             "name": strategy_name,
+            "calibration_mode": strategy_params.get("calibration_mode", "Brownian"),
             "parameters": strategy_params,
             "results": result_dict
         },
