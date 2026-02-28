@@ -4,6 +4,24 @@ import numpy as np
 from typing import Tuple
 from barakuda.core.tracking import track_particle, TrackingMethod, Roi, roi_follow_center
 
+def centered_roi(cx: float, cy: float, roi_size: int, frame_shape: Tuple[int, ...]) -> Roi:
+    """Helper for exact ROI center math, clamping, and odd size enforcing."""
+    h = int(frame_shape[0])
+    w = int(frame_shape[1])
+    
+    roi_size = int(max(16, roi_size))
+    roi_size = min(roi_size, w, h)
+    roi_size |= 1  # enforce odd
+    
+    half = (roi_size - 1) / 2.0
+    rx = int(round(cx - half))
+    ry = int(round(cy - half))
+    
+    rx = max(0, min(rx, w - roi_size))
+    ry = max(0, min(ry, h - roi_size))
+    
+    return Roi(x=rx, y=ry, w=roi_size, h=roi_size)
+
 def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, int, int, int]:
     """
     Finds the most prominent dark or bright spot and returns a centered ROI.
@@ -33,15 +51,8 @@ def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, in
     _, _, _, max_loc = cv2.minMaxLoc(combined)
     cx, cy = max_loc
     
-    h, w = gray.shape
-    roi_w = roi_size
-    roi_h = roi_size
-    
-    # Clamp bounds to image size
-    rx = max(0, min(cx - roi_w // 2, w - roi_w))
-    ry = max(0, min(cy - roi_h // 2, h - roi_h))
-    
-    return (rx, ry, roi_w, roi_h)
+    roi = centered_roi(cx, cy, roi_size, gray.shape)
+    return (roi.x, roi.y, roi.w, roi.h)
 
 def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, margin_factor: float = 1.8) -> Tuple[int, int, int, int]:
     """
@@ -75,12 +86,7 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
         roi_size_try = min(roi_size_try, w, h)
         roi_size_try |= 1
 
-        cx, cy = int(round(det.x_px)), int(round(det.y_px))
-        
-        rx = max(0, min(cx - roi_size_try // 2, w - roi_size_try))
-        ry = max(0, min(cy - roi_size_try // 2, h - roi_size_try))
-        
-        roi_try = Roi(x=rx, y=ry, w=roi_size_try, h=roi_size_try)
+        roi_try = centered_roi(det.x_px, det.y_px, roi_size_try, frame.shape)
         det_ref = track_particle(
             frame, 
             roi=roi_try, 
@@ -90,6 +96,9 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
             radial_grad_threshold=2.0
         )
         if det_ref.quality >= 0.1:
+            # Here det_ref coordinates are locally inside roi_try. We will unify this in Step 3.
+            # But the requirement asks us to use the helper.
+            # We skip using the helper for the result of refine() until Step 2/3.
             roi2 = roi_follow_center(frame.shape, roi_try, det_ref.x_px, det_ref.y_px)
             return (roi2.x, roi2.y, roi2.w, roi2.h)
 
