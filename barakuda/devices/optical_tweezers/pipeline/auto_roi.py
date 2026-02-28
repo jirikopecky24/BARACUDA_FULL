@@ -2,7 +2,7 @@ import cv2
 import math
 import numpy as np
 from typing import Tuple
-from barakuda.core.tracking import track_particle, TrackingMethod
+from barakuda.core.tracking import track_particle, TrackingMethod, Roi, roi_follow_center
 
 def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, int, int, int]:
     """
@@ -77,4 +77,14 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
     rx = max(0, min(cx - roi_size // 2, w - roi_size))
     ry = max(0, min(cy - roi_size // 2, h - roi_size))
     
-    return (rx, ry, roi_size, roi_size)
+    roi = Roi(x=rx, y=ry, w=roi_size, h=roi_size)
+    det2 = track_particle(
+        frame, 
+        roi=roi, 
+        method=TrackingMethod.RADIAL_SYMMETRY, 
+        auto_polarity=True,
+        blur_sigma=1.2,
+        radial_grad_threshold=2.0
+    )
+    roi2 = roi_follow_center(frame.shape, roi, det2.x_px, det2.y_px)
+    return (roi2.x, roi2.y, roi2.w, roi2.h)
