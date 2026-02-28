@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
     QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
-    QSizePolicy, QAbstractSpinBox
+    QSizePolicy, QAbstractSpinBox, QTabWidget
 )
 
 class NoWheelValueChangeFilter(QObject):
@@ -228,7 +228,15 @@ class PipelinePanel(QWidget):
         self.btn_save_scale.setToolTip("Save the above scale value to the current dataset's sidecar file.")
         self.btn_save_scale.clicked.connect(self.save_dataset_scale_clicked.emit)
 
-        # OT-3.1 postprocess (QC + drift)
+        # ── Export ───────────────────────────────────────────────
+        export_box = QWidget()
+        export_layout = QFormLayout(export_box)
+        # We can put some placeholders here or move Export-related stuff later
+        export_lbl = QLabel("Export Options")
+        export_lbl.setStyleSheet("color: #666; font-weight: bold;")
+        export_layout.addRow("", export_lbl)
+        
+        # ── Postprocess ───────────────────────────────────────────────
         self._pp_enabled = QCheckBox("Enable OT-3.1 postprocess (QC + drift)")
         self._pp_enabled.setToolTip("Apply quality control and drift correction after tracking.")
         self._pp_enabled.setChecked(True)
@@ -356,34 +364,6 @@ class PipelinePanel(QWidget):
         self.post_box_layout.addRow("Drag axis", self._drag_axis)
         self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
         self.post_box_layout.addRow("Temperature (°C)", self._temperature_c)
-        self.post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
-
-        def _collapsible(title_text: str, inner: QWidget, expanded: bool) -> QWidget:
-            wrap = QWidget()
-            v = QVBoxLayout(wrap)
-            v.setContentsMargins(0, 0, 0, 0)
-            v.setSpacing(4)
-
-            btn = QToolButton()
-            btn.setCheckable(True)
-            btn.setChecked(bool(expanded))
-
-            def _sync_text(checked: bool) -> None:
-                btn.setText(("▾ " if checked else "▸ ") + title_text)
-
-            _sync_text(bool(expanded))
-            inner.setVisible(bool(expanded))
-
-            def _on_toggle(checked: bool) -> None:
-                inner.setVisible(bool(checked))
-                _sync_text(bool(checked))
-
-            btn.toggled.connect(_on_toggle)
-
-            v.addWidget(btn)
-            v.addWidget(inner)
-            return wrap
-
         self._calibration_mode = "Brownian"
 
         layout = QVBoxLayout(self)
@@ -391,44 +371,57 @@ class PipelinePanel(QWidget):
         layout.setSpacing(0)
 
         # ══════════════════════════════════════════════════════════
-        # SCROLLABLE: all parameter sections
+        # TABS: replacing scrollable collapsibles
         # ══════════════════════════════════════════════════════════
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(8, 4, 8, 4)
-        scroll_layout.setSpacing(6)
-
-        scroll_layout.addWidget(_collapsible("Parameters", params_box, expanded=False))
-        scroll_layout.addWidget(_collapsible("Postprocess", post_box, expanded=False))
-        scroll_layout.addStretch(1)
-
-        scroll.setWidget(scroll_content)
-        layout.addWidget(scroll, stretch=1)
-
-        # ══════════════════════════════════════════════════════════
-        # FIXED BOTTOM: action buttons
-        # ══════════════════════════════════════════════════════════
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #ccc;")
-        layout.addWidget(sep)
-
-        actions = QVBoxLayout()
-        actions.setContentsMargins(8, 4, 8, 6)
-
-        actions.addWidget(self.btn_preview_gate)
-        actions.addWidget(self.btn_gate_report)
-        actions.addWidget(self.btn_reset)
-        actions.addWidget(self.btn_run)
-        actions.addWidget(self.btn_stop)
-        actions.addWidget(self._progress_label)
-        actions.addWidget(self.progress)
+        self.tabs = QTabWidget()
         
-        layout.addLayout(actions)
+        tab_run = QWidget()
+        tab_run_layout = QVBoxLayout(tab_run)
+        tab_run_layout.setContentsMargins(8, 8, 8, 8)
+        
+        # Move action buttons into Run tab
+        tab_run_layout.addWidget(self.btn_preview_gate)
+        tab_run_layout.addWidget(self.btn_gate_report)
+        tab_run_layout.addWidget(self.btn_run)
+        tab_run_layout.addWidget(self.btn_stop)
+        tab_run_layout.addWidget(self.btn_reset)
+        tab_run_layout.addWidget(self._progress_label)
+        tab_run_layout.addWidget(self.progress)
+        tab_run_layout.addStretch(1)
+
+        tab_tracking = QWidget()
+        tab_tracking_layout = QVBoxLayout(tab_tracking)
+        tab_tracking_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_trk = QScrollArea()
+        scroll_trk.setWidgetResizable(True)
+        scroll_trk.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_trk.setWidget(params_box)
+        tab_tracking_layout.addWidget(scroll_trk)
+
+        tab_postprocess = QWidget()
+        tab_postprocess_layout = QVBoxLayout(tab_postprocess)
+        tab_postprocess_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_post = QScrollArea()
+        scroll_post.setWidgetResizable(True)
+        scroll_post.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_post.setWidget(post_box)
+        tab_postprocess_layout.addWidget(scroll_post)
+        
+        tab_export = QWidget()
+        tab_export_layout = QVBoxLayout(tab_export)
+        tab_export_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_exp = QScrollArea()
+        scroll_exp.setWidgetResizable(True)
+        scroll_exp.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_exp.setWidget(export_box)
+        tab_export_layout.addWidget(scroll_exp)
+
+        self.tabs.addTab(tab_run, "Run")
+        self.tabs.addTab(tab_tracking, "Tracking")
+        self.tabs.addTab(tab_postprocess, "Postprocess")
+        self.tabs.addTab(tab_export, "Export")
+
+        layout.addWidget(self.tabs, stretch=1)
         
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
