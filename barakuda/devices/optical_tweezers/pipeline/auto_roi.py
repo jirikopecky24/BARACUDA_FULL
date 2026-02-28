@@ -55,36 +55,58 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
 
     bead_radius_px = (bead_diameter_um / 2.0) / um_per_px
     roi_half = math.ceil(margin_factor * bead_radius_px)
-    roi_size = int(roi_half * 2)
-    roi_size = max(16, roi_size)
-    roi_size = min(roi_size, w, h)
-    roi_size |= 1
+    base_size = int(roi_half * 2)
 
-    det = track_particle(
+    for attempt in range(3):
+        det = track_particle(
+            frame,
+            roi=None, 
+            method=TrackingMethod.RADIAL_SYMMETRY, 
+            auto_polarity=True,
+            blur_sigma=1.2,
+            radial_grad_threshold=2.0
+        )
+        
+        if det.quality < 0.1:
+            break
+
+        roi_size_try = int(base_size * (1.0 + 0.25 * attempt))
+        roi_size_try = max(16, roi_size_try)
+        roi_size_try = min(roi_size_try, w, h)
+        roi_size_try |= 1
+
+        cx, cy = int(round(det.x_px)), int(round(det.y_px))
+        
+        rx = max(0, min(cx - roi_size_try // 2, w - roi_size_try))
+        ry = max(0, min(cy - roi_size_try // 2, h - roi_size_try))
+        
+        roi_try = Roi(x=rx, y=ry, w=roi_size_try, h=roi_size_try)
+        det_ref = track_particle(
+            frame, 
+            roi=roi_try, 
+            method=TrackingMethod.RADIAL_SYMMETRY, 
+            auto_polarity=True,
+            blur_sigma=1.2,
+            radial_grad_threshold=2.0
+        )
+        if det_ref.quality >= 0.1:
+            roi2 = roi_follow_center(frame.shape, roi_try, det_ref.x_px, det_ref.y_px)
+            return (roi2.x, roi2.y, roi2.w, roi2.h)
+
+    # Fallback
+    roi_size_try = max(16, base_size)
+    roi_size_try = min(roi_size_try, w, h)
+    roi_size_try |= 1
+    
+    fx, fy, fw, fh = auto_detect_particle(frame, roi_size=roi_size_try)
+    fallback_roi = Roi(x=fx, y=fy, w=fw, h=fh)
+    det_fall = track_particle(
         frame,
-        roi=None, 
-        method=TrackingMethod.RADIAL_SYMMETRY, 
+        roi=fallback_roi,
+        method=TrackingMethod.RADIAL_SYMMETRY,
         auto_polarity=True,
         blur_sigma=1.2,
         radial_grad_threshold=2.0
     )
-    
-    if det.quality < 0.1:
-        return auto_detect_particle(frame, roi_size=roi_size)
-
-    cx, cy = int(round(det.x_px)), int(round(det.y_px))
-    
-    rx = max(0, min(cx - roi_size // 2, w - roi_size))
-    ry = max(0, min(cy - roi_size // 2, h - roi_size))
-    
-    roi = Roi(x=rx, y=ry, w=roi_size, h=roi_size)
-    det2 = track_particle(
-        frame, 
-        roi=roi, 
-        method=TrackingMethod.RADIAL_SYMMETRY, 
-        auto_polarity=True,
-        blur_sigma=1.2,
-        radial_grad_threshold=2.0
-    )
-    roi2 = roi_follow_center(frame.shape, roi, det2.x_px, det2.y_px)
-    return (roi2.x, roi2.y, roi2.w, roi2.h)
+    roi_fin = roi_follow_center(frame.shape, fallback_roi, det_fall.x_px, det_fall.y_px)
+    return (roi_fin.x, roi_fin.y, roi_fin.w, roi_fin.h)
