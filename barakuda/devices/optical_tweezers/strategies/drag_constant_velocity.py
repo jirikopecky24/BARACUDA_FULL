@@ -3,11 +3,6 @@ from __future__ import annotations
 import numpy as np
 from typing import Any
 
-from barakuda.core.ot_physics import (
-    DragParams,
-    compute_dragging_from_offset,
-    stokes_gamma_n_s_per_m,
-)
 from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrategy
 
 
@@ -60,29 +55,81 @@ class DragConstantVelocityStrategy(CalibrationStrategy):
         # Offset is the median of the steady state segment
         offset_um = np.median(steady_segment)
 
-        # 3. Compute stiffness
-        drag_p = DragParams(
-            stage_speed_um_s=stage_speed_um_s,
-            axis=axis,
-            viscosity_pa_s=viscosity_pa_s,
-            bead_radius_um=bead_radius_um
-        )
-        res = compute_dragging_from_offset(offset_um, drag_p)
+        # 3. Compute stiffness or viscosity
+        stage_speed_m_s = abs(stage_speed_um_s) * 1e-6
+        r_m = bead_radius_um * 1e-6
+        offset_m = abs(float(offset_um)) * 1e-6
+        
+        qc_warnings = []
+        if stage_speed_m_s < 1e-12:
+            qc_warnings.append("Stage speed is ~0, poor drag calibration")
+        if offset_m < 1e-12:
+            qc_warnings.append("Offset is ~0, unreliable drag calibration")
+            
+        temp_c = float(params.get("temperature_c", 25.0))
+        T_k = temp_c + 273.15
+        K_B = 1.380649e-23
+        kbt = K_B * T_k
+        
+        provided_k_pn_um = params.get("kappa_pN_um", None)
+        if provided_k_pn_um is not None and float(provided_k_pn_um) > 0:
+            k_n_m = float(provided_k_pn_um) * 1e-6
+            drag_force_n = k_n_m * offset_m
+            
+            if stage_speed_m_s > 0 and r_m > 0:
+                viscosity_pa_s_calc = drag_force_n / (6.0 * np.pi * r_m * stage_speed_m_s)
+            else:
+                viscosity_pa_s_calc = 0.0
+                qc_warnings.append("Cannot compute eta (v or r is 0)")
+            kappa_pn_um = float(provided_k_pn_um)
+        else:
+            viscosity_pa_s_calc = viscosity_pa_s
+            gamma_ns_m = 6.0 * np.pi * viscosity_pa_s_calc * r_m
+            drag_force_n = gamma_ns_m * stage_speed_m_s
+            
+            if offset_m > 0:
+                k_n_m = drag_force_n / offset_m
+            else:
+                k_n_m = 0.0
+                qc_warnings.append("Cannot compute kappa (offset is 0)")
+            kappa_pn_um = k_n_m * 1e6
+            
+        gamma_ns_m = 6.0 * np.pi * viscosity_pa_s_calc * r_m
+        D_m2_s = kbt / gamma_ns_m if gamma_ns_m > 0 else 0.0
+        
+        derived_data = {
+            "fc_hz": float("nan"),
+            "k_pN_um": float(kappa_pn_um),
+            "eta_Pa_s": float(viscosity_pa_s_calc),
+            "gamma_Ns_m": float(gamma_ns_m),
+            "D_um2_s": float(D_m2_s * 1e12),
+            "temperature_c": float(temp_c),
+            "bead_diameter_um": float(bead_radius_um * 2.0)
+        }
+
+        derived_dict = {
+            "status": "OK",
+            axis: derived_data,
+            "mean": derived_data
+        }
 
         # 4. Results Dict
         result_dict = {
             "axis": axis,
             "stage_speed_um_s": stage_speed_um_s,
-            "viscosity_pa_s": viscosity_pa_s,
+            "viscosity_pa_s": viscosity_pa_s_calc,
             "bead_radius_um": bead_radius_um,
-            "gamma_n_s_per_m": stokes_gamma_n_s_per_m(viscosity_pa_s, bead_radius_um),
+            "gamma_n_s_per_m": gamma_ns_m,
             "offset_um": float(offset_um),
-            "drag_force_pn": res.drag_force_n * 1e12,
+            "drag_force_pn": drag_force_n * 1e12,
             "calibration": {
-                f"kappa_{axis}_pN_um": res.kappa_pn_per_um,
-                f"kappa_{axis}_pN_nm": res.kappa_pn_per_um * 1e-3,
-            }
+                f"kappa_{axis}_pN_um": kappa_pn_um,
+                f"kappa_{axis}_pN_nm": kappa_pn_um * 1e-3,
+            },
+            "derived": derived_dict
         }
+        if qc_warnings:
+            result_dict["qc_warnings"] = qc_warnings
 
         # 5. Artifacts Dict
         # We return the raw data and the steady-state highlight for rendering
