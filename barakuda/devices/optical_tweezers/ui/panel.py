@@ -29,6 +29,9 @@ class PipelinePanel(QWidget):
 
     save_dataset_scale_clicked = pyqtSignal()
     auto_roi_clicked = pyqtSignal()
+    
+    # Emitted whenever a tracked value changes
+    value_changed = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -497,8 +500,104 @@ class PipelinePanel(QWidget):
         self._stage_speed.setValue(0.0)
         self._drag_axis.setCurrentIndex(0)
         self._viscosity.setValue(0.001)
+        self._viscosity.setValue(0.001)
         self._temperature_c.setValue(25.0)
         self._bead_diameter_um.setValue(1.0)
+        
+        self._wire_value_changed_signals()
+
+    # -------------------- Per-video UI wiring --------------------
+
+    def _wire_value_changed_signals(self) -> None:
+        """Connect all interactive elements to emit value_changed."""
+        def _emit(*args, **kwargs):
+            self.value_changed.emit()
+            
+        # Hook up inputs (QDoubleSpinBox, QSpinBox)
+        for w in self.findChildren(QAbstractSpinBox):
+            if hasattr(w, "valueChanged"):
+                try: w.valueChanged.disconnect() 
+                except: pass
+                w.valueChanged.connect(_emit)
+                
+        # Hook up checkboxes
+        for w in self.findChildren(QCheckBox):
+            if hasattr(w, "toggled"):
+                try: w.toggled.disconnect()
+                except: pass
+                w.toggled.connect(_emit)
+                
+        # Hook up comboboxes
+        for w in self.findChildren(QComboBox):
+            if hasattr(w, "currentIndexChanged"):
+                try: w.currentIndexChanged.disconnect()
+                except: pass
+                w.currentIndexChanged.connect(_emit)
+
+    def dump_ot_params(self) -> dict:
+        return {
+            "tracking": self.get_tracking_params(),
+            "postprocess": self.get_postprocess_params(),
+            "scale": self.get_scale_params(),
+            "frame_range": self.get_frame_range(),
+            # add gate policy to save too
+            "gate_policy": self._preview_gate_policy,
+        }
+        
+    def load_ot_params(self, d: dict) -> None:
+        # Block signals during loading to avoid loopbacks
+        was_blocked = self.blockSignals(True)
+        
+        # Load from dict, mapping to controls appropriately.
+        tp = d.get("tracking", {})
+        self._roi_margin.setValue(tp.get("roi_margin", 1.8))
+        self._adaptive_roi.setChecked(tp.get("adaptive_roi", True))
+        self._invert.setChecked(tp.get("invert", True))
+        self._blur_sigma.setValue(tp.get("blur_sigma", 1.2))
+        self._radial_grad_threshold.setValue(tp.get("radial_grad_threshold", 2.0))
+        self._auto_polarity.setChecked(tp.get("auto_polarity", True))
+        self._use_annulus.setChecked(tp.get("annulus_enabled", True))
+        self._annulus_auto.setChecked(tp.get("annulus_auto", True))
+        self._annulus_r_inner.setValue(tp.get("annulus_r_inner_px") or 0.0)
+        self._annulus_r_outer.setValue(tp.get("annulus_r_outer_px") or 0.0)
+        self._annulus_profile_smooth.setValue(tp.get("annulus_profile_smooth", 3))
+
+        pp = d.get("postprocess", {})
+        self._pp_enabled.setChecked(pp.get("enabled", True))
+        self._qc_enabled.setChecked(pp.get("qc_enabled", True))
+        self._qc_q_min.setValue(pp.get("q_min", 0.0))
+        self._qc_jump_max.setValue(pp.get("jump_max_px", 50.0))
+        dt_mode = pp.get("drift_mode", "detrend_linear")
+        idx = self._drift_mode.findData(dt_mode)
+        if idx >= 0:
+            self._drift_mode.setCurrentIndex(idx)
+        self._drift_window_s.setValue(pp.get("drift_window_s", 1.0))
+        self._temperature_c.setValue(pp.get("temperature_c", 25.0))
+        self._bead_diameter_um.setValue(pp.get("bead_diameter_um", 1.0))
+        
+        if "stage_speed_um_s" in pp:
+            self._stage_speed.setValue(pp.get("stage_speed_um_s", 0.0))
+        if "drag_axis" in pp:
+            idx = self._drag_axis.findData(pp.get("drag_axis", "x"))
+            if idx >= 0: self._drag_axis.setCurrentIndex(idx)
+        if "viscosity_pa_s" in pp:
+            self._viscosity.setValue(pp.get("viscosity_pa_s", 0.001))
+
+        sp = d.get("scale", {})
+        self._use_dataset_scale.setChecked(sp.get("use_dataset_scale", True))
+        self._um_per_px.setValue(sp.get("um_per_px", 0.066528))
+        
+        fr = d.get("frame_range", [0, 0])
+        self._start_frame.setValue(fr[0])
+        self._end_frame.setValue(fr[1])
+        
+        gp = d.get("gate_policy", "STRICT")
+        self._preview_gate_policy = gp
+        self.btn_preview_gate.setText(f"Preview Gate ▹ {gp}")
+
+        self.blockSignals(was_blocked)
+        # Manually trigger a UI refresh event for parents
+        self.value_changed.emit()
 
     # -------------------- API pro Shell --------------------
 

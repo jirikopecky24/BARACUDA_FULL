@@ -261,6 +261,36 @@ class ShellMainWindow(QMainWindow):
                 except Exception as e:
                     self.log_panel.log(f"WARN: AFM scale auto-load failed: {e!r}")
 
+        # OT: Load per-video parameters if available, else save current as defaults for this video
+        if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
+            if hasattr(self._device_panel, "load_ot_params") and hasattr(self._device_panel, "dump_ot_params"):
+                try:
+                    pms = self.dataset.get_item_params(path)
+                    if pms is not None:
+                        self._device_panel.load_ot_params(pms)
+                    else:
+                        # First time clicking this video: snapshot current UI as its params
+                        self.dataset.set_item_params(path, self._device_panel.dump_ot_params())
+                except Exception as e:
+                    self.log_panel.log(f"WARN: OT per-video load failed: {e!r}")
+
+    def _on_ot_panel_value_changed(self) -> None:
+        """When an OT control changes, save the new params to the currently active dataset item."""
+        if self._active_device_id != "optical_tweezers" or self._device_panel is None:
+            return
+            
+        paths = self.dataset.get_selected_paths()
+        if not paths:
+            return
+            
+        # We only save to the single actively previewed item (the first selected)
+        active_path = paths[0]
+        try:
+            pms = self._device_panel.dump_ot_params()
+            self.dataset.set_item_params(active_path, pms)
+        except Exception as e:
+            self.log_panel.log(f"WARN: Failed to save OT params to dataset item: {e!r}")
+
     # ---------------- device switching ----------------
 
     def _on_device_changed(self, idx: int) -> None:
@@ -290,6 +320,10 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.run_batch_clicked.connect(self._on_run_batch)           # type: ignore[attr-defined]
                 self._device_panel.stop_clicked.connect(self.batch.stop)                   # type: ignore[attr-defined]
                 self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
+                
+                if hasattr(self._device_panel, "value_changed"):
+                    self._device_panel.value_changed.connect(self._on_ot_panel_value_changed)
+                    
                 if hasattr(self._device_panel, "auto_roi_clicked"):
                     self._device_panel.auto_roi_clicked.connect(self._on_auto_roi)
                 try:
