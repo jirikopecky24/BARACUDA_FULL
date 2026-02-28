@@ -51,12 +51,17 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
     if um_per_px <= 0 or bead_diameter_um <= 0:
         return auto_detect_particle(frame, roi_size=50)
 
+    h, w = frame.shape[:2]
+
     bead_radius_px = (bead_diameter_um / 2.0) / um_per_px
     roi_half = math.ceil(margin_factor * bead_radius_px)
     roi_size = int(roi_half * 2)
+    roi_size = max(16, roi_size)
+    roi_size = min(roi_size, w, h)
+    roi_size |= 1
 
     det = track_particle(
-        frame, 
+        frame,
         roi=None, 
         method=TrackingMethod.RADIAL_SYMMETRY, 
         auto_polarity=True,
@@ -68,7 +73,6 @@ def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, ma
         return auto_detect_particle(frame, roi_size=roi_size)
 
     cx, cy = int(round(det.x_px)), int(round(det.y_px))
-    h, w = frame.shape[:2]
     
     rx = max(0, min(cx - roi_size // 2, w - roi_size))
     ry = max(0, min(cy - roi_size // 2, h - roi_size))
