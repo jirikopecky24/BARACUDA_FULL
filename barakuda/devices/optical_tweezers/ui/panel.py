@@ -350,20 +350,40 @@ class PipelinePanel(QWidget):
 
         post_box = QWidget()
         self.post_box_layout = QFormLayout(post_box)
+        
+        # Advanced toggle
+        self._pp_advanced = QCheckBox("Advanced options")
+        self._pp_advanced.setToolTip("Show experimental / advanced postprocessing options.")
+        self._pp_advanced.setChecked(False)
+        self.post_box_layout.addRow("", self._pp_advanced)
+        
         self.post_box_layout.addRow("", self._pp_enabled)
         self.post_box_layout.addRow("", self._qc_enabled)
         
         # Hide debug/advanced postprocessing controls
+        self.post_box_layout.addRow("QC: Minimum score", self._qc_q_min)
+        self.post_box_layout.addRow("QC: Maximum jump (px)", self._qc_jump_max)
+        
         self._qc_q_min.setVisible(False)
         self._qc_jump_max.setVisible(False)
+        self._set_row_visible(self._qc_q_min, False)
+        self._set_row_visible(self._qc_jump_max, False)
+        
+        def _on_advanced_toggled(checked: bool):
+            self._set_row_visible(self._qc_q_min, checked)
+            self._set_row_visible(self._qc_jump_max, checked)
+            
+        self._pp_advanced.toggled.connect(_on_advanced_toggled)
 
         self.post_box_layout.addRow("Drift mode", self._drift_mode)
         self.post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
         self.post_box_layout.addRow("Calibration Strategy", self._strategy_selector)
+        self.post_box_layout.addRow("Temperature (°C)", self._temperature_c)
         self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         self.post_box_layout.addRow("Drag axis", self._drag_axis)
         self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
-        self.post_box_layout.addRow("Temperature (°C)", self._temperature_c)
+        self.post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
+        
         self._calibration_mode = "Brownian"
 
         layout = QVBoxLayout(self)
