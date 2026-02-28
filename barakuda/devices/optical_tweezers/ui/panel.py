@@ -261,19 +261,7 @@ class PipelinePanel(QWidget):
 
         # Strategy Selector
         self._strategy_selector = QComboBox()
-        self._strategy_selector.addItem("PSD_Welch (Scipy/Hann)", "PSD_Welch")
-        self._strategy_selector.addItem("PSD_ProcFFT (MATLAB)", "PSD_ProcFFT")
-        self._strategy_selector.addItem("Drag (Constant Velocity)", "Drag_ConstantVelocity")
-        self._strategy_selector.addItem("Piezo Oscillation (Coming soon...)", "Piezo_Oscillation")
         self._strategy_selector.setToolTip("Calibration strategy used to compute stiffness and conversion factors.")
-        
-        # Disable the Piezo option
-        model = self._strategy_selector.model()
-        if hasattr(model, 'item'): 
-            item = model.item(3)
-            if item:
-                item.setEnabled(False)
-        self._strategy_selector.setCurrentIndex(0)
 
         self._stage_speed = QDoubleSpinBox()
         self._stage_speed.setRange(0.0, 1e9)
@@ -482,7 +470,9 @@ class PipelinePanel(QWidget):
         self._qc_jump_max.setValue(50.0)
         self._drift_mode.setCurrentIndex(1)  # lowpass_subtract
         self._drift_window_s.setValue(1.0)
-        self._strategy_selector.setCurrentIndex(0)
+        
+        self.set_calibration_mode("Brownian")
+        
         self._stage_speed.setValue(0.0)
         self._drag_axis.setCurrentIndex(0)
         self._viscosity.setValue(0.001)
@@ -619,20 +609,47 @@ class PipelinePanel(QWidget):
             if label:
                 label.setVisible(visible)
 
-    def set_calibration_mode(self, mode: str) -> None:
-        self._calibration_mode = str(mode)
+    def _update_strategy_dropdown(self, mode: str) -> None:
+        current_data = str(self._strategy_selector.currentData()) if self._strategy_selector.currentData() else ""
+
+        self._strategy_selector.blockSignals(True)
+        self._strategy_selector.clear()
+
         if mode == "Brownian":
-            idx = self._strategy_selector.findText("PSD_Welch (Scipy/Hann)")
+            self._strategy_selector.addItem("PSD_Welch (Scipy/Hann)", "PSD_Welch")
+            self._strategy_selector.addItem("PSD_ProcFFT (MATLAB)", "PSD_ProcFFT")
+            
+            idx = self._strategy_selector.findData(current_data)
             if idx >= 0:
                 self._strategy_selector.setCurrentIndex(idx)
+            else:
+                self._strategy_selector.setCurrentIndex(0)
+                import logging
+                logging.getLogger(__name__).info(f"Strategy auto-switched to PSD_Welch for mode {mode}")
+                
+        elif mode == "Drag":
+            self._strategy_selector.addItem("Drag (Constant Velocity)", "Drag_ConstantVelocity")
+            
+            idx = self._strategy_selector.findData(current_data)
+            if idx >= 0:
+                self._strategy_selector.setCurrentIndex(idx)
+            else:
+                self._strategy_selector.setCurrentIndex(0)
+                import logging
+                logging.getLogger(__name__).info(f"Strategy auto-switched to Drag_ConstantVelocity for mode {mode}")
+                
+        self._strategy_selector.blockSignals(False)
+
+    def set_calibration_mode(self, mode: str) -> None:
+        self._calibration_mode = str(mode)
+        self._update_strategy_dropdown(mode)
+        
+        if mode == "Brownian":
             self._set_row_visible(self._stage_speed, False)
             self._set_row_visible(self._drag_axis, False)
             self._set_row_visible(self._viscosity, False)
             self._set_row_visible(self._bead_diameter_um, False)
         elif mode == "Drag":
-            idx = self._strategy_selector.findText("Drag (Constant Velocity)")
-            if idx >= 0:
-                self._strategy_selector.setCurrentIndex(idx)
             self._set_row_visible(self._stage_speed, True)
             self._set_row_visible(self._drag_axis, True)
             self._set_row_visible(self._viscosity, True)
