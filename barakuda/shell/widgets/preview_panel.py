@@ -4,6 +4,8 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
+pg.setConfigOptions(imageAxisOrder='row-major')
+
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import (
