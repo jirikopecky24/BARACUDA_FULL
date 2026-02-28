@@ -8,6 +8,10 @@ from barakuda.core.ot_physics import (
     CalibrationParams,
     compute_calibration_from_equipartition_and_fc,
 )
+from barakuda.devices.optical_tweezers.pipeline.derived_newtonian import (
+    compute_newtonian_derived,
+    compute_mean_derived
+)
 from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrategy
 
 
@@ -108,6 +112,27 @@ class PsdProcFftStrategy(CalibrationStrategy):
             cal_p
         )
 
+        um_per_px = float(camera_meta.get("um_per_px", 0.0))
+        derived_dict = {}
+        qc_warnings = []
+        if um_per_px <= 0:
+            derived_dict = {"status": "SKIPPED", "reason": "um_per_px missing or <= 0"}
+            qc_warnings.append("um_per_px missing or valid scale not set -> derived outputs skipped")
+        else:
+            try:
+                derived_x = compute_newtonian_derived(fit_x["fc_hz"], x_val, temp_c, bead_d)
+                derived_y = compute_newtonian_derived(fit_y["fc_hz"], y_val, temp_c, bead_d)
+                derived_mean = compute_mean_derived(derived_x, derived_y, method="median")
+                derived_dict = {
+                    "status": "OK",
+                    "x": derived_x,
+                    "y": derived_y,
+                    "mean": derived_mean
+                }
+            except Exception as e:
+                derived_dict = {"status": "SKIPPED", "reason": f"Derived calculation failed: {e}"}
+                qc_warnings.append(f"Derived calculation failed: {e}")
+
         result_dict = {
             "status": "COMPLETED",
             "procfft_params": {
@@ -129,8 +154,11 @@ class PsdProcFftStrategy(CalibrationStrategy):
                 "bead_radius_um": cal_res.bead_radius_um,
                 "var_x_um2": cal_res.var_x_um2,
                 "var_y_um2": cal_res.var_y_um2,
-            }
+            },
+            "derived": derived_dict,
         }
+        if qc_warnings:
+            result_dict["qc_warnings"] = qc_warnings
 
         def lorentzian_curve(f, fc, a, b):
             return a / (fc**2 + f**2) + b
