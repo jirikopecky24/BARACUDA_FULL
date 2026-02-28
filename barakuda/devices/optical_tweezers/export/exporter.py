@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -162,6 +163,67 @@ class OTExporter:
                         _fmt(um_px)
                     ])
         saved_artifacts[results_csv_name] = results_csv_name
+
+        # 4.6 Canonical results.csv (Bible V3)
+        def fmt(v):
+            if v is None:
+                return "nan"
+            try:
+                fv = float(v)
+                if not math.isfinite(fv):
+                    return "nan"
+                return "{:.6g}".format(fv)
+            except (ValueError, TypeError):
+                return "nan"
+
+        canonical_path = self.output_dir / "results.csv"
+        with canonical_path.open("w", newline="", encoding="utf-8") as f:
+            wcsv = csv.writer(f)
+            wcsv.writerow([
+                "mode", "strategy", "axis", "fc_hz", "k_pN_um", 
+                "eta_Pa_s", "gamma_Ns_m", "D_um2_s", "x0_um", "v_um_s",
+                "temp_C", "bead_diam_um"
+            ])
+            
+            mode = strategy_params.get("calibration_mode", "Brownian")
+            strategy = strategy_name
+            
+            if mode == "Drag":
+                drag_axis = str(result_dict.get("axis", strategy_params.get("drag_axis", "x"))).lower()
+                d_drag = result_dict.get("derived", {}).get(drag_axis, {}) or result_dict.get("derived", {}).get("mean", {})
+                d_mean = result_dict.get("derived", {}).get("mean", d_drag)
+                x0 = result_dict.get("offset_um", None)
+                v  = result_dict.get("stage_speed_um_s", None)
+                
+                for axis in ["x", "y", "mean"]:
+                    if axis == drag_axis:
+                        d = d_drag
+                        x0_out = fmt(x0); v_out = fmt(v)
+                    elif axis == "mean":
+                        d = d_mean
+                        x0_out = fmt(x0); v_out = fmt(v)
+                    else:
+                        d = {}
+                        x0_out = "nan"; v_out = "nan"
+                    wcsv.writerow([
+                        mode, strategy, axis,
+                        fmt(d.get("fc_hz")), fmt(d.get("k_pN_um")), fmt(d.get("eta_Pa_s")),
+                        fmt(d.get("gamma_Ns_m")), fmt(d.get("D_um2_s")),
+                        x0_out, v_out,
+                        fmt(strategy_params.get("temperature_c", d.get("temperature_c"))),
+                        fmt(strategy_params.get("bead_diameter_um", d.get("bead_diameter_um")))
+                    ])
+            else:
+                for axis in ["x", "y", "mean"]:
+                    d = result_dict.get("derived", {}).get(axis, {})
+                    wcsv.writerow([
+                        mode, strategy, axis,
+                        fmt(d.get("fc_hz")), fmt(d.get("k_pN_um")), fmt(d.get("eta_Pa_s")),
+                        fmt(d.get("gamma_Ns_m")), fmt(d.get("D_um2_s")),
+                        "nan", "nan",
+                        fmt(strategy_params.get("temperature_c", d.get("temperature_c"))),
+                        fmt(strategy_params.get("bead_diameter_um", d.get("bead_diameter_um")))
+                    ])
 
         # 5. ot_summary.json (Audit)
         from barakuda.devices.optical_tweezers.audit.schema import build_ot_summary
