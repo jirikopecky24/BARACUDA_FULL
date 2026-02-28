@@ -1030,6 +1030,7 @@ class BatchController:
                     _hist_x = run_dir / f"{stem}_hist_x.csv"
                     _hist_y = run_dir / f"{stem}_hist_y.csv"
                     _hist_r = run_dir / f"{stem}_hist_r.csv"
+                    _derived = run_dir / f"{stem}_derived.csv"
 
                     # --- metadata.csv (audit-first, key/value) ---
                     def _flatten(prefix: str, obj: Any, out: list[tuple[str, str]]) -> None:
@@ -1094,6 +1095,7 @@ class BatchController:
                             ("PSD_X", _psd_x, False),
                             ("PSD_Y", _psd_y, False),
                             ("Calibration", _cal_csv, False),
+                            ("Derived_Physics", _derived, False),
                             ("Hist_X", _hist_x, False),
                             ("Hist_Y", _hist_y, False),
                             ("Hist_R", _hist_r, False),
@@ -1142,6 +1144,7 @@ class BatchController:
                     _move_to(_hist_x, dir_physics)
                     _move_to(_hist_y, dir_physics)
                     _move_to(_hist_r, dir_physics)
+                    _move_to(_derived, dir_physics)
                     
                     # Optional: Move 2-video compare artifacts to physics
                     _move_to(run_dir / f"{stem}_compare.csv", dir_physics)

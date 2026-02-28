@@ -126,6 +126,43 @@ class OTExporter:
                     json.dump(clean_data, f, indent=2)
                 saved_artifacts[fname] = str(fpath.name)
 
+        # 4.5 derived.csv (Derived Physics Outputs)
+        results_csv_name = f"{video_stem}_derived.csv"
+        results_path = self.output_dir / results_csv_name
+        with results_path.open("w", newline="", encoding="utf-8") as f:
+            wcsv = csv.writer(f)
+            wcsv.writerow([
+                "mode", "strategy", "axis", "fc_hz", "k_pN_um", 
+                "eta_Pa_s", "gamma_Ns_m", "D_um2_s", "temp_C", 
+                "bead_diam_um", "um_per_px"
+            ])
+            mode = strategy_params.get("calibration_mode", "Brownian")
+            derived = result_dict.get("derived", {})
+            if derived.get("status") == "OK":
+                um_px = camera_meta.get("um_per_px", "nan")
+                for axis_key in ["x", "y", "mean"]:
+                    data = derived.get(axis_key, {})
+                    if not data:
+                        continue
+                    
+                    def _fmt(val):
+                        return f"{val:.6g}" if isinstance(val, (float, int)) else "nan"
+                        
+                    wcsv.writerow([
+                        mode,
+                        strategy_name,
+                        axis_key,
+                        _fmt(data.get("fc_hz")),
+                        _fmt(data.get("k_pN_um")),
+                        _fmt(data.get("eta_Pa_s")),
+                        _fmt(data.get("gamma_Ns_m")),
+                        _fmt(data.get("D_um2_s")),
+                        _fmt(data.get("temperature_c")),
+                        _fmt(data.get("bead_diameter_um")),
+                        _fmt(um_px)
+                    ])
+        saved_artifacts[results_csv_name] = results_csv_name
+
         # 5. ot_summary.json (Audit)
         from barakuda.devices.optical_tweezers.audit.schema import build_ot_summary
         
@@ -152,6 +189,7 @@ class OTExporter:
                 "video_file": Path(video_path).name,
                 "summary_file": summary_path.name,
                 "trajectory_file": traj_path.name,
+                "results_file": results_csv_name,
                 "camera_meta_file": meta_path.name,
                 "qc_file": qc_path.name,
                 "artifacts": saved_artifacts
