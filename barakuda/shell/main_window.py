@@ -327,6 +327,15 @@ class ShellMainWindow(QMainWindow):
                 self.method_combo.clear()
                 self.method_combo.addItem("Brownian (PSD)", "Brownian")
                 self.method_combo.addItem("Drag (Stage)", "Drag")
+                self.method_combo.addItem("Microrheology (Coming later)", "Rheology")
+                
+                # Disable the rheology item
+                model = self.method_combo.model()
+                if hasattr(model, "item"):
+                    item = model.item(self.method_combo.count() - 1)
+                    if item:
+                        item.setEnabled(False)
+                        
                 self.method_combo.setCurrentIndex(0)
                 self.method_combo.setVisible(True)
                 

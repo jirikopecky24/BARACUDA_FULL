@@ -29,6 +29,11 @@ def build_ot_summary(
             "parameters": strategy_params,
             "results": result_dict
         },
+        "rheology": {
+            "status": "NOT_IMPLEMENTED",
+            "planned": ["G'(ω)", "G''(ω)"],
+            "notes": "later"
+        },
         "artifacts": artifacts,
         "trajectory": {
             "columns": header_cols,
