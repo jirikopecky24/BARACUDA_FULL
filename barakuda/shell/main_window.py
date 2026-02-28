@@ -408,7 +408,12 @@ class ShellMainWindow(QMainWindow):
         try:
             scale_params = self._device_panel.get_scale_params()
             um_per_px = float(scale_params.get("um_per_px", 0.0))
-            dia = float(self._device_panel._bead_diameter_um.value()) if hasattr(self._device_panel, "_bead_diameter_um") else 1.0
+
+            dia = 1.0
+            if hasattr(self._device_panel, "get_postprocess_params"):
+                dia = float(self._device_panel.get_postprocess_params().get("bead_diameter_um", 1.0))
+            elif hasattr(self._device_panel, "_bead_diameter_um"):
+                dia = float(self._device_panel._bead_diameter_um.value())
 
             rx, ry, rw, rh = auto_roi_rs(frame, um_per_px, dia)
             self._ot_preview.set_roi_rect(rx, ry, rw, rh)

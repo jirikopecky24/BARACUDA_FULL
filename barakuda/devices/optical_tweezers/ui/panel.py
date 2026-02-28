@@ -549,13 +549,13 @@ class PipelinePanel(QWidget):
             "calibration_mode": mode,
             "strategy": str(self._strategy_selector.currentData()),
             "temperature_c": float(self._temperature_c.value()),
+            "bead_diameter_um": float(self._bead_diameter_um.value()),
         }
         if mode == "Drag":
             params.update({
                 "stage_speed_um_s": float(self._stage_speed.value()),
                 "drag_axis": str(self._drag_axis.currentData()),
                 "viscosity_pa_s": float(self._viscosity.value()),
-                "bead_diameter_um": float(self._bead_diameter_um.value()),
             })
         return params
 
@@ -565,13 +565,13 @@ class PipelinePanel(QWidget):
             "calibration_mode": mode,
             "strategy": str(self._strategy_selector.currentData()),
             "temperature_c": float(self._temperature_c.value()),
+            "bead_diameter_um": float(self._bead_diameter_um.value()),
         }
         if mode == "Drag":
             params.update({
                 "stage_speed_um_s": float(self._stage_speed.value()),
                 "drag_axis": str(self._drag_axis.currentData()),
                 "viscosity_pa_s": float(self._viscosity.value()),
-                "bead_diameter_um": float(self._bead_diameter_um.value()),
             })
         return params
 
