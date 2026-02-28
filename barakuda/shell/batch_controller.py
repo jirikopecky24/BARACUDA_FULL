@@ -285,7 +285,43 @@ class BatchController:
                 continue
 
             # --- OT-specific gate ---
-            if preview_roi_rect is None:
+            # Determine if Auto ROI On Load is ON
+            is_auto_roi_on_load = False
+            try:
+                if hasattr(device_panel, "is_auto_roi_on_load"):
+                    is_auto_roi_on_load = device_panel.is_auto_roi_on_load()
+            except Exception:
+                pass
+
+            file_roi = None
+            if is_auto_roi_on_load:
+                try:
+                    from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
+                    scale_params = device_panel.get_scale_params()
+                    um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
+                    
+                    dia_auto = 1.0
+                    if hasattr(device_panel, "get_postprocess_params"):
+                        dia_auto = float(device_panel.get_postprocess_params().get("bead_diameter_um", 1.0))
+                    elif hasattr(device_panel, "_bead_diameter_um"):
+                        dia_auto = float(device_panel._bead_diameter_um.value())
+                    
+                    margin_auto = 1.8
+                    if hasattr(device_panel, "get_tracking_params"):
+                        margin_auto = float(device_panel.get_tracking_params().get("roi_margin", 1.8))
+                    elif hasattr(device_panel, "_roi_margin"):
+                        margin_auto = float(device_panel._roi_margin.value())
+
+                    frame0 = vr.get_frame(0)
+                    rx, ry, rw, rh = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
+                    file_roi = (rx, ry, rw, rh)
+                except Exception as e:
+                    self._log(f"WARN: auto ROI failed for {p.name}: {e!r}")
+            
+            if file_roi is None:
+                file_roi = preview_roi_rect
+
+            if file_roi is None:
                 try:
                     vr.close()
                 except Exception:
@@ -303,7 +339,7 @@ class BatchController:
                 except Exception:
                     method = TrackingMethod.RADIAL_SYMMETRY
 
-                roi_obj = Roi(*preview_roi_rect)
+                roi_obj = Roi(*file_roi)
             except Exception as e:
                 try:
                     vr.close()
@@ -584,6 +620,32 @@ class BatchController:
                 fps = float(reader.meta.fps)
                 fc = int(reader.meta.frame_count)
 
+                # Auto-ROI per file if enabled
+                file_roi_rect = roi_rect
+                is_auto_roi_on_load = False
+                try:
+                    if hasattr(device_panel, "is_auto_roi_on_load"):
+                        is_auto_roi_on_load = device_panel.is_auto_roi_on_load()
+                except Exception:
+                    pass
+                    
+                if is_auto_roi_on_load:
+                    try:
+                        from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
+                        scale_params = device_panel.get_scale_params()
+                        um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
+                        
+                        dia_auto = float(post_params.get("bead_diameter_um", 1.0))
+                        margin_auto = float(tracking_params.get("roi_margin", 1.8))
+
+                        frame0 = reader.get_frame(0)
+                        file_roi_rect = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
+                        self._log(f"[OT] Auto ROI for {file_path.name}: {file_roi_rect}")
+                    except Exception as e:
+                        self._log(f"WARN: auto ROI failed for {file_path.name}: {e!r}")
+                
+                base_roi = Roi(*file_roi_rect)
+
                 s = int(start_frame)
                 e = int(end_frame)
                 if s < 0:
@@ -619,7 +681,7 @@ class BatchController:
                         "invert": invert,
                         "blur_sigma": blur_sigma,
                         "radial_grad_threshold": grad_th,
-                        "roi": list(roi_rect),
+                        "roi": list(file_roi_rect),
                         "adaptive_roi": adaptive_roi,
                         "fps": fps,
                         "frame_count": fc,
@@ -732,7 +794,7 @@ class BatchController:
                 with traj_path.open("w", newline="", encoding="utf-8") as f_meta:
                     f_meta.write(f"# source_file={file_path.name}\n")
                     f_meta.write(f"# method={method.value}\n")
-                    f_meta.write(f"# roi={list(roi_rect)}\n")
+                    f_meta.write(f"# roi={list(file_roi_rect)}\n")
                     f_meta.write(f"# adaptive_roi={adaptive_roi}\n")
                     f_meta.write(f"# auto_polarity={auto_pol}\n")
                     f_meta.write(f"# invert={invert}\n")
