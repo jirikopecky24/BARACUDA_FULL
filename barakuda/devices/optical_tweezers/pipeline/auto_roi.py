@@ -43,7 +43,7 @@ def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, in
     
     return (rx, ry, roi_w, roi_h)
 
-def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, margin_factor: float = 2.5) -> Tuple[int, int, int, int]:
+def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, margin_factor: float = 1.8) -> Tuple[int, int, int, int]:
     """
     Finds bead center using RS and returns ROI sized by bead_diameter_um.
     Falls back to morphological scoring (auto_detect_particle) if RS fails.

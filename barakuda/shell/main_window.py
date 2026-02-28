@@ -415,7 +415,13 @@ class ShellMainWindow(QMainWindow):
             elif hasattr(self._device_panel, "_bead_diameter_um"):
                 dia = float(self._device_panel._bead_diameter_um.value())
 
-            rx, ry, rw, rh = auto_roi_rs(frame, um_per_px, dia)
+            margin = 1.8
+            if hasattr(self._device_panel, "get_tracking_params"):
+                margin = float(self._device_panel.get_tracking_params().get("roi_margin", 1.8))
+            elif hasattr(self._device_panel, "_roi_margin"):
+                margin = float(self._device_panel._roi_margin.value())
+
+            rx, ry, rw, rh = auto_roi_rs(frame, um_per_px, dia, margin_factor=margin)
             self._ot_preview.set_roi_rect(rx, ry, rw, rh)
             self.log_panel.log(f"Auto ROI: Found particle at x={rx}, y={ry}")
             

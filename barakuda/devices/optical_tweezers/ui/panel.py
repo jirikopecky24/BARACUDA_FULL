@@ -113,6 +113,12 @@ class PipelinePanel(QWidget):
         self.auto_roi_on_load_cb.setChecked(False)
         self.btn_auto_roi.clicked.connect(self.auto_roi_clicked.emit)
 
+        self._roi_margin = QDoubleSpinBox()
+        self._roi_margin.setRange(1.2, 3.0)
+        self._roi_margin.setSingleStep(0.1)
+        self._roi_margin.setValue(1.8)
+        self._roi_margin.setToolTip("Multiplier for ROI size based on bead diameter. Smaller = faster tracking.")
+
         self._adaptive_roi = QCheckBox("Adaptive ROI (follow particle)")
         self._adaptive_roi.setToolTip("Automatically track particle center to maintain it within the ROI during motion.")
         self._adaptive_roi.setChecked(True)
@@ -303,6 +309,7 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("", self._tracking_lbl)
         params_box_layout.addRow("", self.btn_auto_roi)
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
+        params_box_layout.addRow("ROI margin", self._roi_margin)
         params_box_layout.addRow("", self._adaptive_roi)
         params_box_layout.addRow("Blur sigma", self._blur_sigma)
         params_box_layout.addRow("Radial grad threshold", self._radial_grad_threshold)
@@ -440,6 +447,7 @@ class PipelinePanel(QWidget):
         
         # Tracking Defaults
         self.auto_roi_on_load_cb.setChecked(False)
+        self._roi_margin.setValue(1.8)
         self._adaptive_roi.setChecked(True)
         self._invert.setChecked(True)
         self._blur_sigma.setValue(1.2)
@@ -524,6 +532,7 @@ class PipelinePanel(QWidget):
         return {
             "method": "RADIAL_SYMMETRY",
             "compute_profile": "auto",
+            "roi_margin": float(self._roi_margin.value()),
             "adaptive_roi": bool(self._adaptive_roi.isChecked()),
             "invert": bool(self._invert.isChecked()),
             "blur_sigma": float(self._blur_sigma.value()),
