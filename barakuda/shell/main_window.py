@@ -88,9 +88,12 @@ class ShellMainWindow(QMainWindow):
         self.method_combo = QComboBox()
         self.method_combo.setVisible(False)
 
+        self.method_label = QLabel("Method:")
+        self.method_label.setVisible(False)
+
         ml.addWidget(QLabel("Device:"))
         ml.addWidget(self.device_combo, 1)
-        ml.addWidget(QLabel("Method:"))
+        ml.addWidget(self.method_label)
         ml.addWidget(self.method_combo, 0)
 
         self.method_dock = QDockWidget("", self)
@@ -317,18 +320,21 @@ class ShellMainWindow(QMainWindow):
             self.method_combo.blockSignals(True)
             try:
                 self.method_combo.clear()
-                self.method_combo.addItem("RADIAL_SYMMETRY", "RADIAL_SYMMETRY")
+                self.method_combo.addItem("Brownian (PSD)", "Brownian")
+                self.method_combo.addItem("Drag (Stage)", "Drag")
                 self.method_combo.setCurrentIndex(0)
                 self.method_combo.setVisible(True)
+                
+                self.method_label.setText("Calibration mode:")
+                self.method_label.setVisible(True)
 
-                # push into device panel (so batch reads it from get_tracking_params)
-                if hasattr(self._device_panel, "set_tracking_method"):
-                    self._device_panel.set_tracking_method("RADIAL_SYMMETRY")  # type: ignore[attr-defined]
+                if hasattr(self._device_panel, "set_calibration_mode"):
+                    self._device_panel.set_calibration_mode("Brownian")
 
                 def _on_method_changed(_idx: int) -> None:
                     mid = str(self.method_combo.currentData())
-                    if hasattr(self._device_panel, "set_tracking_method"):
-                        self._device_panel.set_tracking_method(mid)  # type: ignore[attr-defined]
+                    if hasattr(self._device_panel, "set_calibration_mode"):
+                        self._device_panel.set_calibration_mode(mid)
 
                 # avoid duplicate connections
                 try:
@@ -341,6 +347,7 @@ class ShellMainWindow(QMainWindow):
                 self.method_combo.blockSignals(False)
         else:
             self.method_combo.setVisible(False)
+            self.method_label.setVisible(False)
 
     # ---------------- OT helpers ----------------
 

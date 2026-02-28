@@ -102,6 +102,9 @@ class PipelinePanel(QWidget):
         self.cb_profile.setToolTip("Select compute backend (Auto recommended). Only affects compatible track methods.")
 
         # tracking params
+        self._tracking_lbl = QLabel("Tracking: Radial Symmetry")
+        self._tracking_lbl.setStyleSheet("color: #666; font-weight: bold;")
+
         self.btn_auto_roi = QPushButton("Auto-detect particle")
         self.btn_auto_roi.setToolTip("Automatically find and center the ROI on the most prominent particle.")
         self.auto_roi_on_load_cb = QCheckBox("Auto ROI on load")
@@ -309,6 +312,7 @@ class PipelinePanel(QWidget):
         params_box_layout = QFormLayout(params_box)
 
         params_box_layout.addRow("Compute Profile", self.cb_profile)
+        params_box_layout.addRow("", self._tracking_lbl)
         params_box_layout.addRow("", self.btn_auto_roi)
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
         params_box_layout.addRow("", self._adaptive_roi)
@@ -385,7 +389,7 @@ class PipelinePanel(QWidget):
             v.addWidget(inner)
             return wrap
 
-        self._tracking_method = "RADIAL_SYMMETRY"
+        self._calibration_mode = "Brownian"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -537,7 +541,7 @@ class PipelinePanel(QWidget):
             prof = "auto"
             
         return {
-            "method": str(self._tracking_method),
+            "method": "RADIAL_SYMMETRY",
             "compute_profile": prof,
             "adaptive_roi": bool(self._adaptive_roi.isChecked()),
             "invert": bool(self._invert.isChecked()),
@@ -605,8 +609,8 @@ class PipelinePanel(QWidget):
     def set_end_frame(self, end_frame: int) -> None:
         self._end_frame.setValue(int(end_frame))
 
-    def set_tracking_method(self, method: str) -> None:
-        self._tracking_method = str(method)
+    def set_calibration_mode(self, mode: str) -> None:
+        self._calibration_mode = str(mode)
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()
