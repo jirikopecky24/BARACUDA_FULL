@@ -85,6 +85,8 @@ class DatasetPanel(QWidget):
             self._items.append(DatasetItem(path=p))
 
             item = QListWidgetItem(self._format_label(p.name, "idle"))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, key)
             self._list.addItem(item)
             self._path_to_item[key] = item
@@ -102,6 +104,30 @@ class DatasetPanel(QWidget):
     def get_selected_paths(self) -> List[Path]:
         selected = self._list.selectedItems()
         return [Path(it.data(Qt.ItemDataRole.UserRole)) for it in selected]
+
+    def get_checked_paths(self) -> List[Path]:
+        paths = []
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            if it.checkState() == Qt.CheckState.Checked:
+                paths.append(Path(it.data(Qt.ItemDataRole.UserRole)))
+        return paths
+
+    def set_checked(self, path: Path, checked: bool) -> None:
+        it = self._find_item_by_path(path)
+        if it:
+            it.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+
+    def get_all_items(self) -> List[Dict]:
+        res = []
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            res.append({
+                "path": str(it.data(Qt.ItemDataRole.UserRole)),
+                "checked": (it.checkState() == Qt.CheckState.Checked),
+                "text": it.text()
+            })
+        return res
 
     # --- List item removal (files on disk are not affected) ---
 
