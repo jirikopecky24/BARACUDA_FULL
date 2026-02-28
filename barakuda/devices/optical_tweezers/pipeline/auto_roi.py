@@ -13,9 +13,12 @@ def centered_roi(cx: float, cy: float, roi_size: int, frame_shape: Tuple[int, ..
     roi_size = min(roi_size, w, h)
     roi_size |= 1  # enforce odd
     
-    half = (roi_size - 1) / 2.0
-    rx = int(round(cx - half))
-    ry = int(round(cy - half))
+    # We want cx to be at exactly rx + (roi_size-1)/2.0
+    # rx = cx - (roi_size-1)/2.0
+    half_w = (roi_size - 1) / 2.0
+    half_h = (roi_size - 1) / 2.0
+    rx = int(round(float(cx) - half_w))
+    ry = int(round(float(cy) - half_h))
     
     rx = max(0, min(rx, w - roi_size))
     ry = max(0, min(ry, h - roi_size))
@@ -46,6 +49,10 @@ def refine(frame: np.ndarray, roi: Roi) -> Tuple[Roi, object]:
         pass
         
     roi2 = centered_roi(cx, cy, roi.w, frame.shape)
+    
+    # Optional debug print for local validation (can be removed later)
+    # print(f"refine: cx={cx:.2f}, cy={cy:.2f}, new_rx={roi2.x}, new_ry={roi2.y}")
+    
     return roi2, det
 
 def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, int, int, int]:
