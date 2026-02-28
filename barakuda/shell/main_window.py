@@ -219,7 +219,7 @@ class ShellMainWindow(QMainWindow):
                 
             try:
                 if hasattr(self._device_panel, "is_auto_roi_on_load") and self._device_panel.is_auto_roi_on_load():
-                    self._on_auto_roi()
+                    QTimer.singleShot(200, self._on_auto_roi)
             except Exception as e:
                 self.log_panel.log(f"WARN: auto ROI failed: {e!r}")
 
@@ -290,6 +290,11 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
                 if hasattr(self._device_panel, "auto_roi_clicked"):
                     self._device_panel.auto_roi_clicked.connect(self._on_auto_roi)
+                try:
+                    self._ot_preview.roi_changed.disconnect()
+                except Exception:
+                    pass
+                self._ot_preview.roi_changed.connect(self._on_manual_roi_edit)
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
@@ -349,6 +354,11 @@ class ShellMainWindow(QMainWindow):
             self.method_combo.setVisible(False)
             self.method_label.setVisible(False)
 
+    def _on_manual_roi_edit(self) -> None:
+        if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
+            if hasattr(self._device_panel, "_adaptive_roi"):
+                self._device_panel._adaptive_roi.setChecked(False)
+
     # ---------------- OT helpers ----------------
 
     def _ot_save_scale(self) -> None:
@@ -384,12 +394,19 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Auto ROI: No image loaded.")
             return
 
-        from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_detect_particle
+        from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
         
         try:
-            rx, ry, rw, rh = auto_detect_particle(frame, roi_size=50)
+            scale_params = self._device_panel.get_scale_params()
+            um_per_px = float(scale_params.get("um_per_px", 0.0))
+            dia = float(self._device_panel._bead_diameter_um.value()) if hasattr(self._device_panel, "_bead_diameter_um") else 1.0
+
+            rx, ry, rw, rh = auto_roi_rs(frame, um_per_px, dia)
             self._ot_preview.set_roi_rect(rx, ry, rw, rh)
             self.log_panel.log(f"Auto ROI: Found particle at x={rx}, y={ry}")
+            
+            if hasattr(self._device_panel, "_adaptive_roi"):
+                self._device_panel._adaptive_roi.setChecked(True)
         except Exception as e:
             self.log_panel.log(f"Auto ROI ERROR: {e!r}")
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTabWidget, QSlider, QHBoxLayout
@@ -15,6 +15,8 @@ from barakuda.core.video_reader import VideoReader
 
 
 class PreviewPanel(QWidget):
+    roi_changed = pyqtSignal()
+
     def __init__(self, parent=None, device_kind: str = "AFM") -> None:
         super().__init__(parent)
         self._device_kind = device_kind
@@ -468,6 +470,8 @@ class PreviewPanel(QWidget):
     def _on_roi_changed(self) -> None:
         self._clamp_roi_to_image(self._active_roi())
         self._refresh_info_block()
+        if not getattr(self, "_clamping_roi", False):
+            self.roi_changed.emit()
 
 
 
