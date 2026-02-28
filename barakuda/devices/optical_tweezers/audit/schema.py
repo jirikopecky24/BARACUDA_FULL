@@ -32,7 +32,7 @@ def build_ot_summary(
         "rheology": {
             "status": "NOT_IMPLEMENTED",
             "planned": ["G'(ω)", "G''(ω)"],
-            "notes": "later"
+            "method_candidates": ["Active oscillation", "Passive GSER"]
         },
         "artifacts": artifacts,
         "trajectory": {
