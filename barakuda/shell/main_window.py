@@ -154,6 +154,7 @@ class ShellMainWindow(QMainWindow):
         self._tick_timer.start(250)
         
         self._first_show = True
+        self._manual_roi_edited_paths = set()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -219,7 +220,8 @@ class ShellMainWindow(QMainWindow):
                 
             try:
                 if hasattr(self._device_panel, "is_auto_roi_on_load") and self._device_panel.is_auto_roi_on_load():
-                    QTimer.singleShot(200, self._on_auto_roi)
+                    if str(path) not in getattr(self, "_manual_roi_edited_paths", set()):
+                        QTimer.singleShot(200, self._on_auto_roi)
             except Exception as e:
                 self.log_panel.log(f"WARN: auto ROI failed: {e!r}")
 
@@ -367,6 +369,11 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
             if hasattr(self._device_panel, "_adaptive_roi"):
                 self._device_panel._adaptive_roi.setChecked(False)
+        paths = self.dataset.get_selected_paths()
+        if paths:
+            if not hasattr(self, "_manual_roi_edited_paths"):
+                self._manual_roi_edited_paths = set()
+            self._manual_roi_edited_paths.add(str(paths[0]))
 
     # ---------------- OT helpers ----------------
 
@@ -397,6 +404,11 @@ class ShellMainWindow(QMainWindow):
     def _on_auto_roi(self) -> None:
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
             return
+
+        paths = self.dataset.get_selected_paths()
+        if paths:
+            if hasattr(self, "_manual_roi_edited_paths"):
+                self._manual_roi_edited_paths.discard(str(paths[0]))
 
         frame = self._ot_preview.get_before_image()
         if frame is None:
