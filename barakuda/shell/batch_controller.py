@@ -531,14 +531,19 @@ class BatchController:
         roi_rect: tuple[int, int, int, int],
         dataset_set_status_fn: Callable[[Path, str], None],
         progress_fn: Callable[[int, int, str, int], None],
+        checked_paths: list[Path] | list[str] | None = None,
     ) -> None:
         if not self._preview_done:
             self._log("Run Batch blocked: Preview Gate has not passed.")
             return
 
         ok_paths = [Path(r.path) for r in self._last_preview_results if r.ok]
+        if checked_paths is not None:
+            cset = {str(Path(p)) for p in checked_paths}
+            ok_paths = [p for p in ok_paths if str(p) in cset]
+
         if not ok_paths:
-            self._log("Run Batch: nothing to run (0 PASS items).")
+            self._log("Run Batch: nothing to run (0 checked PASS items).")
             return
 
         self._log(f"Run Batch start: PASS items={len(ok_paths)}")

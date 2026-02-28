@@ -448,7 +448,10 @@ class ShellMainWindow(QMainWindow):
     # ---------------- preview gate ----------------
 
     def _on_preview_gate(self) -> None:
-        paths = self.dataset.get_selected_paths()
+        if self._active_device_id == "afm":
+            paths = self.dataset.get_selected_paths()
+        else:
+            paths = self.dataset.get_checked_paths()
         if not paths:
             self.log_panel.log("Preview Gate: no selected files.")
             return

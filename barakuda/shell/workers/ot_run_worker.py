@@ -26,13 +26,14 @@ class OTRunWorker(QObject):
     def __init__(
         self,
         batch_controller,
-        device_id: str,
+        checked_paths: list,
         roi_rect: tuple[int, int, int, int],
         panel_data: dict,
+        dataset_set_status_fn=None,  # accepted but bypassed since we use signal
     ):
         super().__init__()
         self._batch = batch_controller
-        self._device_id = device_id
+        self._checked_paths = checked_paths
         self._roi_rect = roi_rect
         self._panel_data = panel_data
         self._is_cancelled = False
@@ -84,11 +85,12 @@ class OTRunWorker(QObject):
             )
 
             self._batch.run_batch(
-                device_id=self._device_id,
+                device_id="optical_tweezers",
                 device_panel=mock_panel,
                 roi_rect=self._roi_rect,
                 dataset_set_status_fn=_status_fn,
                 progress_fn=_progress_fn,
+                checked_paths=self._checked_paths,
             )
 
             if not self._is_cancelled:
