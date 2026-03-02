@@ -317,18 +317,26 @@ class PipelinePanel(QWidget):
         self._bead_diameter_um.setValue(1.0)  # DEFAULT as requested (most common)
         self._bead_diameter_um.setToolTip("Diameter of the trapped bead in micrometers.")
 
+        # ── Tracking tab ──
         params_box = QWidget()
         params_box_layout = QFormLayout(params_box)
+
+        self._trk_advanced = QCheckBox("Advanced options")
+        self._trk_advanced.setToolTip("Show experimental / advanced tracking options.")
+        self._trk_advanced.setChecked(False)
+        params_box_layout.addRow("", self._trk_advanced)
 
         params_box_layout.addRow("", self._tracking_lbl)
         params_box_layout.addRow("", self.btn_auto_roi)
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
         params_box_layout.addRow("ROI margin", self._roi_margin)
         params_box_layout.addRow("", self._adaptive_roi)
+        
+        # Advanced Tracking rows
         params_box_layout.addRow("Blur sigma", self._blur_sigma)
         params_box_layout.addRow("Radial grad threshold", self._radial_grad_threshold)
         
-        # Hide debug/advanced preprocessing controls
+        # These are always hidden but we can still toggle their visibility if we wanted
         self._normalize_strength.setVisible(False)
         self._auto_polarity.setVisible(False)
         self._invert.setVisible(False)
@@ -341,10 +349,24 @@ class PipelinePanel(QWidget):
 
         params_box_layout.addRow("Gate samples", self._gate_sample_count)
         
-        # Hide debug/advanced gate controls
-        self._gate_pass_min_ratio.setVisible(False)
-        self._gate_q_min.setVisible(False)
-        self._gate_jump_max.setVisible(False)
+        # Gate Advanced
+        params_box_layout.addRow("Gate pass ratio", self._gate_pass_min_ratio)
+        params_box_layout.addRow("Gate QC score min", self._gate_q_min)
+        params_box_layout.addRow("Gate Max jump (px)", self._gate_jump_max)
+        
+        def _on_trk_advanced_toggled(checked: bool):
+            self._set_row_visible(self._blur_sigma, checked)
+            self._set_row_visible(self._radial_grad_threshold, checked)
+            self._set_row_visible(self._annulus_r_inner, checked)
+            self._set_row_visible(self._annulus_r_outer, checked)
+            self._set_row_visible(self._annulus_profile_smooth, checked)
+            
+            self._set_row_visible(self._gate_pass_min_ratio, checked)
+            self._set_row_visible(self._gate_q_min, checked)
+            self._set_row_visible(self._gate_jump_max, checked)
+
+        self._trk_advanced.toggled.connect(_on_trk_advanced_toggled)
+        _on_trk_advanced_toggled(False)
 
         params_box_layout.addRow("Start frame", self._start_frame)
         params_box_layout.addRow("End frame", self._end_frame)
@@ -378,8 +400,10 @@ class PipelinePanel(QWidget):
         def _on_advanced_toggled(checked: bool):
             self._set_row_visible(self._qc_q_min, checked)
             self._set_row_visible(self._qc_jump_max, checked)
+            self._set_row_visible(self._drift_window_s, checked)
             
         self._pp_advanced.toggled.connect(_on_advanced_toggled)
+        _on_advanced_toggled(False)
 
         self.post_box_layout.addRow("Drift mode", self._drift_mode)
         self.post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
@@ -706,6 +730,14 @@ class PipelinePanel(QWidget):
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
             self._progress_label.setText("Ready")
+            
+        # Disable buttons that shouldn't be clicked during run
+        for b in [self.btn_save_scale]:
+            if hasattr(self, b): # Just in case
+                getattr(self, b).setEnabled(not running)
+            else:
+                # Direct access if known
+                self.btn_save_scale.setEnabled(not running)
 
     def set_batch_progress(self, done: int, total: int, filename: str = "", pct: int = 0) -> None:
         """Update file counter label and progress bar value (pct = 0..100 within current video)."""
@@ -721,12 +753,14 @@ class PipelinePanel(QWidget):
         self.progress.setValue(pct)
 
     def get_tracking_params(self) -> dict:
-# method UI is removed, keep RS as default
+        # method UI is removed, keep RS as default
         use_ann = bool(self._use_annulus.isChecked())
         r_in = float(self._annulus_r_inner.value())
         r_out = float(self._annulus_r_outer.value())
+        
+        is_adv = bool(self._trk_advanced.isChecked())
             
-        return {
+        pms = {
             "method": "RADIAL_SYMMETRY",
             "compute_profile": "auto",
             "roi_margin": float(self._roi_margin.value()),
@@ -741,9 +775,20 @@ class PipelinePanel(QWidget):
             "annulus_r_outer_px": (None if (not use_ann or r_out <= 0) else r_out),
             "annulus_profile_smooth": int(self._annulus_profile_smooth.value()),
         }
+        
+        # If Advanced is OFF, force safe defaults for hidden parameters
+        if not is_adv:
+            pms["blur_sigma"] = 1.2
+            pms["radial_grad_threshold"] = 2.0
+            if use_ann:
+                pms["annulus_auto"] = True 
+
+        return pms
 
     def get_postprocess_params(self) -> dict:
         mode = getattr(self, "_calibration_mode", "Brownian")
+        is_adv = bool(self._pp_advanced.isChecked())
+        
         params = {
             "enabled": bool(self._pp_enabled.isChecked()),
             "qc_enabled": bool(self._qc_enabled.isChecked()),
@@ -757,6 +802,13 @@ class PipelinePanel(QWidget):
             "temperature_c": float(self._temperature_c.value()),
             "bead_diameter_um": float(self._bead_diameter_um.value()),
         }
+        
+        # If Advanced is OFF, force safe defaults for hidden parameters
+        if not is_adv:
+            params["q_min"] = 0.0
+            params["jump_max_px"] = 50.0
+            params["drift_window_s"] = 1.0
+
         if mode == "Drag":
             params.update({
                 "stage_speed_um_s": float(self._stage_speed.value()),
@@ -790,11 +842,7 @@ class PipelinePanel(QWidget):
     def get_frame_range(self) -> tuple[int, int]:
         return int(self._start_frame.value()), int(self._end_frame.value())
 
-    def set_batch_running(self, running: bool) -> None:
-        for b in [
-            self.btn_save_scale,
-        ]:
-            b.setEnabled(not running)
+
 
     def set_scale_status(self, text: str) -> None:
         self._scale_status.setText(text)
@@ -810,7 +858,13 @@ class PipelinePanel(QWidget):
 
     def _set_row_visible(self, field: QWidget, visible: bool) -> None:
         field.setVisible(visible)
-        if hasattr(self, "post_box_layout"):
+        # Check Tracking layout
+        if hasattr(self, "params_box_layout") and self.params_box_layout is not None:
+            label = self.params_box_layout.labelForField(field)
+            if label:
+                label.setVisible(visible)
+        # Check Postprocess layout
+        if hasattr(self, "post_box_layout") and self.post_box_layout is not None:
             label = self.post_box_layout.labelForField(field)
             if label:
                 label.setVisible(visible)

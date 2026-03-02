@@ -555,55 +555,9 @@ class BatchController:
             self._log(f"Run Batch: device '{device_id}' not implemented yet.")
             return
 
-        tracking_params = device_panel.get_tracking_params()
-        post_params = device_panel.get_postprocess_params()
-        # Fail-safe defaults (must exist for audit + calibration)
-        post_params.setdefault("temperature_c", 25.0)
-        post_params.setdefault("bead_diameter_um", 1.0)
-        self._log(f"[OT] postprocess params: bead_diameter_um={post_params.get('bead_diameter_um')} temperature_c={post_params.get('temperature_c')}")
-
-        scale_params = device_panel.get_scale_params()
-        start_frame, end_frame = device_panel.get_frame_range()
-
-        method_str = str(tracking_params.get("method", "RADIAL_SYMMETRY"))
-        try:
-            method = TrackingMethod(method_str)
-        except Exception:
-            method = TrackingMethod.RADIAL_SYMMETRY
-
-        invert = bool(tracking_params.get("invert", True))
-        blur_sigma = float(tracking_params.get("blur_sigma", 1.2))
-        grad_th = float(tracking_params.get("radial_grad_threshold", 2.0))
-        auto_pol = bool(tracking_params.get("auto_polarity", True))
-        adaptive_roi = bool(tracking_params.get("adaptive_roi", True))
-
-        ann_enabled = bool(tracking_params.get("annulus_enabled", True))
-        ann_auto = bool(tracking_params.get("annulus_auto", True))
-        ann_r_in = tracking_params.get("annulus_r_inner_px", None)
-        ann_r_out = tracking_params.get("annulus_r_outer_px", None)
-        ann_smooth = int(tracking_params.get("annulus_profile_smooth", 3))
-
-        pp_enabled = bool(post_params.get("enabled", True))
-        pp = PostprocessParams(
-            qc_enabled=bool(post_params.get("qc_enabled", True)),
-            q_min=float(post_params.get("q_min", 0.0)),
-            jump_max_px=float(post_params.get("jump_max_px", 50.0)),
-            drift_enabled=bool(post_params.get("drift_enabled", True)),
-            drift_window_s=float(post_params.get("drift_window_s", 1.0)),
-            physics_mode=str(post_params.get("physics_mode", "BROWNIAN")),
-            stage_speed_um_s=float(post_params.get("stage_speed_um_s", 0.0)),
-            drag_axis=str(post_params.get("drag_axis", "x")),
-            viscosity_pa_s=float(post_params.get("viscosity_pa_s", 1.0e-3)),
-            bead_radius_um=float(post_params.get("bead_radius_um", 0.5)),
-            temperature_c=float(post_params.get("temperature_c", 25.0)),
-            bead_diameter_um=float(post_params.get("bead_diameter_um", 1.0)),
-        )
-
-        use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
-        ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
-
-        self._log(f"[OT] Using bead_diameter_um={pp.bead_diameter_um} (from UI postprocess params)")
-
+        # Note: We now fetch parameters *inside* the loop so that if device_panel
+        # supports per-video overrides (like MockPanel does), we use them.
+        
         base_roi = Roi(*roi_rect)
 
         ok_paths = [Path(p) for p in ok_paths]
@@ -619,6 +573,55 @@ class BatchController:
 
             file_path = Path(file_path)
             dataset_set_status_fn(file_path, "running")
+            
+            # Inform the mock panel of the current file being processed
+            if hasattr(device_panel, "set_current_path"):
+                device_panel.set_current_path(str(file_path))
+                
+            tracking_params = device_panel.get_tracking_params()
+            post_params = device_panel.get_postprocess_params()
+            post_params.setdefault("temperature_c", 25.0)
+            post_params.setdefault("bead_diameter_um", 1.0)
+            
+            scale_params = device_panel.get_scale_params()
+            start_frame, end_frame = device_panel.get_frame_range()
+            
+            method_str = str(tracking_params.get("method", "RADIAL_SYMMETRY"))
+            try:
+                method = TrackingMethod(method_str)
+            except Exception:
+                method = TrackingMethod.RADIAL_SYMMETRY
+
+            invert = bool(tracking_params.get("invert", True))
+            blur_sigma = float(tracking_params.get("blur_sigma", 1.2))
+            grad_th = float(tracking_params.get("radial_grad_threshold", 2.0))
+            auto_pol = bool(tracking_params.get("auto_polarity", True))
+            adaptive_roi = bool(tracking_params.get("adaptive_roi", True))
+
+            ann_enabled = bool(tracking_params.get("annulus_enabled", True))
+            ann_auto = bool(tracking_params.get("annulus_auto", True))
+            ann_r_in = tracking_params.get("annulus_r_inner_px", None)
+            ann_r_out = tracking_params.get("annulus_r_outer_px", None)
+            ann_smooth = int(tracking_params.get("annulus_profile_smooth", 3))
+
+            pp_enabled = bool(post_params.get("enabled", True))
+            pp = PostprocessParams(
+                qc_enabled=bool(post_params.get("qc_enabled", True)),
+                q_min=float(post_params.get("q_min", 0.0)),
+                jump_max_px=float(post_params.get("jump_max_px", 50.0)),
+                drift_enabled=bool(post_params.get("drift_enabled", True)),
+                drift_window_s=float(post_params.get("drift_window_s", 1.0)),
+                physics_mode=str(post_params.get("physics_mode", "BROWNIAN")),
+                stage_speed_um_s=float(post_params.get("stage_speed_um_s", 0.0)),
+                drag_axis=str(post_params.get("drag_axis", "x")),
+                viscosity_pa_s=float(post_params.get("viscosity_pa_s", 1.0e-3)),
+                bead_radius_um=float(post_params.get("bead_radius_um", 0.5)),
+                temperature_c=float(post_params.get("temperature_c", 25.0)),
+                bead_diameter_um=float(post_params.get("bead_diameter_um", 1.0)),
+            )
+
+            use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
+            ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
 
             try:
                 reader = VideoReader(file_path)

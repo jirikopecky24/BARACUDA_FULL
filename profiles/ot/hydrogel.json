@@ -1,0 +1,16 @@
+{
+  "defaults": {
+    "postprocess": {
+      "temperature_c": 22.0,
+      "viscosity_pa_s": 0.015
+    },
+    "tracking": {
+      "blur_sigma": 1.5,
+      "radial_grad_threshold": 1.5
+    }
+  },
+  "device_id": "optical_tweezers",
+  "per_file": {},
+  "profile_name": "hydrogel",
+  "version": 1
+}

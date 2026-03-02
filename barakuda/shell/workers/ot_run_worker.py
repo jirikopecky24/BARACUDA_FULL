@@ -4,15 +4,39 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 class MockPanel:
     """Mock device panel to pass parameter dicts safely across thread boundaries."""
-    def __init__(self, tp, pp, sp, fr):
-        self.tp = tp
-        self.pp = pp
-        self.sp = sp
-        self.fr = fr
-    def get_tracking_params(self): return self.tp
-    def get_postprocess_params(self): return self.pp
-    def get_scale_params(self): return self.sp
-    def get_frame_range(self): return self.fr
+    def __init__(self, dataset_params: dict, fallback_tp: dict, fallback_pp: dict, fallback_sp: dict, fallback_fr: tuple):
+        self._dataset_params = dataset_params
+        self.fallback_tp = fallback_tp
+        self.fallback_pp = fallback_pp
+        self.fallback_sp = fallback_sp
+        self.fallback_fr = fallback_fr
+        
+        self._current_path = ""
+        
+    def set_current_path(self, path: str):
+        self._current_path = path
+        
+    def _get_params_for_path(self):
+        pms = self._dataset_params.get(self._current_path)
+        if pms is not None:
+            return pms
+        return {}
+
+    def get_tracking_params(self): 
+        p = self._get_params_for_path()
+        return p.get("tracking") if p.get("tracking") is not None else self.fallback_tp
+        
+    def get_postprocess_params(self): 
+        p = self._get_params_for_path()
+        return p.get("postprocess") if p.get("postprocess") is not None else self.fallback_pp
+        
+    def get_scale_params(self): 
+        p = self._get_params_for_path()
+        return p.get("scale") if p.get("scale") is not None else self.fallback_sp
+        
+    def get_frame_range(self): 
+        p = self._get_params_for_path()
+        return p.get("frame_range") if p.get("frame_range") is not None else self.fallback_fr
 
 class OTRunWorker(QObject):
     """Worker thread for Optical Tweezers RUN batch."""
@@ -29,6 +53,7 @@ class OTRunWorker(QObject):
         checked_paths: list,
         roi_rect: tuple[int, int, int, int],
         panel_data: dict,
+        dataset_params: dict,
         dataset_set_status_fn=None,  # accepted but bypassed since we use signal
     ):
         super().__init__()
@@ -36,6 +61,7 @@ class OTRunWorker(QObject):
         self._checked_paths = checked_paths
         self._roi_rect = roi_rect
         self._panel_data = panel_data
+        self._dataset_params = dataset_params
         self._is_cancelled = False
 
     def cancel(self):
@@ -78,6 +104,7 @@ class OTRunWorker(QObject):
                 self.status_update.emit(path, status)
 
             mock_panel = MockPanel(
+                self._dataset_params,
                 self._panel_data.get("tracking", {}),
                 self._panel_data.get("postprocess", {}),
                 self._panel_data.get("scale", {}),
