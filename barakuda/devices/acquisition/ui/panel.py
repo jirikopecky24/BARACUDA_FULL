@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QPushButton, QDoubleSpinBox, QSpinBox, QLineEdit,
     QSplitter, QFileDialog, QGroupBox, QScrollArea, QFrame,
-    QSlider, QGridLayout, QPlainTextEdit,
+    QSlider, QGridLayout, QPlainTextEdit, QComboBox,
 )
 from PyQt6.QtGui import QFont
 
@@ -47,6 +47,7 @@ class _RecordWorker(QObject):
         self, camera: BaslerCamera, output_dir: str, basename: str,
         duration_s: float, roi: tuple, exposure_us: float,
         gain: float | None, fps_hint: float, pixel_format: str,
+        rec_format: str = "RAW",
     ) -> None:
         super().__init__()
         self._cam = camera
@@ -58,10 +59,12 @@ class _RecordWorker(QObject):
         self._gain = gain
         self._fps_hint = fps_hint
         self._pixel_format = pixel_format
+        self._rec_format = rec_format
 
     def run(self) -> None:
         try:
-            result = self._cam.record(
+            rec_fn = self._cam.record_raw if "RAW" in self._rec_format.upper() else self._cam.record
+            result = rec_fn(
                 output_dir=self._output_dir,
                 basename=self._basename,
                 duration_s=self._duration_s,
@@ -333,11 +336,11 @@ class AcquisitionPanel(QWidget):
         rec_form = QFormLayout(grp_rec)
 
         self._spin_duration = QDoubleSpinBox()
-        self._spin_duration.setRange(0.1, 3600)
+        self._spin_duration.setRange(0, 3600)
         self._spin_duration.setValue(30.0)
         self._spin_duration.setSuffix(" s")
         self._spin_duration.setDecimals(1)
-        self._spin_duration.setToolTip("Recording duration in seconds.")
+        self._spin_duration.setToolTip("Recording duration in seconds. 0 = record until Stop.")
         rec_form.addRow("Duration:", self._spin_duration)
 
         dir_row = QHBoxLayout()
@@ -356,6 +359,13 @@ class AcquisitionPanel(QWidget):
         )
         self._edit_basename.setToolTip("Base filename (without extension). Timestamp recommended.")
         rec_form.addRow("Basename:", self._edit_basename)
+
+        self._combo_format = QComboBox()
+        self._combo_format.addItem("RAW (fast)")
+        self._combo_format.addItem("AVI (compat)")
+        self._combo_format.setCurrentIndex(0)
+        self._combo_format.setToolTip("RAW = raw binary (fastest, no codec overhead). AVI = MJPG container.")
+        rec_form.addRow("Format:", self._combo_format)
 
         rec_btn_row = QHBoxLayout()
         self._btn_record = QPushButton("⏺ Record")
@@ -709,6 +719,7 @@ class AcquisitionPanel(QWidget):
             gain=gain,
             fps_hint=self._spin_fps_hint.value(),
             pixel_format="Mono8",
+            rec_format=self._combo_format.currentText(),
         )
         self._record_worker.moveToThread(self._record_thread)
         self._record_thread.started.connect(self._record_worker.run)
