@@ -109,6 +109,28 @@ class VideoReader:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
 
+        # --- Check sibling meta.json for fps_effective ---
+        # Patterns: <stem>_meta.json  OR  <filename>_meta.json
+        _fps_from_meta = False
+        for suffix in (
+            self.path.stem + "_meta.json",
+            self.path.name + "_meta.json",
+        ):
+            meta_path = self.path.parent / suffix
+            if meta_path.exists():
+                try:
+                    import json as _json
+                    with open(meta_path, "r", encoding="utf-8") as _mf:
+                        _ext = _json.load(_mf)
+                    _val = float(_ext.get("fps_effective", 0))
+                    if 0 < _val < 100_000:
+                        fps = _val
+                        _fps_from_meta = True
+                        print(f"FPS override from meta.json: {_val}")
+                        break
+                except Exception:
+                    pass
+
         ok, frame_bgr = cap.read()
         if not ok or frame_bgr is None:
             cap.release()
