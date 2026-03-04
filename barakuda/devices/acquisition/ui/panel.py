@@ -687,9 +687,6 @@ class AcquisitionPanel(QWidget):
         if not self._camera.is_connected:
             return
 
-        # Update basename with current timestamp
-        self._edit_basename.setText(time.strftime("Basler_%Y%m%d_%H%M%S"))
-
         roi = self._get_roi_tuple()
         gain = self._spin_gain.value() if self._spin_gain.isEnabled() else None
 
