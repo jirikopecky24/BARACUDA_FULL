@@ -51,14 +51,24 @@ class OTPipeline:
         
         # 1. Load Setup
         reader = VideoReader(video_path)
-        fps = float(reader.meta.fps)
-        self.log_fn(f"  - Video: {reader.meta.frame_count} frames @ {fps} Hz")
+        fps_detected = float(reader.meta.fps)
         
         tc = run_config.get("tracking", {})
         pc = run_config.get("preprocess", {})
         qc = run_config.get("qc", {})
         sc = run_config.get("strategy_params", {})
         cal_c = run_config.get("calibration", {})
+
+        fps_override = float(tc.get("fps_override", 0.0))
+        if fps_override > 0:
+            fps = fps_override
+            self.log_fn(f"  - Video: {reader.meta.frame_count} frames | FPS: detected={fps_detected:.2f}, override={fps_override:.2f}, using={fps:.2f} Hz")
+        else:
+            fps = fps_detected
+            self.log_fn(f"  - Video: {reader.meta.frame_count} frames | FPS: detected={fps_detected:.2f} Hz")
+
+        if fps <= 0:
+            raise ValueError(f"Invalid FPS: {fps}")
         
         s = int(tc.get("start_frame", 0))
         e = int(tc.get("end_frame", reader.meta.frame_count - 1))

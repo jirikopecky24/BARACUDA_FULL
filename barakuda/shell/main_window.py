@@ -356,13 +356,34 @@ class ShellMainWindow(QMainWindow):
             except Exception as e:
                 self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
 
+        elif self._active_device_id == "acquisition":
+            # AcquisitionPanel is self-contained (owns its preview).
+            # No signal wiring needed — panel handles everything internally.
+            pass
+
         self.log_panel.log(f"Device selected: {spec.display_name}")
 
-        # Switch the preview stack to the correct panel
-        if self._active_device_id == "afm":
-            self._preview_stack.setCurrentWidget(self._afm_preview)
+        # Switch the preview stack and pipeline dock visibility
+        if self._active_device_id == "acquisition":
+            # AcquisitionPanel is self-contained (owns its preview + controls).
+            # Hide the shared central preview stack (avoids empty black area).
+            self._preview_stack.setVisible(False)
+            # Hide the pipeline dock strip (Acquisition panel is in device container
+            # but we don't need the separate "Pipeline" dock — the panel fills
+            # the central widget area instead).
+            self.pipeline_dock.setVisible(False)
+            # Move the acquisition panel from the pipeline dock into central widget
+            # so it fills the full available area.
+            self._device_panel.setParent(None)
+            self.centralWidget().layout().addWidget(self._device_panel, 1)
         else:
-            self._preview_stack.setCurrentWidget(self._ot_preview)
+            # Restore shared layout for OT / AFM
+            self._preview_stack.setVisible(True)
+            self.pipeline_dock.setVisible(True)
+            if self._active_device_id == "afm":
+                self._preview_stack.setCurrentWidget(self._afm_preview)
+            else:
+                self._preview_stack.setCurrentWidget(self._ot_preview)
 
         # Top-bar method selector (device-specific)
         if self._active_device_id == "optical_tweezers":
@@ -418,6 +439,10 @@ class ShellMainWindow(QMainWindow):
             self._manual_roi_edited_paths.add(str(paths[0]))
 
     # ---------------- OT helpers ----------------
+
+    def _on_ot_load_profile(self, profile_name: str) -> None:
+        """Minimal handler to satisfy signal wiring without modifying profile logic."""
+        self.log_panel.log(f"OT load profile requested: {profile_name} (No-op)")
 
     def _ot_save_scale(self) -> None:
         if self._device_panel is None:
