@@ -404,7 +404,7 @@ class ShellMainWindow(QMainWindow):
                 self.method_combo.setCurrentIndex(0)
                 self.method_combo.setVisible(True)
                 
-                self.method_label.setText("Calibration mode:")
+                self.method_label.setText("Method:")
                 self.method_label.setVisible(True)
 
                 if hasattr(self._device_panel, "set_calibration_mode"):
