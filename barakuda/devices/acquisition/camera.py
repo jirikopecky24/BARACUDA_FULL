@@ -459,6 +459,84 @@ class BaslerCamera:
         """Request a running record to stop early."""
         self._record_stop.set()
 
+    def benchmark_fps(
+        self,
+        duration_s: float,
+        roi: tuple[int, int, int, int],
+        exposure_us: float,
+        gain: Optional[float] = None,
+        pixel_format: str = "Mono8",
+        stop_event: Optional[threading.Event] = None,
+    ) -> dict:
+        """
+        Benchmark achievable FPS without writing to disk.
+
+        Grabs frames for *duration_s* seconds using the same camera
+        settings as record, counts frames and failures.
+        """
+        self._require_connected()
+        self.stop_preview()
+
+        w, h, ox, oy = self.snap_roi(*roi)
+        self._apply_roi(w, h, ox, oy)
+        self._set_exposure(exposure_us)
+        if gain is not None:
+            self._set_gain(gain)
+        self._set_pixel_format(pixel_format)
+
+        frames = 0
+        dropped = 0
+        timestamps: list[float] = []
+
+        try:
+            self._cam.StartGrabbing(
+                pylon.GrabStrategy_OneByOne,
+                pylon.GrabLoop_ProvidedByInstantCamera,
+            )
+            t0 = time.perf_counter()
+
+            while True:
+                elapsed = time.perf_counter() - t0
+                if elapsed >= duration_s:
+                    break
+                if stop_event is not None and stop_event.is_set():
+                    break
+
+                grab = self._cam.RetrieveResult(
+                    5000, pylon.TimeoutHandling_Return
+                )
+                if grab is None:
+                    continue
+                if not grab.GrabSucceeded():
+                    dropped += 1
+                    grab.Release()
+                    continue
+
+                grab.Release()  # don't write — just count
+                frames += 1
+                timestamps.append(time.perf_counter())
+
+        finally:
+            try:
+                if self._cam is not None and self._cam.IsGrabbing():
+                    self._cam.StopGrabbing()
+            except Exception:
+                pass
+            self._apply_full_frame()
+
+        fps_effective = 0.0
+        if len(timestamps) > 1:
+            fps_effective = (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
+
+        actual_duration = (timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0
+
+        return {
+            "frames": frames,
+            "fps_effective": fps_effective,
+            "dropped_frames": dropped,
+            "duration_s": round(actual_duration, 6),
+        }
+
     def record_raw(
         self,
         output_dir: str,
