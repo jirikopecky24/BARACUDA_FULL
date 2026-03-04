@@ -6,6 +6,7 @@ Fully import-guarded: shows a warning when pypylon is not available.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 import threading
@@ -270,6 +271,15 @@ class AcquisitionPanel(QWidget):
         self._btn_test_fps.setEnabled(False)
         form.addRow("", self._btn_test_fps)
 
+        self._btn_benchmark = QPushButton("Benchmark (5s)")
+        self._btn_benchmark.setToolTip(
+            "5-second dry-run benchmark at current settings.\n"
+            "Grabs frames without writing — reports achievable FPS and dropped frames."
+        )
+        self._btn_benchmark.clicked.connect(self._on_benchmark)
+        self._btn_benchmark.setEnabled(False)
+        form.addRow("", self._btn_benchmark)
+
         self._lbl_test_fps_result = QLabel("")
         form.addRow("", self._lbl_test_fps_result)
 
@@ -436,6 +446,7 @@ class AcquisitionPanel(QWidget):
             self._btn_start_preview.setEnabled(False)
             self._btn_stop_preview.setEnabled(False)
             self._btn_test_fps.setEnabled(False)
+            self._btn_benchmark.setEnabled(False)
             self._btn_record.setEnabled(False)
             self._status.setText("Disconnected")
             return
@@ -445,6 +456,7 @@ class AcquisitionPanel(QWidget):
             self._btn_connect.setText("Disconnect")
             self._btn_start_preview.setEnabled(True)
             self._btn_test_fps.setEnabled(True)
+            self._btn_benchmark.setEnabled(True)
             self._btn_record.setEnabled(True)
             sensor = self._camera.get_sensor_size()
             self._sensor_w, self._sensor_h = sensor
@@ -689,6 +701,44 @@ class AcquisitionPanel(QWidget):
         t = threading.Thread(target=_measure, daemon=True, name="test-fps")
         t.start()
 
+    def _on_benchmark(self) -> None:
+        if not self._camera.is_connected:
+            return
+        roi = self._get_roi_tuple()
+        self._lbl_test_fps_result.setText("Benchmarking (5s)…")
+        self._btn_benchmark.setEnabled(False)
+        self._btn_test_fps.setEnabled(False)
+
+        def _run_bench() -> None:
+            try:
+                result = self._camera.benchmark_fps(
+                    duration_s=5.0,
+                    roi=roi,
+                    exposure_us=self._spin_exposure.value(),
+                    gain=self._spin_gain.value() if self._spin_gain.isEnabled() else None,
+                )
+                msg = (
+                    f"BENCH fps_effective={result['fps_effective']:.1f} "
+                    f"dropped={result['dropped_frames']} "
+                    f"frames={result['frames']}"
+                )
+                QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(msg))
+                QTimer.singleShot(0, lambda: self._status.setText(msg))
+            except Exception as exc:
+                QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(
+                    f"Benchmark failed: {exc}"
+                ))
+            finally:
+                QTimer.singleShot(0, lambda: self._btn_benchmark.setEnabled(True))
+                QTimer.singleShot(0, lambda: self._btn_test_fps.setEnabled(True))
+                QTimer.singleShot(100, lambda: self._on_start_preview()
+                    if self._camera.is_connected and not self._camera.is_previewing
+                    else None
+                )
+
+        t = threading.Thread(target=_run_bench, daemon=True, name="benchmark")
+        t.start()
+
     # ------------------------------------------------------------------ #
     #  Recording
     # ------------------------------------------------------------------ #
@@ -750,6 +800,40 @@ class AcquisitionPanel(QWidget):
             f"Meta:  {result.meta_path}"
         )
         self._last_record_result = result
+
+        # --- Write qc.json ---
+        try:
+            fps_target = self._spin_fps_hint.value()
+            fps_eff = result.fps_effective or 0.0
+            fps_ratio = fps_eff / fps_target if fps_target > 0 else 0.0
+            reasons: list[str] = []
+            if result.dropped > 0:
+                reasons.append(f"dropped_frames={result.dropped}")
+            if fps_ratio < 0.95:
+                reasons.append(f"fps_ratio={fps_ratio:.3f} < 0.95")
+            if result.dropped > 0.01 * result.frames_written:
+                reasons.append("dropped > 1% of frames")
+            if fps_ratio < 0.90:
+                reasons.append(f"fps_ratio={fps_ratio:.3f} < 0.90")
+            qc_pass = len(reasons) == 0
+            qc = {
+                "pass": qc_pass,
+                "fps_target": fps_target,
+                "fps_effective": round(fps_eff, 2),
+                "fps_ratio": round(fps_ratio, 4),
+                "frames_written": result.frames_written,
+                "dropped_frames": result.dropped,
+                "reasons": reasons,
+            }
+            qc_path = os.path.join(
+                self._edit_output_dir.text(),
+                self._edit_basename.text() + "_qc.json",
+            )
+            with open(qc_path, "w", encoding="utf-8") as f:
+                json.dump(qc, f, indent=2)
+        except Exception:
+            pass
+
         self._btn_record.setEnabled(True)
         self._btn_stop_record.setEnabled(False)
         self._btn_start_preview.setEnabled(True)
@@ -762,10 +846,25 @@ class AcquisitionPanel(QWidget):
         self._btn_start_preview.setEnabled(True)
 
     def _on_record_progress(self, frames: int, elapsed: float) -> None:
-        remaining = self._spin_duration.value() - elapsed
+        fps_target = self._spin_fps_hint.value()
+        fps_eff = frames / elapsed if elapsed > 0.5 else 0.0
+        fps_ratio = fps_eff / fps_target if fps_target > 0 else 0.0
+        pct = fps_ratio * 100
+
+        # Health tag
+        if fps_ratio < 0.90:
+            tag = "FAIL"
+        elif fps_ratio < 0.95:
+            tag = "WARN"
+        else:
+            tag = "OK"
+
+        dur = self._spin_duration.value()
+        remaining = dur - elapsed if dur > 0 else 0.0
+        rem_str = f" ~{max(0, remaining):.1f}s remaining" if dur > 0 else ""
         self._status.setText(
-            f"Recording… {frames} frames, "
-            f"{elapsed:.1f}s elapsed, ~{max(0, remaining):.1f}s remaining"
+            f"Recording… FPS={fps_eff:.0f} ({pct:.0f}%) "
+            f"frames={frames}{rem_str} {tag}"
         )
 
     # ------------------------------------------------------------------ #
