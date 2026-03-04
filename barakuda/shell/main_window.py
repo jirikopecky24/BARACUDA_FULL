@@ -6,7 +6,7 @@ from typing import Optional
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget, QStackedWidget
+    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -66,13 +66,12 @@ class ShellMainWindow(QMainWindow):
         self._preview_stack.addWidget(self._ot_preview)
         self._preview_stack.setCurrentWidget(self._afm_preview)
 
-        root = QWidget()
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
-
-        root_layout.addWidget(self._preview_stack, 1)
-        self.setCentralWidget(root)
+        self._center_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._center_splitter.addWidget(self._preview_stack)
+        self._center_splitter.addWidget(self._device_container)
+        self._center_splitter.setStretchFactor(0, 3)
+        self._center_splitter.setStretchFactor(1, 2)
+        self.setCentralWidget(self._center_splitter)
 
         # ---------------- Method dock (above Dataset) ----------------
         method_widget = QWidget()
@@ -113,25 +112,7 @@ class ShellMainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
 
-        self.pipeline_dock = QDockWidget("", self)
-        self.pipeline_dock.setWidget(self._device_container)
-        self.pipeline_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-            | QDockWidget.DockWidgetFeature.DockWidgetClosable
-        )
 
-        # Slim title bar (still draggable, but visually minimal)
-        tb = QWidget()
-        tb_l = QHBoxLayout(tb)
-        tb_l.setContentsMargins(6, 2, 6, 2)
-        tb_l.setSpacing(6)
-        lbl = QLabel("Pipeline")
-        lbl.setStyleSheet("color: #bbb; font-size: 11px;")
-        tb_l.addWidget(lbl)
-        tb_l.addStretch(1)
-        tb.setFixedHeight(20)
-        self.pipeline_dock.setTitleBarWidget(tb)
 
         self.log_dock = QDockWidget("Log", self)
         self.log_dock.setWidget(self.log_panel)
@@ -173,12 +154,12 @@ class ShellMainWindow(QMainWindow):
             except Exception:
                 pass
 
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.pipeline_dock)
+
             self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
 
             # Reasonable default proportions (can be adjusted by user)
             try:
-                self.resizeDocks([self.dataset_dock, self.pipeline_dock], [300, 360], Qt.Orientation.Horizontal)
+                self.resizeDocks([self.dataset_dock], [300], Qt.Orientation.Horizontal)
                 self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
             except Exception:
                 pass
