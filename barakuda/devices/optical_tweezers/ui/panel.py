@@ -195,6 +195,7 @@ class PipelinePanel(QWidget):
         self._gate_q_min.setDecimals(6)
         self._gate_q_min.setSingleStep(0.1)
         self._gate_q_min.setValue(0.0)
+        self._gate_q_min.setToolTip("Minimum tracking quality score for a frame to pass the Preview Gate.")
 
         self._gate_jump_max = QDoubleSpinBox()
         self._gate_jump_max.setRange(0.0, 1e6)
@@ -215,6 +216,13 @@ class PipelinePanel(QWidget):
         self._end_frame.setToolTip("Last frame to process.")
 
         # scale
+        self._fps_override = QDoubleSpinBox()
+        self._fps_override.setRange(0.0, 1e6)
+        self._fps_override.setDecimals(2)
+        self._fps_override.setSingleStep(10.0)
+        self._fps_override.setValue(0.0)
+        self._fps_override.setToolTip("Override video FPS for OT calculations. 0 = use video metadata.")
+
         self._use_dataset_scale = QCheckBox("Use dataset scale (µm/px)")
         self._use_dataset_scale.setToolTip("Use the scale factor saved with this dataset, if available.")
         self._use_dataset_scale.setChecked(True)
@@ -371,6 +379,7 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("Start frame", self._start_frame)
         params_box_layout.addRow("End frame", self._end_frame)
 
+        params_box_layout.addRow("FPS Override (0=auto)", self._fps_override)
         params_box_layout.addRow("", self._use_dataset_scale)
         params_box_layout.addRow("Scale (µm/px)", self._um_per_px)
         params_box_layout.addRow("", self._scale_status)
@@ -500,12 +509,51 @@ class PipelinePanel(QWidget):
         scroll_exp.setWidget(export_box)
         tab_export_layout.addWidget(scroll_exp)
 
+        tab_settings = QWidget()
+        tab_settings_layout = QVBoxLayout(tab_settings)
+        tab_settings_layout.setContentsMargins(8, 8, 8, 8)
+        
+        settings_box = QWidget()
+        settings_box_layout = QFormLayout(settings_box)
+        
+        # Compute Backend
+        self._compute_backend = QComboBox()
+        self._compute_backend.addItems(["Auto", "CPU", "GPU"])
+        self._compute_backend.setCurrentText("CPU")
+        self._compute_backend.setEnabled(False)
+        self._compute_backend.setToolTip("OT pipeline currently supports CPU only.")
+        
+        # Advanced Master Toggle
+        self._master_advanced = QCheckBox("Advanced options")
+        self._master_advanced.setToolTip("Show experimental / advanced options across all tabs.")
+        self._master_advanced.setChecked(False)
+        
+        def _on_master_advanced_toggled(checked: bool):
+            self._trk_advanced.setChecked(checked)
+            self._pp_advanced.setChecked(checked)
+            
+        self._master_advanced.toggled.connect(_on_master_advanced_toggled)
+        
+        settings_box_layout.addRow("Compute backend", self._compute_backend)
+        settings_box_layout.addRow("", self._master_advanced)
+        
+        scroll_set = QScrollArea()
+        scroll_set.setWidgetResizable(True)
+        scroll_set.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_set.setWidget(settings_box)
+        tab_settings_layout.addWidget(scroll_set)
+
         self.tabs.addTab(tab_run, "Run")
         self.tabs.addTab(tab_tracking, "Tracking")
         self.tabs.addTab(tab_postprocess, "Postprocess")
         self.tabs.addTab(tab_export, "Export")
+        self.tabs.addTab(tab_settings, "Settings")
 
         layout.addWidget(self.tabs, stretch=1)
+        
+        # Disable tracking and postprocess advanced checkboxes themselves so user only uses master
+        self._trk_advanced.setVisible(False)
+        self._pp_advanced.setVisible(False)
         
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
@@ -564,6 +612,12 @@ class PipelinePanel(QWidget):
         self._viscosity.setValue(0.001)
         self._temperature_c.setValue(25.0)
         self._bead_diameter_um.setValue(1.0)
+
+        # Settings Defaults
+        if hasattr(self, '_master_advanced'):
+            self._master_advanced.setChecked(False)
+        if hasattr(self, '_compute_backend'):
+            self._compute_backend.setCurrentText("CPU")
         
         self._wire_value_changed_signals()
         
@@ -670,6 +724,7 @@ class PipelinePanel(QWidget):
         self._annulus_r_inner.setValue(tp.get("annulus_r_inner_px") or 0.0)
         self._annulus_r_outer.setValue(tp.get("annulus_r_outer_px") or 0.0)
         self._annulus_profile_smooth.setValue(tp.get("annulus_profile_smooth", 3))
+        self._fps_override.setValue(tp.get("fps_override", 0.0))
 
         pp = d.get("postprocess", {})
         self._pp_enabled.setChecked(pp.get("enabled", True))
@@ -774,6 +829,7 @@ class PipelinePanel(QWidget):
             "annulus_r_inner_px": (None if (not use_ann or r_in <= 0) else r_in),
             "annulus_r_outer_px": (None if (not use_ann or r_out <= 0) else r_out),
             "annulus_profile_smooth": int(self._annulus_profile_smooth.value()),
+            "fps_override": float(self._fps_override.value()),
         }
         
         # If Advanced is OFF, force safe defaults for hidden parameters
@@ -787,7 +843,7 @@ class PipelinePanel(QWidget):
 
     def get_postprocess_params(self) -> dict:
         mode = getattr(self, "_calibration_mode", "Brownian")
-        is_adv = bool(self._pp_advanced.isChecked())
+        is_adv = bool(self._master_advanced.isChecked()) if hasattr(self, '_master_advanced') else False
         
         params = {
             "enabled": bool(self._pp_enabled.isChecked()),
