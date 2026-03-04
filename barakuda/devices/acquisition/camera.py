@@ -376,7 +376,7 @@ class BaslerCamera:
 
             while not self._record_stop.is_set():
                 elapsed = time.perf_counter() - t0
-                if elapsed >= duration_s:
+                if duration_s > 0 and elapsed >= duration_s:
                     break
 
                 grab = self._cam.RetrieveResult(
@@ -458,6 +458,143 @@ class BaslerCamera:
     def stop_record(self) -> None:
         """Request a running record to stop early."""
         self._record_stop.set()
+
+    def record_raw(
+        self,
+        output_dir: str,
+        basename: str,
+        duration_s: float,
+        roi: tuple[int, int, int, int],
+        exposure_us: float,
+        gain: Optional[float] = None,
+        fps_hint: float = 2000.0,
+        pixel_format: str = "Mono8",
+        progress_callback: Optional[Callable[[int, float], None]] = None,
+    ) -> RecordResult:
+        """
+        Record raw binary frames + timestamps CSV + meta JSON.
+
+        Much faster than AVI — no codec overhead.
+        If duration_s <= 0, records until stop_record() is called.
+        """
+        self._require_connected()
+        self.stop_preview()
+
+        w, h, ox, oy = self.snap_roi(*roi)
+        self._apply_roi(w, h, ox, oy)
+        self._set_exposure(exposure_us)
+        if gain is not None:
+            self._set_gain(gain)
+        self._set_pixel_format(pixel_format)
+
+        os.makedirs(output_dir, exist_ok=True)
+        raw_path = os.path.join(output_dir, basename + ".raw")
+        ts_path = os.path.join(output_dir, basename + "_timestamps.csv")
+        meta_path = os.path.join(output_dir, basename + "_meta.json")
+
+        frame_bytes = w * h  # Mono8
+
+        frames = 0
+        dropped = 0
+        timestamps: list[float] = []
+        self._record_stop.clear()
+
+        try:
+            raw_f = open(raw_path, "wb")
+            self._cam.StartGrabbing(
+                pylon.GrabStrategy_OneByOne,
+                pylon.GrabLoop_ProvidedByInstantCamera,
+            )
+            t0 = time.perf_counter()
+
+            while not self._record_stop.is_set():
+                elapsed = time.perf_counter() - t0
+                if duration_s > 0 and elapsed >= duration_s:
+                    break
+
+                grab = self._cam.RetrieveResult(
+                    5000, pylon.TimeoutHandling_Return
+                )
+                if grab is None:
+                    continue
+                if not grab.GrabSucceeded():
+                    dropped += 1
+                    grab.Release()
+                    continue
+
+                img = grab.Array
+                grab.Release()
+                raw_f.write(img.tobytes())
+                frames += 1
+                timestamps.append(time.perf_counter())
+
+                if progress_callback is not None and frames % 100 == 0:
+                    progress_callback(frames, time.perf_counter() - t0)
+
+        finally:
+            try:
+                raw_f.close()
+            except Exception:
+                pass
+            try:
+                if self._cam is not None and self._cam.IsGrabbing():
+                    self._cam.StopGrabbing()
+            except Exception:
+                pass
+
+        # Write timestamps CSV
+        with open(ts_path, "w", encoding="utf-8") as tf:
+            tf.write("frame,timestamp_s\n")
+            for idx, ts in enumerate(timestamps):
+                tf.write(f"{idx},{ts:.9f}\n")
+
+        # Compute effective fps
+        fps_effective: Optional[float] = None
+        if len(timestamps) > 1:
+            fps_effective = (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
+
+        actual_duration = (timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0
+
+        actual_gain: Optional[float] = None
+        try:
+            if "Gain" in self._cam.GetNodeMap():
+                actual_gain = float(self._cam.Gain.Value)
+        except Exception:
+            pass
+
+        meta = {
+            "format": "raw",
+            "fps_effective": fps_effective,
+            "fps_target_hint": fps_hint,
+            "frames_written": frames,
+            "duration_s": round(actual_duration, 6),
+            "exposure_us": exposure_us,
+            "gain": actual_gain,
+            "full_frame_w": self._sensor_w,
+            "full_frame_h": self._sensor_h,
+            "record_roi": {"x": ox, "y": oy, "w": w, "h": h},
+            "pixel_format": pixel_format,
+            "frame_bytes": frame_bytes,
+            "dtype": "uint8",
+            "raw_path": raw_path,
+            "timestamps_path": ts_path,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "dropped_frames": dropped,
+        }
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        self._apply_full_frame()
+
+        return RecordResult(
+            video_path=raw_path,
+            meta_path=meta_path,
+            frames_written=frames,
+            fps_effective=fps_effective,
+            dropped=dropped,
+            meta=meta,
+        )
 
     # ------------------------------------------------------------------ #
     #  Private helpers
