@@ -668,6 +668,7 @@ class AcquisitionPanel(QWidget):
             )
             self._set_preview_ui(True)
             self._last_preview_ts_displayed = 0.0
+            self._image_view.setLevels(0, 255)
             self._preview_timer.start(40)
             self._status.setText("Preview running")
         except Exception as exc:
