@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QDoubleSpinBox, QSpinBox, QLineEdit,
     QSplitter, QFileDialog, QGroupBox, QScrollArea, QFrame,
     QSlider, QGridLayout, QPlainTextEdit, QComboBox,
+    QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
 )
 from PyQt6.QtGui import QFont
 
@@ -31,6 +32,73 @@ from barakuda.devices.acquisition.camera import (
     BaslerCamera,
     RecordResult,
 )
+from barakuda.devices.acquisition.camera_base import AbstractCamera
+from barakuda.devices.acquisition.camera_factory import enumerate_all, create as create_camera
+
+
+# ------------------------------------------------------------------ #
+#  Camera selection dialog
+# ------------------------------------------------------------------ #
+
+class _CameraSelectDialog(QDialog):
+    """Modal dialog listing all available cameras from every registered backend."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Select Camera")
+        self.setMinimumWidth(420)
+        self._selected_info = None
+
+        layout = QVBoxLayout(self)
+
+        self._list = QListWidget()
+        self._list.setAlternatingRowColors(True)
+        layout.addWidget(self._list)
+
+        self._status_label = QLabel("Searching for cameras…")
+        layout.addWidget(self._status_label)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_ok)
+        buttons.rejected.connect(self.reject)
+        self._ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok_btn.setEnabled(False)
+        layout.addWidget(buttons)
+
+        self._list.itemSelectionChanged.connect(self._on_selection_changed)
+        self._list.itemDoubleClicked.connect(lambda _: self._on_ok())
+
+        self._populate()
+
+    def _populate(self) -> None:
+        self._list.clear()
+        devices = enumerate_all()
+        if not devices:
+            self._status_label.setText("No cameras found.")
+            return
+        self._status_label.setText(f"{len(devices)} camera(s) found:")
+        for info in devices:
+            item = QListWidgetItem(str(info))
+            item.setData(Qt.ItemDataRole.UserRole, info)
+            self._list.addItem(item)
+        self._list.setCurrentRow(0)
+
+    def _on_selection_changed(self) -> None:
+        selected = self._list.selectedItems()
+        self._ok_btn.setEnabled(bool(selected))
+
+    def _on_ok(self) -> None:
+        selected = self._list.selectedItems()
+        if not selected:
+            return
+        self._selected_info = selected[0].data(Qt.ItemDataRole.UserRole)
+        self.accept()
+
+    def selected_info(self):
+        """Return the chosen CameraDeviceInfo, or None if dialog was cancelled."""
+        return self._selected_info
 
 
 # ------------------------------------------------------------------ #
@@ -110,7 +178,7 @@ class AcquisitionPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        self._camera = BaslerCamera()
+        self._camera: AbstractCamera = BaslerCamera()  # default; replaced after dialog
         self._record_thread: QThread | None = None
         self._record_worker: _RecordWorker | None = None
 
@@ -487,17 +555,32 @@ class AcquisitionPanel(QWidget):
         self._status.setText("Disconnected")
 
     def _do_connect(self) -> None:
-        """Connect to camera. Disables button during attempt; restores UI on failure."""
+        """Show camera selection dialog, then connect. Restores UI on failure."""
+        # Show selection dialog
+        dlg = _CameraSelectDialog(parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return  # user cancelled — button stays enabled, nothing changes
+        info = dlg.selected_info()
+        if info is None:
+            return
+
         self._btn_connect.setEnabled(False)
         self._status.setText("Connecting…")
         try:
-            self._camera.connect()
+            # Disconnect any existing camera first (no-op if already disconnected)
+            try:
+                self._camera.disconnect()
+            except Exception:
+                pass
+            self._camera = create_camera(info)
             self._btn_connect.setText("Disconnect")
             self._btn_connect.setEnabled(True)
             self._set_preview_ui(False)
             sensor = self._camera.get_sensor_size()
             self._sensor_w, self._sensor_h = sensor
-            self._status.setText(f"Connected — sensor {sensor[0]}×{sensor[1]}")
+            self._status.setText(
+                f"Connected — {info.display_name}  {sensor[0]}×{sensor[1]}"
+            )
             self._update_roi_ranges_from_camera()
         except Exception as exc:
             # Connect failed — restore to safe disconnected state
