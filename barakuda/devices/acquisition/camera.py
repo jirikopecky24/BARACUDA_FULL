@@ -218,18 +218,6 @@ class BaslerCamera:
         self._preview_stop.clear()
 
         def _grab_loop() -> None:
-            _stats_counter = 0
-            _stats_start = time.perf_counter()
-            _stats_last = _stats_start
-            
-            _roi_last = 0.0
-            _roi_count = 0
-            _dropped = 0
-            disp_mn, disp_mx = 0, 255
-            w = h = ox = oy = 0
-            mn_raw = mx_raw = 0
-            mean_raw = 0.0
-            roi_valid = False
             _last_display_time = 0.0
             _settings_last = 0.0
 
@@ -247,29 +235,7 @@ class BaslerCamera:
                     img_raw = grab.Array.copy()  # snapshot
                     grab.Release()
 
-                    # -- Throttled ROI checks (10 Hz) --
                     now = time.perf_counter()
-                    if now - _roi_last >= 0.1:
-                        _roi_count += 1
-                        _roi_last = now
-                        fh, fw = img_raw.shape[:2]
-                        try:
-                            w, h, ox, oy = callback.__self__._get_roi_tuple()
-                            x0 = max(0, min(ox, fw - 1))
-                            y0 = max(0, min(oy, fh - 1))
-                            x1 = max(x0 + 1, min(x0 + w, fw))
-                            y1 = max(y0 + 1, min(y0 + h, fh))
-                            
-                            roi_crop = img_raw[y0:y1, x0:x1]
-                            mn_raw = int(roi_crop.min())
-                            mx_raw = int(roi_crop.max())
-                            mean_raw = float(roi_crop.mean())
-                            disp_mn, disp_mx = mn_raw, mx_raw
-                            roi_valid = True
-                        except Exception:
-                            w, h, ox, oy = fw, fh, 0, 0
-                            disp_mn, disp_mx = 0, 255
-                            roi_valid = False
 
                     # -- Apply pending exposure/gain (5 Hz, from grab thread) --
                     if now - _settings_last >= 0.2:
@@ -282,65 +248,40 @@ class BaslerCamera:
                         if _pexp is not None:
                             try:
                                 self._cam.ExposureTime.SetValue(_pexp)
+                                _rb = float(self._cam.ExposureTime.Value)
                                 with self._settings_lock:
-                                    self._readback_exposure_us = float(self._cam.ExposureTime.Value)
+                                    self._readback_exposure_us = _rb
                             except Exception:
                                 pass
                         if _pgain is not None:
                             _gain_applied = False
                             try:
                                 self._cam.Gain.SetValue(_pgain)
+                                _rb = float(self._cam.Gain.Value)
                                 with self._settings_lock:
-                                    self._readback_gain_db = float(self._cam.Gain.Value)
+                                    self._readback_gain_db = _rb
                                 _gain_applied = True
                             except Exception:
                                 pass
                             if not _gain_applied:
                                 try:
                                     self._cam.GainRaw.SetValue(int(round(_pgain)))
+                                    _rb = float(self._cam.GainRaw.Value)
                                     with self._settings_lock:
-                                        self._readback_gain_db = float(self._cam.GainRaw.Value)
+                                        self._readback_gain_db = _rb
                                 except Exception:
                                     pass
-
-                    # -- 1.0s Status Print --
-                    _stats_counter += 1
-                    if now - _stats_last >= 1.0:
-                        fps_full = _stats_counter / (now - _stats_start)
-                        fps_roi = _roi_count / (now - _stats_start)
-                        _stats_last = now
-                        _stats_counter = 0
-                        _roi_count = 0
-                        _stats_start = now
-                        
-                        try:
-                            # format requested
-                            if roi_valid:
-                                print(
-                                    f"Preview fps_full={fps_full:.1f} dropped={_dropped} | "
-                                    f"ROI fps={fps_roi:.1f} W={w} H={h} OX={ox} OY={oy} "
-                                    f"mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} | "
-                                    f"disp=[{disp_mn},{disp_mx}]"
-                                )
-                            else:
-                                print(f"Preview fps_full={fps_full:.1f} dropped={_dropped} | ROI invalid")
-                        except Exception:
-                            pass
-                        _dropped = 0
 
                     # -- Throttled display update (~25 fps) --
                     if now - _last_display_time >= 0.04:
                         _last_display_time = now
-                        # -- Auto-contrast stretch (preview display only) --
-                        # Applied every frame but uses the throttled disp_mn / disp_mx
-                        if disp_mx > disp_mn:
-                            scale = 255.0 / (disp_mx - disp_mn)
-                            img = np.clip((img_raw.astype(np.float32) - disp_mn) * scale, 0, 255).astype(np.uint8)
+                        # Pass raw pixels to UI; convert >8-bit to uint8 by top-byte shift
+                        if img_raw.dtype == np.uint8:
+                            img = img_raw
+                        elif img_raw.dtype == np.uint16:
+                            img = (img_raw >> 8).astype(np.uint8)
                         else:
-                            if img_raw.dtype == np.uint8:
-                                img = img_raw
-                            else:
-                                img = (img_raw >> 8).astype(np.uint8)
+                            img = np.clip(img_raw, 0, 255).astype(np.uint8)
 
                         with self._preview_lock:
                             self._latest_preview_frame = img

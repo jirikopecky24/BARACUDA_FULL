@@ -685,12 +685,14 @@ class AcquisitionPanel(QWidget):
             self._status.setText("Preview stopped")
 
     def _on_exposure_changed(self) -> None:
-        actual = self._camera.set_exposure_live(self._spin_exposure.value())
+        val = self._spin_exposure.value()
+        actual = self._camera.set_exposure_live(val)
         if actual is not None:
             self._status.setText(f"Exposure set: {actual:.0f} µs")
 
     def _on_gain_changed(self) -> None:
-        actual = self._camera.set_gain_live(self._spin_gain.value())
+        val = self._spin_gain.value()
+        actual = self._camera.set_gain_live(val)
         if actual is not None:
             self._status.setText(f"Gain set: {actual:.1f} dB")
 
