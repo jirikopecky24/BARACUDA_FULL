@@ -950,6 +950,26 @@ class BaslerCamera:
         except Exception:
             pass
 
+    def set_exposure_live(self, us: float) -> Optional[float]:
+        """Apply exposure (µs) to camera immediately; returns confirmed node value or None."""
+        if not self.is_connected:
+            return None
+        try:
+            self._cam.ExposureTime.SetValue(float(us))
+            return float(self._cam.ExposureTime.Value)
+        except Exception:
+            return None
+
+    def set_gain_live(self, db: float) -> Optional[float]:
+        """Apply gain (dB) to camera immediately; returns confirmed node value or None."""
+        if not self.is_connected:
+            return None
+        try:
+            self._cam.Gain.SetValue(float(db))
+            return float(self._cam.Gain.Value)
+        except Exception:
+            return None
+
     def _set_pixel_format(self, fmt: str) -> None:
         try:
             self._cam.PixelFormat.SetValue(fmt)
