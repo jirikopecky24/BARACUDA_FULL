@@ -674,6 +674,106 @@ class BaslerCamera:
             meta=meta,
         )
 
+    @staticmethod
+    def simulate_record_raw(
+        output_dir: str,
+        basename: str,
+        width: int,
+        height: int,
+        fps_target: float,
+        duration_s: float,
+        pattern: str = "noise",
+    ) -> dict:
+        """
+        Generate a synthetic .raw recording without a camera.
+
+        Writes basename.raw + basename_timestamps.csv + basename_meta.json
+        using the same schema as record_raw.
+        """
+        import numpy as np
+
+        os.makedirs(output_dir, exist_ok=True)
+        raw_path = os.path.join(output_dir, basename + ".raw")
+        ts_path = os.path.join(output_dir, basename + "_timestamps.csv")
+        meta_path = os.path.join(output_dir, basename + "_meta.json")
+
+        frame_bytes = width * height
+        frames = 0
+        timestamps: list[float] = []
+        delay = 1.0 / fps_target if fps_target > 0 else 0.0
+
+        with open(raw_path, "wb") as raw_f:
+            t0 = time.perf_counter()
+            while True:
+                elapsed = time.perf_counter() - t0
+                if elapsed >= duration_s:
+                    break
+
+                if pattern == "gradient":
+                    row = np.arange(width, dtype=np.uint8)
+                    frame = np.tile(row, (height, 1))
+                    frame = ((frame.astype(np.uint16) + frames) % 256).astype(np.uint8)
+                else:  # noise
+                    frame = np.random.randint(0, 256, (height, width), dtype=np.uint8)
+
+                raw_f.write(frame.tobytes())
+                frames += 1
+                timestamps.append(time.perf_counter())
+
+                # throttle to approximate fps_target
+                if delay > 0:
+                    next_t = t0 + frames * delay
+                    wait = next_t - time.perf_counter()
+                    if wait > 0:
+                        time.sleep(wait)
+
+        # Write timestamps CSV
+        with open(ts_path, "w", encoding="utf-8") as tf:
+            tf.write("frame,timestamp_s\n")
+            for idx, ts in enumerate(timestamps):
+                tf.write(f"{idx},{ts:.9f}\n")
+
+        # Compute effective fps
+        fps_effective = 0.0
+        if len(timestamps) > 1:
+            fps_effective = (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
+
+        actual_duration = (timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0
+
+        meta = {
+            "format": "raw",
+            "fps_effective": fps_effective,
+            "fps_target_hint": fps_target,
+            "frames_written": frames,
+            "duration_s": round(actual_duration, 6),
+            "exposure_us": 0,
+            "gain": None,
+            "full_frame_w": width,
+            "full_frame_h": height,
+            "record_roi": {"x": 0, "y": 0, "w": width, "h": height},
+            "pixel_format": "Mono8",
+            "frame_bytes": frame_bytes,
+            "dtype": "uint8",
+            "raw_path": raw_path,
+            "timestamps_path": ts_path,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "dropped_frames": 0,
+            "simulated": True,
+            "pattern": pattern,
+        }
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        return {
+            "fps_effective": fps_effective,
+            "frames_written": frames,
+            "dropped_frames": 0,
+            "raw_path": raw_path,
+            "meta_path": meta_path,
+            "ts_path": ts_path,
+        }
+
     # ------------------------------------------------------------------ #
     #  Private helpers
     # ------------------------------------------------------------------ #

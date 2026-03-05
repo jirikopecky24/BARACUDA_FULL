@@ -389,6 +389,14 @@ class AcquisitionPanel(QWidget):
         self._btn_stop_record.clicked.connect(self._on_stop_record)
         self._btn_stop_record.setEnabled(False)
         rec_btn_row.addWidget(self._btn_stop_record)
+
+        self._btn_sim_raw = QPushButton("Sim RAW (5s)")
+        self._btn_sim_raw.setToolTip(
+            "Generate a simulated 5s RAW recording (no camera needed).\n"
+            "Creates .raw + _timestamps.csv + _meta.json + _qc.json."
+        )
+        self._btn_sim_raw.clicked.connect(self._on_sim_raw)
+        rec_btn_row.addWidget(self._btn_sim_raw)
         rec_form.addRow("", rec_btn_row)
 
         right_layout.addWidget(grp_rec)
@@ -788,6 +796,79 @@ class AcquisitionPanel(QWidget):
 
     def _on_stop_record(self) -> None:
         self._camera.stop_record()
+
+    def _on_sim_raw(self) -> None:
+        """Run a simulated RAW recording (no camera needed)."""
+        roi = self._get_roi_tuple()
+        w, h = roi[0], roi[1]
+        fps_target = self._spin_fps_hint.value()
+        out_dir = self._edit_output_dir.text()
+        basename = self._edit_basename.text()
+
+        self._btn_sim_raw.setEnabled(False)
+        self._status.setText("Simulating RAW (5s)…")
+
+        def _run_sim() -> None:
+            try:
+                result = BaslerCamera.simulate_record_raw(
+                    output_dir=out_dir,
+                    basename=basename,
+                    width=w,
+                    height=h,
+                    fps_target=fps_target,
+                    duration_s=5.0,
+                )
+                fps_eff = result["fps_effective"]
+                frames = result["frames_written"]
+                dropped = result["dropped_frames"]
+                fps_ratio = fps_eff / fps_target if fps_target > 0 else 0.0
+
+                # Write qc.json
+                reasons: list[str] = []
+                if dropped > 0:
+                    reasons.append(f"dropped_frames={dropped}")
+                if fps_ratio < 0.95:
+                    reasons.append(f"fps_ratio={fps_ratio:.3f} < 0.95")
+                if dropped > 0.01 * frames:
+                    reasons.append("dropped > 1% of frames")
+                if fps_ratio < 0.90:
+                    reasons.append(f"fps_ratio={fps_ratio:.3f} < 0.90")
+                qc_pass = len(reasons) == 0
+                qc = {
+                    "pass": qc_pass,
+                    "fps_target": fps_target,
+                    "fps_effective": round(fps_eff, 2),
+                    "fps_ratio": round(fps_ratio, 4),
+                    "frames_written": frames,
+                    "dropped_frames": dropped,
+                    "reasons": reasons,
+                }
+                qc_path = os.path.join(out_dir, basename + "_qc.json")
+                with open(qc_path, "w", encoding="utf-8") as f:
+                    json.dump(qc, f, indent=2)
+
+                if fps_ratio < 0.90:
+                    tag = "FAIL"
+                elif fps_ratio < 0.95:
+                    tag = "WARN"
+                else:
+                    tag = "OK"
+
+                msg = (
+                    f"SIM done FPS={fps_eff:.1f} ratio={fps_ratio:.3f} "
+                    f"frames={frames} {tag}\n"
+                    f"Files: {result['raw_path']}"
+                )
+                QTimer.singleShot(0, lambda: self._status.setText(msg))
+            except Exception as exc:
+                QTimer.singleShot(0, lambda: self._status.setText(
+                    f"❌ Sim failed: {exc}"
+                ))
+            finally:
+                QTimer.singleShot(0, lambda: self._btn_sim_raw.setEnabled(True))
+
+        t = threading.Thread(target=_run_sim, daemon=True, name="sim-raw")
+        t.start()
 
     def _on_record_done(self, result: RecordResult) -> None:
         fps_str = (
