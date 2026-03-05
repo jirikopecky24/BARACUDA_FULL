@@ -223,20 +223,11 @@ class BaslerCamera:
                     raw_dtype = str(img_raw.dtype)
                     raw_shape = img_raw.shape
 
-                    # -- Safe uint8 scaling --
-                    if img_raw.dtype != np.uint8:
-                        if mx_raw <= 0:
-                            img = np.zeros(img_raw.shape, dtype=np.uint8)
-                        elif mx_raw <= 4095:
-                            # 12-bit sensor
-                            img = (img_raw >> 4).astype(np.uint8)
-                        elif mx_raw <= 65535:
-                            # 16-bit sensor
-                            img = (img_raw >> 8).astype(np.uint8)
-                        else:
-                            img = ((img_raw / (mx_raw or 1)) * 255).astype(np.uint8)
+                    # -- Auto-contrast stretch (preview display only) --
+                    if mx_raw > mn_raw:
+                        img = ((img_raw.astype(np.float32) - mn_raw) * (255.0 / (mx_raw - mn_raw))).astype(np.uint8)
                     else:
-                        img = img_raw
+                        img = np.zeros(img_raw.shape, dtype=np.uint8)
 
                     # Periodic stats (~once per second)
                     _stats_counter += 1
