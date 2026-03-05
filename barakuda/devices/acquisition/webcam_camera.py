@@ -36,24 +36,34 @@ class WebcamCamera(AbstractCamera):
         if not CV2_AVAILABLE:
             return []
         result = []
-        _backend = getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)
-        for idx in range(_MAX_PROBE_INDEX):
-            try:
-                cap = cv2.VideoCapture(idx, _backend)
-                if cap.isOpened():
-                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    cap.release()
-                    result.append(CameraDeviceInfo(
-                        backend="webcam",
-                        index=idx,
-                        display_name=f"Webcam {idx}  ({w}×{h})",
-                        extra={"native_w": w, "native_h": h},
-                    ))
-                else:
-                    cap.release()
-            except Exception:
-                pass
+        import os
+        import sys
+        # Suppress noisy VIDEOIO/FFMPEG stderr warnings during probing
+        devnull = open(os.devnull, "w")
+        old_stderr_fd = os.dup(2)
+        os.dup2(devnull.fileno(), 2)
+        try:
+            for idx in range(_MAX_PROBE_INDEX):
+                try:
+                    cap = cv2.VideoCapture(idx)
+                    if cap.isOpened():
+                        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        cap.release()
+                        result.append(CameraDeviceInfo(
+                            backend="webcam",
+                            index=idx,
+                            display_name=f"Webcam {idx}  ({w}×{h})",
+                            extra={"native_w": w, "native_h": h},
+                        ))
+                    else:
+                        cap.release()
+                except Exception:
+                    pass
+        finally:
+            os.dup2(old_stderr_fd, 2)
+            os.close(old_stderr_fd)
+            devnull.close()
         return result
 
     # ------------------------------------------------------------------ #
@@ -89,8 +99,7 @@ class WebcamCamera(AbstractCamera):
         if self._connected:
             return
         idx = info.index if info is not None else 0
-        _backend = getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)
-        cap = cv2.VideoCapture(idx, _backend)
+        cap = cv2.VideoCapture(idx)
         if not cap.isOpened():
             cap.release()
             raise RuntimeError(f"Cannot open webcam index {idx}")
