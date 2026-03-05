@@ -245,6 +245,7 @@ class AcquisitionPanel(QWidget):
         self._spin_exposure.setSuffix(" µs")
         self._spin_exposure.setDecimals(0)
         self._spin_exposure.setToolTip("Camera exposure time in microseconds. Lower exposure allows higher FPS.")
+        self._spin_exposure.editingFinished.connect(self._on_exposure_changed)
         form.addRow("Exposure:", self._spin_exposure)
 
         self._spin_gain = QDoubleSpinBox()
@@ -253,6 +254,7 @@ class AcquisitionPanel(QWidget):
         self._spin_gain.setSuffix(" dB")
         self._spin_gain.setDecimals(1)
         self._spin_gain.setToolTip("Analog/digital gain (if supported). Increases brightness but adds noise.")
+        self._spin_gain.editingFinished.connect(self._on_gain_changed)
         form.addRow("Gain:", self._spin_gain)
 
         self._spin_fps_hint = QDoubleSpinBox()
@@ -681,6 +683,16 @@ class AcquisitionPanel(QWidget):
             self._preview_timer.stop()
             self._set_preview_ui(False)
             self._status.setText("Preview stopped")
+
+    def _on_exposure_changed(self) -> None:
+        actual = self._camera.set_exposure_live(self._spin_exposure.value())
+        if actual is not None:
+            self._status.setText(f"Exposure set: {actual:.0f} µs")
+
+    def _on_gain_changed(self) -> None:
+        actual = self._camera.set_gain_live(self._spin_gain.value())
+        if actual is not None:
+            self._status.setText(f"Gain set: {actual:.1f} dB")
 
     def _on_preview_frame(self, frame: np.ndarray) -> None:
         """Legacy callback — camera no longer calls this; kept for API compatibility."""
