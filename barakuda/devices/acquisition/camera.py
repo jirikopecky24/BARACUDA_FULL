@@ -216,12 +216,23 @@ class BaslerCamera:
                     img_raw = grab.Array.copy()  # snapshot
                     grab.Release()
 
-                    # Capture raw stats before conversion
-                    mn_raw = int(img_raw.min())
-                    mx_raw = int(img_raw.max())
-                    mean_raw = float(img_raw.mean())
-                    raw_dtype = str(img_raw.dtype)
-                    raw_shape = img_raw.shape
+                    # -- Get ROI from ui panel --
+                    fh, fw = img_raw.shape[:2]
+                    try:
+                        w, h, ox, oy = callback.__self__._get_roi_tuple()
+                    except Exception:
+                        w, h, ox, oy = fw, fh, 0, 0
+
+                    x0 = max(0, min(ox, fw - 1))
+                    y0 = max(0, min(oy, fh - 1))
+                    x1 = max(x0 + 1, min(x0 + w, fw))
+                    y1 = max(y0 + 1, min(y0 + h, fh))
+                    roi_crop = img_raw[y0:y1, x0:x1]
+
+                    # Capture raw stats from ROI before conversion
+                    mn_raw = int(roi_crop.min())
+                    mx_raw = int(roi_crop.max())
+                    mean_raw = float(roi_crop.mean())
 
                     # -- Auto-contrast stretch (preview display only) --
                     if mx_raw > mn_raw:
@@ -240,10 +251,8 @@ class BaslerCamera:
                         except Exception:
                             _pf = "unknown"
                         print(
-                            f"PreviewStats pf={_pf} raw={raw_dtype} "
-                            f"mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} "
-                            f"shape={raw_shape} | "
-                            f"u8 mn={img.min()} mx={img.max()} mean={img.mean():.1f} "
+                            f"Preview stats ROI x0={x0} y0={y0} w={w} h={h} "
+                            f"mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} pf={_pf} "
                             f"fps~={_stats_counter / (now - _stats_start):.1f}"
                         )
 
