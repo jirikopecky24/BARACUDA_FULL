@@ -837,16 +837,19 @@ class AcquisitionPanel(QWidget):
         self._lbl_test_fps_result.setText("Measuring…")
         self._btn_test_fps.setEnabled(False)
 
+        exposure_us = self._spin_exposure.value()
+        gain = self._spin_gain.value() if self._spin_gain.isEnabled() else None
+
         def _measure() -> None:
             try:
                 measured = self._camera.test_fps(
                     roi=roi,
-                    exposure_us=self._spin_exposure.value(),
-                    gain=self._spin_gain.value() if self._spin_gain.isEnabled() else None,
+                    exposure_us=exposure_us,
+                    gain=gain,
                     test_duration=1.0,
                 )
                 QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(
-                    f"Estimated Record FPS: {measured:.1f}"
+                    f"Test FPS: {measured:.1f}  (press Start Preview to resume)"
                 ))
                 self._last_estimated_fps = measured
             except Exception as exc:
@@ -854,11 +857,7 @@ class AcquisitionPanel(QWidget):
                     f"Test FPS failed: {exc}"
                 ))
             finally:
-                QTimer.singleShot(0, lambda: self._btn_test_fps.setEnabled(True))
-                QTimer.singleShot(100, lambda: self._on_start_preview()
-                    if self._camera.is_connected and not self._camera.is_previewing
-                    else None
-                )
+                QTimer.singleShot(0, lambda: self._set_preview_ui(False))
 
         t = threading.Thread(target=_measure, daemon=True, name="test-fps")
         t.start()
@@ -871,18 +870,21 @@ class AcquisitionPanel(QWidget):
         self._btn_benchmark.setEnabled(False)
         self._btn_test_fps.setEnabled(False)
 
+        exposure_us_b = self._spin_exposure.value()
+        gain_b = self._spin_gain.value() if self._spin_gain.isEnabled() else None
+
         def _run_bench() -> None:
             try:
                 result = self._camera.benchmark_fps(
                     duration_s=5.0,
                     roi=roi,
-                    exposure_us=self._spin_exposure.value(),
-                    gain=self._spin_gain.value() if self._spin_gain.isEnabled() else None,
+                    exposure_us=exposure_us_b,
+                    gain=gain_b,
                 )
                 msg = (
-                    f"BENCH fps_effective={result['fps_effective']:.1f} "
-                    f"dropped={result['dropped_frames']} "
-                    f"frames={result['frames']}"
+                    f"Bench: {result['fps_effective']:.1f} fps  "
+                    f"frames={result['frames']}  dropped={result['dropped_frames']}  "
+                    f"(press Start Preview to resume)"
                 )
                 QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(msg))
                 QTimer.singleShot(0, lambda: self._status.setText(msg))
@@ -891,12 +893,7 @@ class AcquisitionPanel(QWidget):
                     f"Benchmark failed: {exc}"
                 ))
             finally:
-                QTimer.singleShot(0, lambda: self._btn_benchmark.setEnabled(True))
-                QTimer.singleShot(0, lambda: self._btn_test_fps.setEnabled(True))
-                QTimer.singleShot(100, lambda: self._on_start_preview()
-                    if self._camera.is_connected and not self._camera.is_previewing
-                    else None
-                )
+                QTimer.singleShot(0, lambda: self._set_preview_ui(False))
 
         t = threading.Thread(target=_run_bench, daemon=True, name="benchmark")
         t.start()

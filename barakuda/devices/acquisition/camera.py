@@ -264,7 +264,9 @@ class BaslerCamera(AbstractCamera):
         Uses *latest-frame* strategy — frames are dropped if UI cannot keep up.
         """
         self._require_connected()
-        self.stop_preview()
+        # Only stop if actually running — avoids blocking join when already stopped
+        if self.is_previewing:
+            self.stop_preview()
 
         # Ensure full-frame
         self._apply_full_frame()
