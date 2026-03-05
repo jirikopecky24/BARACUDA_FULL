@@ -216,47 +216,65 @@ class BaslerCamera:
                     img_raw = grab.Array.copy()  # snapshot
                     grab.Release()
 
-                    # -- Get ROI from ui panel --
-                    fh, fw = img_raw.shape[:2]
-                    try:
-                        w, h, ox, oy = callback.__self__._get_roi_tuple()
-                    except Exception:
-                        w, h, ox, oy = fw, fh, 0, 0
-
-                    x0 = max(0, min(ox, fw - 1))
-                    y0 = max(0, min(oy, fh - 1))
-                    x1 = max(x0 + 1, min(x0 + w, fw))
-                    y1 = max(y0 + 1, min(y0 + h, fh))
-                    roi_crop = img_raw[y0:y1, x0:x1]
-
-                    # Capture raw stats from ROI before conversion
-                    mn_raw = int(roi_crop.min())
-                    mx_raw = int(roi_crop.max())
-                    mean_raw = float(roi_crop.mean())
-
-                    # -- Auto-contrast stretch (preview display only) --
-                    if mx_raw > mn_raw:
-                        img = ((img_raw.astype(np.float32) - mn_raw) * (255.0 / (mx_raw - mn_raw))).astype(np.uint8)
-                    else:
-                        img = np.zeros(img_raw.shape, dtype=np.uint8)
-
-                    # Periodic stats (~once per second)
-                    _stats_counter += 1
+                    # -- Throttled ROI checks (10 Hz) --
                     now = time.perf_counter()
-                    if now - _stats_last >= 1.0:
-                        _stats_last = now
+                    if now - _roi_last >= 0.1:
+                        _roi_count += 1
+                        _roi_last = now
+                        fh, fw = img_raw.shape[:2]
                         try:
-                            f_mn = int(img_raw.min())
-                            f_mx = int(img_raw.max())
-                            f_mean = float(img_raw.mean())
-                            fps = _stats_counter / (now - _stats_start)
-                            print(
-                                f"PreviewStats full mn={f_mn} mx={f_mx} mean={f_mean:.1f} | "
-                                f"roi mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} | "
-                                f"fps~={fps:.1f}"
-                            )
+                            w, h, ox, oy = callback.__self__._get_roi_tuple()
+                            x0 = max(0, min(ox, fw - 1))
+                            y0 = max(0, min(oy, fh - 1))
+                            x1 = max(x0 + 1, min(x0 + w, fw))
+                            y1 = max(y0 + 1, min(y0 + h, fh))
+                            
+                            roi_crop = img_raw[y0:y1, x0:x1]
+                            mn_raw = int(roi_crop.min())
+                            mx_raw = int(roi_crop.max())
+                            mean_raw = float(roi_crop.mean())
+                            disp_mn, disp_mx = mn_raw, mx_raw
+                            roi_valid = True
+                        except Exception:
+                            w, h, ox, oy = fw, fh, 0, 0
+                            disp_mn, disp_mx = 0, 255
+                            roi_valid = False
+
+                    # -- 1.0s Status Print --
+                    _stats_counter += 1
+                    if now - _stats_last >= 1.0:
+                        fps_full = _stats_counter / (now - _stats_start)
+                        fps_roi = _roi_count / (now - _stats_start)
+                        _stats_last = now
+                        _stats_counter = 0
+                        _roi_count = 0
+                        _stats_start = now
+                        
+                        try:
+                            # format requested
+                            if roi_valid:
+                                print(
+                                    f"Preview fps_full={fps_full:.1f} dropped={_dropped} | "
+                                    f"ROI fps={fps_roi:.1f} W={w} H={h} OX={ox} OY={oy} "
+                                    f"mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} | "
+                                    f"disp=[{disp_mn},{disp_mx}]"
+                                )
+                            else:
+                                print(f"Preview fps_full={fps_full:.1f} dropped={_dropped} | ROI invalid")
                         except Exception:
                             pass
+                        _dropped = 0
+
+                    # -- Auto-contrast stretch (preview display only) --
+                    # Applied every frame but uses the throttled disp_mn / disp_mx
+                    if disp_mx > disp_mn:
+                        scale = 255.0 / (disp_mx - disp_mn)
+                        img = np.clip((img_raw.astype(np.float32) - disp_mn) * scale, 0, 255).astype(np.uint8)
+                    else:
+                        if img_raw.dtype == np.uint8:
+                            img = img_raw
+                        else:
+                            img = (img_raw >> 8).astype(np.uint8)
 
                     try:
                         callback(img)
