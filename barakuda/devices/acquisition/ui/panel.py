@@ -52,6 +52,11 @@ class _NoScrollSpinBox(QSpinBox):
         event.ignore()
 
 
+class _NoScrollSlider(QSlider):
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 # ------------------------------------------------------------------ #
 #  Camera selection dialog
 # ------------------------------------------------------------------ #
@@ -409,7 +414,7 @@ class AcquisitionPanel(QWidget):
             roi_grid.addWidget(spin, row_idx, 1)
             self._roi_spins[key] = spin
 
-            slider = QSlider(Qt.Orientation.Horizontal)
+            slider = _NoScrollSlider(Qt.Orientation.Horizontal)
             slider.setRange(mn, max(mn, mx))
             slider.setValue(default)
             roi_grid.addWidget(slider, row_idx, 2)
