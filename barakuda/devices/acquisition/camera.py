@@ -202,9 +202,20 @@ class BaslerCamera:
             _stats_counter = 0
             _stats_start = time.perf_counter()
             _stats_last = _stats_start
+            
+            _roi_last = 0.0
+            _roi_count = 0
+            _dropped = 0
+            disp_mn, disp_mx = 0, 255
+            w = h = ox = oy = 0
+            mn_raw = mx_raw = 0
+            mean_raw = 0.0
+            roi_valid = False
+            _last_display_time = 0.0
+
             try:
                 self._cam.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-                while not self._preview_stop.is_set() and self._cam.IsGrabbing():
+                while not self._preview_stop.is_set():
                     grab = self._cam.RetrieveResult(
                         500, pylon.TimeoutHandling_Return
                     )
@@ -265,21 +276,24 @@ class BaslerCamera:
                             pass
                         _dropped = 0
 
-                    # -- Auto-contrast stretch (preview display only) --
-                    # Applied every frame but uses the throttled disp_mn / disp_mx
-                    if disp_mx > disp_mn:
-                        scale = 255.0 / (disp_mx - disp_mn)
-                        img = np.clip((img_raw.astype(np.float32) - disp_mn) * scale, 0, 255).astype(np.uint8)
-                    else:
-                        if img_raw.dtype == np.uint8:
-                            img = img_raw
+                    # -- Throttled display update (~25 fps) --
+                    if now - _last_display_time >= 0.04:
+                        _last_display_time = now
+                        # -- Auto-contrast stretch (preview display only) --
+                        # Applied every frame but uses the throttled disp_mn / disp_mx
+                        if disp_mx > disp_mn:
+                            scale = 255.0 / (disp_mx - disp_mn)
+                            img = np.clip((img_raw.astype(np.float32) - disp_mn) * scale, 0, 255).astype(np.uint8)
                         else:
-                            img = (img_raw >> 8).astype(np.uint8)
+                            if img_raw.dtype == np.uint8:
+                                img = img_raw
+                            else:
+                                img = (img_raw >> 8).astype(np.uint8)
 
-                    try:
-                        callback(img)
-                    except Exception:
-                        pass
+                        try:
+                            callback(img)
+                        except Exception:
+                            pass
             except Exception:
                 pass
             finally:
