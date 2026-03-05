@@ -340,10 +340,17 @@ class ShellMainWindow(QMainWindow):
         self.log_panel.log(f"Device selected: {spec.display_name}")
 
         # Switch the preview stack to the correct panel
-        if self._active_device_id == "afm":
-            self._preview_stack.setCurrentWidget(self._afm_preview)
+        # Acquisition has its own built-in preview — hide the shared one
+        if self._active_device_id == "acquisition":
+            self._preview_stack.hide()
+            self.dataset_dock.hide()
         else:
-            self._preview_stack.setCurrentWidget(self._ot_preview)
+            self._preview_stack.show()
+            self.dataset_dock.show()
+            if self._active_device_id == "afm":
+                self._preview_stack.setCurrentWidget(self._afm_preview)
+            else:
+                self._preview_stack.setCurrentWidget(self._ot_preview)
 
         # Top-bar method selector (device-specific)
         if self._active_device_id == "optical_tweezers":
