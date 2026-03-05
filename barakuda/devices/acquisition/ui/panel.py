@@ -462,10 +462,7 @@ class AcquisitionPanel(QWidget):
         try:
             self._camera.connect()
             self._btn_connect.setText("Disconnect")
-            self._btn_start_preview.setEnabled(True)
-            self._btn_test_fps.setEnabled(True)
-            self._btn_benchmark.setEnabled(True)
-            self._btn_record.setEnabled(True)
+            self._set_preview_ui(False)
             sensor = self._camera.get_sensor_size()
             self._sensor_w, self._sensor_h = sensor
             self._status.setText(
@@ -640,9 +637,20 @@ class AcquisitionPanel(QWidget):
     #  Preview
     # ------------------------------------------------------------------ #
 
+    def _set_preview_ui(self, is_running: bool) -> None:
+        """Helper to manage start/stop/record button states."""
+        connected = getattr(self._camera, "is_connected", False)
+        self._btn_start_preview.setEnabled(connected and not is_running)
+        self._btn_stop_preview.setEnabled(is_running)
+        self._btn_test_fps.setEnabled(connected)
+        self._btn_benchmark.setEnabled(connected)
+        self._btn_record.setEnabled(connected)
+
     def _on_start_preview(self) -> None:
         if not self._camera.is_connected:
             return
+        self._btn_start_preview.setEnabled(False)  # prevent double clicks
+        
         self._preview_frame_count = 0
         self._preview_fps_timer_start = time.perf_counter()
         self._preview_dropped = 0
@@ -651,15 +659,20 @@ class AcquisitionPanel(QWidget):
                 callback=self._on_preview_frame,
                 exposure_us=self._spin_exposure.value(),
             )
-            self._btn_start_preview.setEnabled(False)
-            self._btn_stop_preview.setEnabled(True)
+            self._set_preview_ui(True)
+            self._status.setText("Preview running")
         except Exception as exc:
-            self._status.setText(f"Preview failed: {exc}")
+            self._set_preview_ui(False)
+            self._status.setText(f"Preview start failed: {exc}")
 
     def _on_stop_preview(self) -> None:
-        self._camera.stop_preview()
-        self._btn_start_preview.setEnabled(True)
-        self._btn_stop_preview.setEnabled(False)
+        try:
+            self._camera.stop_preview()
+        except Exception as exc:
+            self._status.setText(f"Error stopping preview: {exc}")
+        finally:
+            self._set_preview_ui(False)
+            self._status.setText("Preview stopped")
 
     def _on_preview_frame(self, frame: np.ndarray) -> None:
         """Called from preview grab thread — schedule UI update."""
