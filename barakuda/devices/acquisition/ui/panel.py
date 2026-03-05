@@ -195,7 +195,6 @@ class AcquisitionPanel(QWidget):
             pen=pen,
             movable=True,
             resizable=False,
-            handleSize=6,
         )
         # Corner handles (resize both axes)
         self._roi_item.addScaleHandle([1, 1], [0, 0])
