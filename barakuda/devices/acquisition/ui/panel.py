@@ -456,28 +456,58 @@ class AcquisitionPanel(QWidget):
 
     def _on_connect_clicked(self) -> None:
         if self._camera.is_connected:
+            self._do_disconnect()
+        else:
+            self._do_connect()
+
+    def _do_disconnect(self) -> None:
+        """Stop preview if running, then disconnect. Always leaves UI in safe state."""
+        self._btn_connect.setEnabled(False)
+        self._status.setText("Disconnecting…")
+        try:
+            if self._camera.is_previewing:
+                try:
+                    self._camera.stop_preview()
+                except Exception:
+                    pass
+                self._preview_timer.stop()
+        except Exception:
+            pass
+        try:
             self._camera.disconnect()
+        except Exception:
+            pass
+        self._btn_connect.setText("Connect")
+        self._btn_connect.setEnabled(True)
+        self._btn_start_preview.setEnabled(False)
+        self._btn_stop_preview.setEnabled(False)
+        self._btn_test_fps.setEnabled(False)
+        self._btn_benchmark.setEnabled(False)
+        self._btn_record.setEnabled(False)
+        self._status.setText("Disconnected")
+
+    def _do_connect(self) -> None:
+        """Connect to camera. Disables button during attempt; restores UI on failure."""
+        self._btn_connect.setEnabled(False)
+        self._status.setText("Connecting…")
+        try:
+            self._camera.connect()
+            self._btn_connect.setText("Disconnect")
+            self._btn_connect.setEnabled(True)
+            self._set_preview_ui(False)
+            sensor = self._camera.get_sensor_size()
+            self._sensor_w, self._sensor_h = sensor
+            self._status.setText(f"Connected — sensor {sensor[0]}×{sensor[1]}")
+            self._update_roi_ranges_from_camera()
+        except Exception as exc:
+            # Connect failed — restore to safe disconnected state
             self._btn_connect.setText("Connect")
+            self._btn_connect.setEnabled(True)
             self._btn_start_preview.setEnabled(False)
             self._btn_stop_preview.setEnabled(False)
             self._btn_test_fps.setEnabled(False)
             self._btn_benchmark.setEnabled(False)
             self._btn_record.setEnabled(False)
-            self._status.setText("Disconnected")
-            return
-
-        try:
-            self._camera.connect()
-            self._btn_connect.setText("Disconnect")
-            self._set_preview_ui(False)
-            sensor = self._camera.get_sensor_size()
-            self._sensor_w, self._sensor_h = sensor
-            self._status.setText(
-                f"Connected — sensor {sensor[0]}×{sensor[1]}"
-            )
-            # Update ROI control ranges from camera
-            self._update_roi_ranges_from_camera()
-        except Exception as exc:
             self._status.setText(f"Connect failed: {exc}")
 
     def _update_roi_ranges_from_camera(self) -> None:
