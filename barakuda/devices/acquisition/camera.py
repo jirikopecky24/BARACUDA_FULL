@@ -17,6 +17,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from barakuda.devices.acquisition.camera_base import AbstractCamera, CameraDeviceInfo
+
 # ---------- Import guard for pypylon ----------
 try:
     from pypylon import pylon  # type: ignore[import-untyped]
@@ -42,13 +44,47 @@ class RecordResult:
 
 # ---------- BaslerCamera ----------
 
-class BaslerCamera:
+class BaslerCamera(AbstractCamera):
     """
     High-level wrapper around a single Basler camera via pypylon.
 
     All public methods check ``PYPYLON_AVAILABLE`` and raise a clear
     ``RuntimeError`` when the SDK is missing.
     """
+
+    # ------------------------------------------------------------------ #
+    #  Enumeration                                                         #
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def enumerate(cls) -> list[CameraDeviceInfo]:
+        """Return a CameraDeviceInfo for every Basler device currently visible."""
+        if not PYPYLON_AVAILABLE:
+            return []
+        try:
+            tl_factory = pylon.TlFactory.GetInstance()
+            devices = tl_factory.EnumerateDevices()
+            result = []
+            for i, dev in enumerate(devices):
+                try:
+                    serial = dev.GetSerialNumber()
+                    model = dev.GetModelName()
+                    name = f"{model} (S/N {serial})" if serial else model
+                except Exception:
+                    serial = ""
+                    model = ""
+                    name = f"Basler camera {i}"
+                result.append(CameraDeviceInfo(
+                    backend="basler",
+                    index=i,
+                    display_name=name,
+                    serial=serial,
+                    model=model,
+                    extra={"pylon_device_info": dev},
+                ))
+            return result
+        except Exception:
+            return []
 
     def __init__(self) -> None:
         self._cam = None
@@ -73,14 +109,18 @@ class BaslerCamera:
     #  Connection
     # ------------------------------------------------------------------ #
 
-    def connect(self) -> None:
-        """Open the first available Basler camera."""
+    def connect(self, info: CameraDeviceInfo | None = None) -> None:
+        """Open the Basler camera described by *info*, or the first available."""
         self._require_pypylon()
         if self._connected:
             return
 
         tl_factory = pylon.TlFactory.GetInstance()
-        self._cam = pylon.InstantCamera(tl_factory.CreateFirstDevice())
+        pylon_dev_info = info.extra.get("pylon_device_info") if info else None
+        if pylon_dev_info is not None:
+            self._cam = pylon.InstantCamera(tl_factory.CreateDevice(pylon_dev_info))
+        else:
+            self._cam = pylon.InstantCamera(tl_factory.CreateFirstDevice())
         self._cam.Open()
         self._connected = True
 
@@ -138,6 +178,23 @@ class BaslerCamera:
         """Return (max_width, max_height) of the sensor."""
         self._require_connected()
         return self._sensor_w, self._sensor_h
+
+    def get_roi_config(self) -> dict:
+        """Return ROI alignment constraints read from the camera nodemap."""
+        result = {"w_inc": 1, "h_inc": 1, "ox_inc": 1, "oy_inc": 1,
+                  "w_min": 1, "h_min": 1}
+        if self._cam is None:
+            return result
+        try:
+            result["w_inc"] = int(getattr(self._cam.Width, "Inc", 1) or 1)
+            result["h_inc"] = int(getattr(self._cam.Height, "Inc", 1) or 1)
+            result["ox_inc"] = int(getattr(self._cam.OffsetX, "Inc", 1) or 1)
+            result["oy_inc"] = int(getattr(self._cam.OffsetY, "Inc", 1) or 1)
+            result["w_min"] = int(self._cam.Width.Min)
+            result["h_min"] = int(self._cam.Height.Min)
+        except Exception:
+            pass
+        return result
 
     # ------------------------------------------------------------------ #
     #  ROI helpers
