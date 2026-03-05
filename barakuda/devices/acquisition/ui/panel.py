@@ -164,6 +164,9 @@ class AcquisitionPanel(QWidget):
 
     # Signals for shell integration (minimal)
     value_changed = pyqtSignal()
+    # Thread-safe signals from background fps/benchmark threads
+    _fps_done_signal = pyqtSignal()
+    _fps_result_signal = pyqtSignal(str)   # carries result text for label + status
 
     # Default recording ROI
     _DEFAULT_ROI_W = 48
@@ -181,6 +184,10 @@ class AcquisitionPanel(QWidget):
         self._camera: AbstractCamera = BaslerCamera()  # default; replaced after dialog
         self._record_thread: QThread | None = None
         self._record_worker: _RecordWorker | None = None
+
+        # Connect thread-safe fps signals to UI slots (always run in main thread)
+        self._fps_done_signal.connect(self._on_fps_done)
+        self._fps_result_signal.connect(self._on_fps_result)
 
         # Sensor limits (updated on connect)
         self._sensor_w = self._DEFAULT_SENSOR_W
@@ -764,6 +771,20 @@ class AcquisitionPanel(QWidget):
         self._btn_benchmark.setEnabled(connected)
         self._btn_record.setEnabled(connected)
 
+    def _on_fps_done(self) -> None:
+        """Slot: restore UI and restart preview after fps test/benchmark (main thread)."""
+        self._set_preview_ui(False)
+        # Restart preview automatically — start_preview() is safe here because
+        # camera is not previewing (stopped by test/benchmark) and this slot
+        # runs in the main thread via signal.
+        if self._camera.is_connected and not self._camera.is_previewing:
+            QTimer.singleShot(100, self._on_start_preview)
+
+    def _on_fps_result(self, msg: str) -> None:
+        """Slot to display fps/benchmark result text (main thread)."""
+        self._lbl_test_fps_result.setText(msg)
+        self._status.setText(msg)
+
     def _on_start_preview(self) -> None:
         if not self._camera.is_connected:
             return
@@ -848,16 +869,12 @@ class AcquisitionPanel(QWidget):
                     gain=gain,
                     test_duration=1.0,
                 )
-                QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(
-                    f"Test FPS: {measured:.1f}  (press Start Preview to resume)"
-                ))
+                self._fps_result_signal.emit(f"Test FPS: {measured:.1f}")
                 self._last_estimated_fps = measured
             except Exception as exc:
-                QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(
-                    f"Test FPS failed: {exc}"
-                ))
+                self._fps_result_signal.emit(f"Test FPS failed: {exc}")
             finally:
-                QTimer.singleShot(0, lambda: self._set_preview_ui(False))
+                self._fps_done_signal.emit()
 
         t = threading.Thread(target=_measure, daemon=True, name="test-fps")
         t.start()
@@ -883,17 +900,13 @@ class AcquisitionPanel(QWidget):
                 )
                 msg = (
                     f"Bench: {result['fps_effective']:.1f} fps  "
-                    f"frames={result['frames']}  dropped={result['dropped_frames']}  "
-                    f"(press Start Preview to resume)"
+                    f"frames={result['frames']}  dropped={result['dropped_frames']}"
                 )
-                QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(msg))
-                QTimer.singleShot(0, lambda: self._status.setText(msg))
+                self._fps_result_signal.emit(msg)
             except Exception as exc:
-                QTimer.singleShot(0, lambda: self._lbl_test_fps_result.setText(
-                    f"Benchmark failed: {exc}"
-                ))
+                self._fps_result_signal.emit(f"Benchmark failed: {exc}")
             finally:
-                QTimer.singleShot(0, lambda: self._set_preview_ui(False))
+                self._fps_done_signal.emit()
 
         t = threading.Thread(target=_run_bench, daemon=True, name="benchmark")
         t.start()
