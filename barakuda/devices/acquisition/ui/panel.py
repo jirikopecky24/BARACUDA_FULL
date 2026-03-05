@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QFileDialog, QGroupBox, QScrollArea, QFrame,
     QSlider, QGridLayout, QPlainTextEdit, QComboBox,
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPainterPath, QPainterPathStroker
 
 import numpy as np
 import pyqtgraph as pg
@@ -79,6 +79,24 @@ class _RecordWorker(QObject):
             self.finished.emit(result)
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+# ------------------------------------------------------------------ #
+#  Border-only Drag ROI
+# ------------------------------------------------------------------ #
+
+class _BorderOnlyROI(pg.ROI):
+    """
+    Custom ROI that overrides shape() to return only its stroked outline.
+    This prevents users from dragging the ROI by clicking anywhere inside it,
+    forcing them to grab the actual border or the handles.
+    """
+    def shape(self):
+        p = QPainterPath()
+        p.addRect(self.boundingRect())
+        stroker = QPainterPathStroker()
+        stroker.setWidth(10)  # clickable border width (in item coordinates)
+        return stroker.createStroke(p)
 
 
 # ------------------------------------------------------------------ #
@@ -171,12 +189,12 @@ class AcquisitionPanel(QWidget):
 
         # ROI overlay
         pen = pg.mkPen(color="r", width=2)
-        self._roi_item = pg.ROI(
+        self._roi_item = _BorderOnlyROI(
             [self._DEFAULT_ROI_OX, self._DEFAULT_ROI_OY],
             [self._DEFAULT_ROI_W, self._DEFAULT_ROI_H],
             pen=pen,
             movable=True,
-            resizable=False,  # body drag = move only; resize via handles
+            resizable=False,
         )
         # Corner handles (resize both axes)
         self._roi_item.addScaleHandle([1, 1], [0, 0])
