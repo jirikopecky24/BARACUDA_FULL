@@ -808,47 +808,66 @@ class BaslerCamera:
 
     def _apply_full_frame(self) -> None:
         """Reset ROI to full sensor."""
-        nm = self._cam.GetNodeMap()
-        if "OffsetX" in nm:
+        try:
             self._cam.OffsetX.SetValue(0)
-        if "OffsetY" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.OffsetY.SetValue(0)
-        if "Width" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Width.SetValue(self._cam.Width.Max)
-        if "Height" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Height.SetValue(self._cam.Height.Max)
+        except Exception:
+            pass
 
     def _apply_roi(self, w: int, h: int, ox: int, oy: int) -> None:
         """Apply ROI to camera. Order matters: offsets first (set to 0), then size, then offsets."""
-        nm = self._cam.GetNodeMap()
         # Reset offsets first
-        if "OffsetX" in nm:
+        try:
             self._cam.OffsetX.SetValue(0)
-        if "OffsetY" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.OffsetY.SetValue(0)
-        if "Width" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Width.SetValue(w)
-        if "Height" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Height.SetValue(h)
-        if "OffsetX" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.OffsetX.SetValue(ox)
-        if "OffsetY" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.OffsetY.SetValue(oy)
+        except Exception:
+            pass
 
     def _set_exposure(self, us: float) -> None:
-        nm = self._cam.GetNodeMap()
-        if "ExposureTime" in nm:
+        try:
             self._cam.ExposureTime.SetValue(float(us))
+        except Exception:
+            pass
 
     def _set_gain(self, val: float) -> None:
-        nm = self._cam.GetNodeMap()
-        if "Gain" in nm:
+        try:
             self._cam.Gain.SetValue(float(val))
+        except Exception:
+            pass
 
     def _set_pixel_format(self, fmt: str) -> None:
-        nm = self._cam.GetNodeMap()
-        if "PixelFormat" in nm:
-            try:
-                self._cam.PixelFormat.SetValue(fmt)
-            except Exception:
-                pass  # Camera may not support the format
+        try:
+            self._cam.PixelFormat.SetValue(fmt)
+        except Exception:
+            pass  # Camera may not support the format
+
