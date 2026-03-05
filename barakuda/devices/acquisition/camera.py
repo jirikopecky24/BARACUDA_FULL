@@ -245,16 +245,18 @@ class BaslerCamera:
                     now = time.perf_counter()
                     if now - _stats_last >= 1.0:
                         _stats_last = now
-                        # Read pixel format from camera
                         try:
-                            _pf = str(self._cam.PixelFormat.GetValue())
+                            f_mn = int(img_raw.min())
+                            f_mx = int(img_raw.max())
+                            f_mean = float(img_raw.mean())
+                            fps = _stats_counter / (now - _stats_start)
+                            print(
+                                f"PreviewStats full mn={f_mn} mx={f_mx} mean={f_mean:.1f} | "
+                                f"roi mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} | "
+                                f"fps~={fps:.1f}"
+                            )
                         except Exception:
-                            _pf = "unknown"
-                        print(
-                            f"Preview stats ROI x0={x0} y0={y0} w={w} h={h} "
-                            f"mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} pf={_pf} "
-                            f"fps~={_stats_counter / (now - _stats_start):.1f}"
-                        )
+                            pass
 
                     try:
                         callback(img)
