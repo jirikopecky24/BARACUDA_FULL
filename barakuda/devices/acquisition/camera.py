@@ -59,6 +59,9 @@ class BaslerCamera:
         self._record_stop = threading.Event()
         self._sensor_w: int = 0
         self._sensor_h: int = 0
+        self._latest_preview_frame: Optional[np.ndarray] = None
+        self._latest_preview_ts: float = 0.0
+        self._preview_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     #  Connection
@@ -290,10 +293,9 @@ class BaslerCamera:
                             else:
                                 img = (img_raw >> 8).astype(np.uint8)
 
-                        try:
-                            callback(img)
-                        except Exception:
-                            pass
+                        with self._preview_lock:
+                            self._latest_preview_frame = img
+                            self._latest_preview_ts = now
             except Exception:
                 pass
             finally:
@@ -327,6 +329,11 @@ class BaslerCamera:
         return (
             self._preview_thread is not None and self._preview_thread.is_alive()
         )
+
+    def get_latest_preview(self) -> tuple[Optional[np.ndarray], float]:
+        """Return (frame, timestamp) of the most recent preview frame, or (None, 0.0)."""
+        with self._preview_lock:
+            return self._latest_preview_frame, self._latest_preview_ts
 
     # ------------------------------------------------------------------ #
     #  Test FPS
