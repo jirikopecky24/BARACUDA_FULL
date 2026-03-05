@@ -637,10 +637,7 @@ class BaslerCamera(AbstractCamera):
         timestamps: list[float] = []
 
         try:
-            self._cam.StartGrabbing(
-                pylon.GrabStrategy_OneByOne,
-                pylon.GrabLoop_ProvidedByInstantCamera,
-            )
+            self._cam.StartGrabbing(pylon.GrabStrategy_OneByOne)
             t0 = time.perf_counter()
 
             while True:
@@ -651,7 +648,7 @@ class BaslerCamera(AbstractCamera):
                     break
 
                 grab = self._cam.RetrieveResult(
-                    5000, pylon.TimeoutHandling_Return
+                    2000, pylon.TimeoutHandling_Return
                 )
                 if grab is None:
                     continue
