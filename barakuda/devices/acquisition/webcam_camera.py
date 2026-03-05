@@ -36,9 +36,10 @@ class WebcamCamera(AbstractCamera):
         if not CV2_AVAILABLE:
             return []
         result = []
+        _backend = getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)
         for idx in range(_MAX_PROBE_INDEX):
             try:
-                cap = cv2.VideoCapture(idx)
+                cap = cv2.VideoCapture(idx, _backend)
                 if cap.isOpened():
                     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -88,7 +89,8 @@ class WebcamCamera(AbstractCamera):
         if self._connected:
             return
         idx = info.index if info is not None else 0
-        cap = cv2.VideoCapture(idx)
+        _backend = getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)
+        cap = cv2.VideoCapture(idx, _backend)
         if not cap.isOpened():
             cap.release()
             raise RuntimeError(f"Cannot open webcam index {idx}")
