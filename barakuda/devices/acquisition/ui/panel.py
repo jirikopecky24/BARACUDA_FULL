@@ -132,6 +132,7 @@ class AcquisitionPanel(QWidget):
         self._preview_fps_timer_start = time.perf_counter()
         self._preview_fps = 0.0
         self._preview_dropped = 0
+        self._last_preview_ts_displayed = 0.0
 
         # Info block state
         self._last_estimated_fps: float | None = None
@@ -433,6 +434,10 @@ class AcquisitionPanel(QWidget):
         self._fps_timer.timeout.connect(self._render_info_text)
         self._fps_timer.start(500)
 
+        # -- Preview render timer (~25 fps): pulls latest frame from camera buffer --
+        self._preview_timer = QTimer(self)
+        self._preview_timer.timeout.connect(self._on_preview_timer_tick)
+
         # Initial info render
         QTimer.singleShot(0, self._render_info_text)
 
@@ -660,6 +665,8 @@ class AcquisitionPanel(QWidget):
                 exposure_us=self._spin_exposure.value(),
             )
             self._set_preview_ui(True)
+            self._last_preview_ts_displayed = 0.0
+            self._preview_timer.start(40)
             self._status.setText("Preview running")
         except Exception as exc:
             self._set_preview_ui(False)
@@ -671,11 +678,19 @@ class AcquisitionPanel(QWidget):
         except Exception as exc:
             self._status.setText(f"Error stopping preview: {exc}")
         finally:
+            self._preview_timer.stop()
             self._set_preview_ui(False)
             self._status.setText("Preview stopped")
 
     def _on_preview_frame(self, frame: np.ndarray) -> None:
-        """Called from preview grab thread — schedule UI update."""
+        """Legacy callback — camera no longer calls this; kept for API compatibility."""
+
+    def _on_preview_timer_tick(self) -> None:
+        """QTimer tick (~25 fps): pull latest frame from camera buffer and render."""
+        frame, ts = self._camera.get_latest_preview()
+        if frame is None or ts <= self._last_preview_ts_displayed:
+            return
+        self._last_preview_ts_displayed = ts
         self._preview_frame_count += 1
         try:
             self._image_view.setImage(
@@ -777,6 +792,7 @@ class AcquisitionPanel(QWidget):
         self._btn_stop_preview.setEnabled(False)
         self._status.setText("Recording…")
 
+        self._preview_timer.stop()
         self._camera.stop_preview()
 
         self._record_thread = QThread()
