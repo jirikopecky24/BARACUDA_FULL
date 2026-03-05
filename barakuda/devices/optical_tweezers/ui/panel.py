@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QObject, QEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
-    QToolButton, QHBoxLayout, QMenu, QComboBox
+    QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
+    QSizePolicy, QAbstractSpinBox, QTabWidget
 )
+
+class NoWheelValueChangeFilter(QObject):
+    """Event filter that blocks mouse wheel from changing values in scrollable panels."""
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel:
+            event.ignore()
+            return True
+        return False
 
 
 class PipelinePanel(QWidget):
@@ -19,6 +28,13 @@ class PipelinePanel(QWidget):
     track_range_clicked = pyqtSignal()
 
     save_dataset_scale_clicked = pyqtSignal()
+    auto_roi_clicked = pyqtSignal()
+    
+    
+    # Emitted when a user asks to load a specific profile (str: profile_name)
+    load_profile_requested = pyqtSignal(str)
+    # Emitted when a user asks to save the current settings into a profile (str: profile_name)
+    save_profile_requested = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -30,6 +46,7 @@ class PipelinePanel(QWidget):
 
         self.btn_preview_gate = QToolButton()
         self.btn_preview_gate.setText("Preview Gate")
+        self.btn_preview_gate.setToolTip("Evaluate tracking quality on a few frames before full run.")
         self.btn_preview_gate.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.btn_preview_gate.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         from PyQt6.QtWidgets import QSizePolicy
@@ -65,13 +82,19 @@ class PipelinePanel(QWidget):
         self.btn_preview_gate.clicked.connect(self.preview_gate_clicked.emit)
 
         self.btn_gate_report = QPushButton("Report\u2026")
+        self.btn_gate_report.setToolTip("View detailed report of the Preview Gate results.")
         self.btn_gate_report.setEnabled(False)
         self.btn_run = QPushButton("RUN")
+        self.btn_run.setToolTip("Start processing the selected files.")
         self.btn_stop = QPushButton("STOP")
+        self.btn_stop.setToolTip("Stop the current batch processing.")
+        self.btn_reset = QPushButton("Reset OT Defaults")
+        self.btn_reset.setToolTip("Reset all settings to their default values.")
 
         self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
+        self.btn_reset.clicked.connect(self.apply_ot_defaults)
 
         self._progress_label = QLabel("Ready")
         self.progress = QProgressBar()
@@ -83,32 +106,56 @@ class PipelinePanel(QWidget):
         self._normalize_strength.setSingleStep(0.1)
         self._normalize_strength.setValue(1.0)
 
+        # ── Compute ───────────────────────────────────────────────
+
         # tracking params
-        # Adaptive ROI is critical for kmitající částice (drift + Brownian motion).
+        self._tracking_lbl = QLabel("Tracking: Radial Symmetry")
+        self._tracking_lbl.setStyleSheet("color: #666; font-weight: bold;")
+
+        self.btn_auto_roi = QPushButton("Auto-detect particle")
+        self.btn_auto_roi.setToolTip("Automatically find and center the ROI on the most prominent particle.")
+        self.auto_roi_on_load_cb = QCheckBox("Auto ROI on load")
+        self.auto_roi_on_load_cb.setToolTip("If checked, automatically run Auto-detect when a new video is selected.")
+        self.auto_roi_on_load_cb.setChecked(False)
+        self.btn_auto_roi.clicked.connect(self.auto_roi_clicked.emit)
+
+        self._roi_margin = QDoubleSpinBox()
+        self._roi_margin.setRange(1.2, 3.0)
+        self._roi_margin.setSingleStep(0.1)
+        self._roi_margin.setValue(1.8)
+        self._roi_margin.setToolTip("Multiplier for ROI size based on bead diameter. Smaller = faster tracking.")
+
         self._adaptive_roi = QCheckBox("Adaptive ROI (follow particle)")
+        self._adaptive_roi.setToolTip("Automatically track particle center to maintain it within the ROI during motion.")
         self._adaptive_roi.setChecked(True)
 
         self._invert = QCheckBox("Invert particle (dark spot)")
+        self._invert.setToolTip("Check if the particle appears darker than the background.")
         self._invert.setChecked(True)
 
         self._blur_sigma = QDoubleSpinBox()
         self._blur_sigma.setRange(0.0, 10.0)
         self._blur_sigma.setSingleStep(0.2)
         self._blur_sigma.setValue(1.2)
+        self._blur_sigma.setToolTip("Gaussian blur sigma applied before tracking to reduce noise. 0 = no blur.")
 
         self._radial_grad_threshold = QDoubleSpinBox()
         self._radial_grad_threshold.setRange(0.0, 1000.0)
         self._radial_grad_threshold.setSingleStep(0.5)
         self._radial_grad_threshold.setValue(2.0)
+        self._radial_grad_threshold.setToolTip("Threshold for the radial gradient. Ignores weak edges.")
 
-        self._auto_polarity = QCheckBox("Auto polarity (try invert True/False)")
+        self._auto_polarity = QCheckBox("Auto polarity (detect bright/dark)")
+        self._auto_polarity.setToolTip("Automatically determine the correct 'Invert' setting by scoring both.")
         self._auto_polarity.setChecked(True)
 
         # annulus refinement
-        self._use_annulus = QCheckBox("Use annulus refinement (RS)")
+        self._use_annulus = QCheckBox("Annulus refinement (RS)")
+        self._use_annulus.setToolTip("Use an annular background region to improve Radial Symmetry tracking accuracy.")
         self._use_annulus.setChecked(True)
 
-        self._annulus_auto = QCheckBox("Auto annulus (estimate ring)")
+        self._annulus_auto = QCheckBox("Auto annulus (estimate size)")
+        self._annulus_auto.setToolTip("Automatically estimate optimal inner and outer radii for the annulus.")
         self._annulus_auto.setChecked(True)
 
         self._annulus_r_inner = QDoubleSpinBox()
@@ -116,27 +163,32 @@ class PipelinePanel(QWidget):
         self._annulus_r_inner.setDecimals(2)
         self._annulus_r_inner.setSingleStep(0.5)
         self._annulus_r_inner.setValue(0.0)
+        self._annulus_r_inner.setToolTip("Inner radius of the background annulus in pixels (if not Auto).")
 
         self._annulus_r_outer = QDoubleSpinBox()
         self._annulus_r_outer.setRange(0.0, 1e6)
         self._annulus_r_outer.setDecimals(2)
         self._annulus_r_outer.setSingleStep(0.5)
         self._annulus_r_outer.setValue(0.0)
+        self._annulus_r_outer.setToolTip("Outer radius of the background annulus in pixels (if not Auto).")
 
         self._annulus_profile_smooth = QSpinBox()
         self._annulus_profile_smooth.setRange(0, 999)
         self._annulus_profile_smooth.setValue(3)
+        self._annulus_profile_smooth.setToolTip("Smoothing factor for the radial intensity profile.")
 
         # Preview Gate QC thresholds (applies to multi-frame gate)
         self._gate_sample_count = QSpinBox()
         self._gate_sample_count.setRange(1, 99)
         self._gate_sample_count.setValue(7)
+        self._gate_sample_count.setToolTip("Number of frames to evaluate for the preview gate.")
 
         self._gate_pass_min_ratio = QDoubleSpinBox()
         self._gate_pass_min_ratio.setRange(0.0, 1.0)
         self._gate_pass_min_ratio.setDecimals(3)
         self._gate_pass_min_ratio.setSingleStep(0.05)
         self._gate_pass_min_ratio.setValue(1.0)
+        self._gate_pass_min_ratio.setToolTip("Minimum ratio of frames that must pass QC to accept the particle.")
 
         self._gate_q_min = QDoubleSpinBox()
         self._gate_q_min.setRange(0.0, 1e12)
@@ -149,18 +201,22 @@ class PipelinePanel(QWidget):
         self._gate_jump_max.setDecimals(3)
         self._gate_jump_max.setSingleStep(1.0)
         self._gate_jump_max.setValue(50.0)
+        self._gate_jump_max.setToolTip("Maximum allowed position jump between frames in pixels before failing QC.")
 
         # range
         self._start_frame = QSpinBox()
         self._start_frame.setRange(0, 10**9)
         self._start_frame.setValue(0)
+        self._start_frame.setToolTip("First frame to process.")
 
         self._end_frame = QSpinBox()
         self._end_frame.setRange(0, 10**9)
         self._end_frame.setValue(0)
+        self._end_frame.setToolTip("Last frame to process.")
 
         # scale
         self._use_dataset_scale = QCheckBox("Use dataset scale (µm/px)")
+        self._use_dataset_scale.setToolTip("Use the scale factor saved with this dataset, if available.")
         self._use_dataset_scale.setChecked(True)
 
         self._um_per_px = QDoubleSpinBox()
@@ -169,18 +225,30 @@ class PipelinePanel(QWidget):
         self._um_per_px.setSingleStep(0.000001)
         # Default scale for OT (µm/px) — requested baseline.
         self._um_per_px.setValue(0.066528)
+        self._um_per_px.setToolTip("Manual pixel scale in micrometers per pixel.")
 
         self._scale_status = QLabel("Scale: not set (px only)")
         self._scale_status.setStyleSheet("color: #666;")
 
         self.btn_save_scale = QPushButton("Save current scale as dataset default")
+        self.btn_save_scale.setToolTip("Save the above scale value to the current dataset's sidecar file.")
         self.btn_save_scale.clicked.connect(self.save_dataset_scale_clicked.emit)
 
-        # OT-3.1 postprocess (QC + drift)
+        # ── Export ───────────────────────────────────────────────
+        export_box = QWidget()
+        export_layout = QFormLayout(export_box)
+        # We can put some placeholders here or move Export-related stuff later
+        export_lbl = QLabel("Export Options")
+        export_lbl.setStyleSheet("color: #666; font-weight: bold;")
+        export_layout.addRow("", export_lbl)
+        
+        # ── Postprocess ───────────────────────────────────────────────
         self._pp_enabled = QCheckBox("Enable OT-3.1 postprocess (QC + drift)")
+        self._pp_enabled.setToolTip("Apply quality control and drift correction after tracking.")
         self._pp_enabled.setChecked(True)
 
         self._qc_enabled = QCheckBox("Track-loss flag (QC)")
+        self._qc_enabled.setToolTip("Flag tracking results that fail quality control criteria.")
         self._qc_enabled.setChecked(True)
 
         self._qc_q_min = QDoubleSpinBox()
@@ -188,66 +256,90 @@ class PipelinePanel(QWidget):
         self._qc_q_min.setDecimals(6)
         self._qc_q_min.setSingleStep(0.1)
         self._qc_q_min.setValue(0.0)
+        self._qc_q_min.setToolTip("Minimum acceptable quality score for tracking.")
 
         self._qc_jump_max = QDoubleSpinBox()
         self._qc_jump_max.setRange(0.0, 1e6)
         self._qc_jump_max.setDecimals(3)
         self._qc_jump_max.setSingleStep(1.0)
         self._qc_jump_max.setValue(50.0)
+        self._qc_jump_max.setToolTip("Maximum allowed position jump between frames in pixels before failing QC.")
 
-        self._drift_enabled = QCheckBox("Drift correction")
-        self._drift_enabled.setChecked(True)
+        self._drift_mode = QComboBox()
+        self._drift_mode.addItem("None (passthrough)", "none")
+        self._drift_mode.addItem("Lowpass filter subtract", "lowpass_subtract")
+        self._drift_mode.addItem("Linear detrend subtract", "detrend_linear")
+        self._drift_mode.setCurrentIndex(1)  # Default: lowpass_subtract
+        self._drift_mode.setToolTip("Method to remove low-frequency drift from the particle trajectory.")
 
         self._drift_window_s = QDoubleSpinBox()
         self._drift_window_s.setRange(0.0, 1e6)
         self._drift_window_s.setDecimals(3)
         self._drift_window_s.setSingleStep(0.1)
         self._drift_window_s.setValue(1.0)
+        self._drift_window_s.setToolTip("Time window in seconds for the drift correction filter.")
 
-        # Physics mode (Brownian vs Dragging)
-        self._physics_mode = QComboBox()
-        self._physics_mode.addItem("BROWNIAN (equilibrium)", "BROWNIAN")
-        self._physics_mode.addItem("DRAGGING (stage pulling)", "DRAGGING")
-        self._physics_mode.setCurrentIndex(0)
+        # Strategy Selector
+        self._strategy_selector = QComboBox()
+        self._strategy_selector.setToolTip("Calibration strategy used to compute stiffness and conversion factors.")
 
         self._stage_speed = QDoubleSpinBox()
         self._stage_speed.setRange(0.0, 1e9)
         self._stage_speed.setDecimals(6)
         self._stage_speed.setSingleStep(1.0)
         self._stage_speed.setValue(0.0)
+        self._stage_speed.setToolTip("Stage speed in µm/s (used for Drag calibration).")
 
         self._drag_axis = QComboBox()
         self._drag_axis.addItem("x", "x")
         self._drag_axis.addItem("y", "y")
         self._drag_axis.setCurrentIndex(0)
+        self._drag_axis.setToolTip("Axis along which the manual drag was performed.")
 
         self._viscosity = QDoubleSpinBox()
         self._viscosity.setRange(0.0, 10.0)
         self._viscosity.setDecimals(6)
         self._viscosity.setSingleStep(0.0005)
         self._viscosity.setValue(0.001)  # Pa·s
+        self._viscosity.setToolTip("Dynamic viscosity of the medium in Pascal-seconds (Pa·s). Default is water.")
 
         self._temperature_c = QDoubleSpinBox()
         self._temperature_c.setRange(-10.0, 100.0)
         self._temperature_c.setDecimals(2)
         self._temperature_c.setSingleStep(0.5)
         self._temperature_c.setValue(25.0)
+        self._temperature_c.setToolTip("Temperature in Celsius. Effects viscosity calculation if enabled.")
 
         self._bead_diameter_um = QDoubleSpinBox()
         self._bead_diameter_um.setRange(0.1, 100.0)
         self._bead_diameter_um.setDecimals(3)
         self._bead_diameter_um.setSingleStep(0.1)
         self._bead_diameter_um.setValue(1.0)  # DEFAULT as requested (most common)
+        self._bead_diameter_um.setToolTip("Diameter of the trapped bead in micrometers.")
 
+        # ── Tracking tab ──
         params_box = QWidget()
         params_box_layout = QFormLayout(params_box)
 
-        params_box_layout.addRow("Normalize strength", self._normalize_strength)
+        self._trk_advanced = QCheckBox("Advanced options")
+        self._trk_advanced.setToolTip("Show experimental / advanced tracking options.")
+        self._trk_advanced.setChecked(False)
+        params_box_layout.addRow("", self._trk_advanced)
+
+        params_box_layout.addRow("", self._tracking_lbl)
+        params_box_layout.addRow("", self.btn_auto_roi)
+        params_box_layout.addRow("", self.auto_roi_on_load_cb)
+        params_box_layout.addRow("ROI margin", self._roi_margin)
         params_box_layout.addRow("", self._adaptive_roi)
+        
+        # Advanced Tracking rows
         params_box_layout.addRow("Blur sigma", self._blur_sigma)
         params_box_layout.addRow("Radial grad threshold", self._radial_grad_threshold)
-        params_box_layout.addRow("", self._auto_polarity)
-        params_box_layout.addRow("", self._invert)
+        
+        # These are always hidden but we can still toggle their visibility if we wanted
+        self._normalize_strength.setVisible(False)
+        self._auto_polarity.setVisible(False)
+        self._invert.setVisible(False)
 
         params_box_layout.addRow("", self._use_annulus)
         params_box_layout.addRow("", self._annulus_auto)
@@ -256,9 +348,25 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("Annulus smooth (bins)", self._annulus_profile_smooth)
 
         params_box_layout.addRow("Gate samples", self._gate_sample_count)
-        params_box_layout.addRow("Gate pass min ratio", self._gate_pass_min_ratio)
-        params_box_layout.addRow("Gate q_min", self._gate_q_min)
-        params_box_layout.addRow("Gate jump_max (px)", self._gate_jump_max)
+        
+        # Gate Advanced
+        params_box_layout.addRow("Gate pass ratio", self._gate_pass_min_ratio)
+        params_box_layout.addRow("Gate QC score min", self._gate_q_min)
+        params_box_layout.addRow("Gate Max jump (px)", self._gate_jump_max)
+        
+        def _on_trk_advanced_toggled(checked: bool):
+            self._set_row_visible(self._blur_sigma, checked)
+            self._set_row_visible(self._radial_grad_threshold, checked)
+            self._set_row_visible(self._annulus_r_inner, checked)
+            self._set_row_visible(self._annulus_r_outer, checked)
+            self._set_row_visible(self._annulus_profile_smooth, checked)
+            
+            self._set_row_visible(self._gate_pass_min_ratio, checked)
+            self._set_row_visible(self._gate_q_min, checked)
+            self._set_row_visible(self._gate_jump_max, checked)
+
+        self._trk_advanced.toggled.connect(_on_trk_advanced_toggled)
+        _on_trk_advanced_toggled(False)
 
         params_box_layout.addRow("Start frame", self._start_frame)
         params_box_layout.addRow("End frame", self._end_frame)
@@ -269,60 +377,336 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("", self.btn_save_scale)
 
         post_box = QWidget()
-        post_box_layout = QFormLayout(post_box)
-        post_box_layout.addRow("", self._pp_enabled)
-        post_box_layout.addRow("", self._qc_enabled)
-        post_box_layout.addRow("QC q_min", self._qc_q_min)
-        post_box_layout.addRow("QC jump_max (px)", self._qc_jump_max)
-        post_box_layout.addRow("", self._drift_enabled)
-        post_box_layout.addRow("Drift window (s)", self._drift_window_s)
-        post_box_layout.addRow("Physics mode", self._physics_mode)
-        post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
-        post_box_layout.addRow("Drag axis", self._drag_axis)
-        post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
-        post_box_layout.addRow("Temperature (°C)", self._temperature_c)
-        post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
+        self.post_box_layout = QFormLayout(post_box)
+        
+        # Advanced toggle
+        self._pp_advanced = QCheckBox("Advanced options")
+        self._pp_advanced.setToolTip("Show experimental / advanced postprocessing options.")
+        self._pp_advanced.setChecked(False)
+        self.post_box_layout.addRow("", self._pp_advanced)
+        
+        self.post_box_layout.addRow("", self._pp_enabled)
+        self.post_box_layout.addRow("", self._qc_enabled)
+        
+        # Hide debug/advanced postprocessing controls
+        self.post_box_layout.addRow("QC: Minimum score", self._qc_q_min)
+        self.post_box_layout.addRow("QC: Maximum jump (px)", self._qc_jump_max)
+        
+        self._qc_q_min.setVisible(False)
+        self._qc_jump_max.setVisible(False)
+        self._set_row_visible(self._qc_q_min, False)
+        self._set_row_visible(self._qc_jump_max, False)
+        
+        def _on_advanced_toggled(checked: bool):
+            self._set_row_visible(self._qc_q_min, checked)
+            self._set_row_visible(self._qc_jump_max, checked)
+            self._set_row_visible(self._drift_window_s, checked)
+            
+        self._pp_advanced.toggled.connect(_on_advanced_toggled)
+        _on_advanced_toggled(False)
 
-        def _collapsible(title_text: str, inner: QWidget, expanded: bool) -> QWidget:
-            wrap = QWidget()
-            v = QVBoxLayout(wrap)
-            v.setContentsMargins(0, 0, 0, 0)
-            v.setSpacing(4)
-
-            btn = QToolButton()
-            btn.setCheckable(True)
-            btn.setChecked(bool(expanded))
-
-            def _sync_text(checked: bool) -> None:
-                btn.setText(("▾ " if checked else "▸ ") + title_text)
-
-            _sync_text(bool(expanded))
-            inner.setVisible(bool(expanded))
-
-            def _on_toggle(checked: bool) -> None:
-                inner.setVisible(bool(checked))
-                _sync_text(bool(checked))
-
-            btn.toggled.connect(_on_toggle)
-
-            v.addWidget(btn)
-            v.addWidget(inner)
-            return wrap
-
-        self._tracking_method = "RADIAL_SYMMETRY"
+        self.post_box_layout.addRow("Drift mode", self._drift_mode)
+        self.post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
+        self.post_box_layout.addRow("Calibration Strategy", self._strategy_selector)
+        self.post_box_layout.addRow("Temperature (°C)", self._temperature_c)
+        self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
+        self.post_box_layout.addRow("Drag axis", self._drag_axis)
+        self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
+        self.post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
+        
+        self._calibration_mode = "Brownian"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 0, 8, 8)  # top margin 0 => starts at preview edge
-        layout.setSpacing(6)
-        layout.addWidget(_collapsible("Parameters", params_box, expanded=False))
-        layout.addWidget(_collapsible("Postprocess", post_box, expanded=False))
-        layout.addStretch(1)
-        layout.addWidget(self.btn_preview_gate)
-        layout.addWidget(self.btn_gate_report)
-        layout.addWidget(self.btn_run)
-        layout.addWidget(self.btn_stop)
-        layout.addWidget(self._progress_label)
-        layout.addWidget(self.progress)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ══════════════════════════════════════════════════════════
+        # TABS: replacing scrollable collapsibles
+        # ══════════════════════════════════════════════════════════
+        self.tabs = QTabWidget()
+        
+        tab_run = QWidget()
+        tab_run_layout = QVBoxLayout(tab_run)
+        tab_run_layout.setContentsMargins(8, 8, 8, 8)
+        
+        # ── Profile Management ──
+        prof_box = QWidget()
+        prof_layout = QVBoxLayout(prof_box)
+        prof_layout.setContentsMargins(0, 0, 0, 10)
+        
+        prof_lbl = QLabel("OT Pipeline Profile")
+        prof_lbl.setStyleSheet("font-weight: bold; color: #555;")
+        
+        row1 = QHBoxLayout()
+        self._profile_combo = QComboBox()
+        self._profile_combo.setToolTip("Select a processing profile.")
+        self._profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        row1.addWidget(self._profile_combo)
+        
+        row2 = QHBoxLayout()
+        self.btn_save_profile = QPushButton("Save Profile")
+        self.btn_save_profile.setToolTip("Save current settings to the active profile.")
+        self.btn_save_profile_as = QPushButton("Save As...")
+        self.btn_save_profile_as.setToolTip("Save current settings as a new profile.")
+        row2.addWidget(self.btn_save_profile)
+        row2.addWidget(self.btn_save_profile_as)
+        row2.addStretch(1)
+
+        prof_layout.addWidget(prof_lbl)
+        prof_layout.addLayout(row1)
+        prof_layout.addLayout(row2)
+        
+        tab_run_layout.addWidget(prof_box)
+        
+        sep_prof = QFrame()
+        sep_prof.setFrameShape(QFrame.Shape.HLine)
+        sep_prof.setStyleSheet("color: #ddd;")
+        tab_run_layout.addWidget(sep_prof)
+        
+        # ── Action buttons ──
+        tab_run_layout.addWidget(self.btn_preview_gate)
+        tab_run_layout.addWidget(self.btn_gate_report)
+        tab_run_layout.addWidget(self.btn_run)
+        tab_run_layout.addWidget(self.btn_stop)
+        tab_run_layout.addWidget(self.btn_reset)
+        tab_run_layout.addWidget(self._progress_label)
+        tab_run_layout.addWidget(self.progress)
+        tab_run_layout.addStretch(1)
+
+        tab_tracking = QWidget()
+        tab_tracking_layout = QVBoxLayout(tab_tracking)
+        tab_tracking_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_trk = QScrollArea()
+        scroll_trk.setWidgetResizable(True)
+        scroll_trk.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_trk.setWidget(params_box)
+        tab_tracking_layout.addWidget(scroll_trk)
+
+        tab_postprocess = QWidget()
+        tab_postprocess_layout = QVBoxLayout(tab_postprocess)
+        tab_postprocess_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_post = QScrollArea()
+        scroll_post.setWidgetResizable(True)
+        scroll_post.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_post.setWidget(post_box)
+        tab_postprocess_layout.addWidget(scroll_post)
+        
+        tab_export = QWidget()
+        tab_export_layout = QVBoxLayout(tab_export)
+        tab_export_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_exp = QScrollArea()
+        scroll_exp.setWidgetResizable(True)
+        scroll_exp.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_exp.setWidget(export_box)
+        tab_export_layout.addWidget(scroll_exp)
+
+        self.tabs.addTab(tab_run, "Run")
+        self.tabs.addTab(tab_tracking, "Tracking")
+        self.tabs.addTab(tab_postprocess, "Postprocess")
+        self.tabs.addTab(tab_export, "Export")
+
+        layout.addWidget(self.tabs, stretch=1)
+        
+        # ── Wheel Blocker ─────────────────────────────────────────
+        self._wheel_blocker = NoWheelValueChangeFilter(self)
+        for w in self.findChildren(QAbstractSpinBox):
+            w.installEventFilter(self._wheel_blocker)
+        for w in self.findChildren(QComboBox):
+            w.installEventFilter(self._wheel_blocker)
+            
+        self.apply_ot_defaults()
+
+    def apply_ot_defaults(self) -> None:
+        """Apply requested sensible defaults to the OT user parameters."""
+        self._preview_gate_policy = "STRICT"
+        self.btn_preview_gate.setText("Preview Gate \u25b8 STRICT")
+        self._normalize_strength.setValue(1.0)
+        
+        # Tracking Defaults
+        self.auto_roi_on_load_cb.setChecked(False)
+        self._roi_margin.setValue(1.8)
+        self._adaptive_roi.setChecked(True)
+        self._invert.setChecked(True)
+        self._blur_sigma.setValue(1.2)
+        self._radial_grad_threshold.setValue(2.0)
+        self._auto_polarity.setChecked(True)
+        
+        # Annulus Defaults
+        self._use_annulus.setChecked(True)
+        self._annulus_auto.setChecked(True)
+        self._annulus_r_inner.setValue(0.0)
+        self._annulus_r_outer.setValue(0.0)
+        self._annulus_profile_smooth.setValue(3)
+        
+        # Gate Defaults
+        self._gate_sample_count.setValue(7)
+        self._gate_pass_min_ratio.setValue(1.0)
+        self._gate_q_min.setValue(0.0)
+        self._gate_jump_max.setValue(50.0)
+        
+        # Scale Defaults
+        self._use_dataset_scale.setChecked(True)
+        self._um_per_px.setValue(0.066528)
+        
+        # Postprocess Defaults
+        self._pp_enabled.setChecked(True)
+        self._qc_enabled.setChecked(True)
+        self._qc_q_min.setValue(0.0)
+        self._qc_jump_max.setValue(50.0)
+        self._drift_mode.setCurrentIndex(1)  # lowpass_subtract
+        self._drift_window_s.setValue(1.0)
+        
+        self.set_calibration_mode("Brownian")
+        
+        self._stage_speed.setValue(0.0)
+        self._drag_axis.setCurrentIndex(0)
+        self._viscosity.setValue(0.001)
+        self._viscosity.setValue(0.001)
+        self._temperature_c.setValue(25.0)
+        self._bead_diameter_um.setValue(1.0)
+        
+        self._wire_value_changed_signals()
+        
+        # Profile signals
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
+        self.btn_save_profile.clicked.connect(self._on_save_profile_clicked)
+        self.btn_save_profile_as.clicked.connect(self._on_save_profile_as_clicked)
+
+    # -------------------- Profile UI wiring --------------------
+
+    def update_profile_list(self, profiles: list[str], active_profile: str = "") -> None:
+        """Update the combo box block signalling to prevent load_profile_requested triggers."""
+        was_blocked = self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        
+        if not profiles:
+            self._profile_combo.addItem("<No profiles found>")
+            self._profile_combo.setEnabled(False)
+            self.btn_save_profile.setEnabled(False)
+        else:
+            self._profile_combo.setEnabled(True)
+            self.btn_save_profile.setEnabled(True)
+            for p in profiles:
+                self._profile_combo.addItem(p)
+                
+            if active_profile:
+                idx = self._profile_combo.findText(active_profile)
+                if idx >= 0:
+                    self._profile_combo.setCurrentIndex(idx)
+                    
+        self._profile_combo.blockSignals(was_blocked)
+
+    def _on_profile_combo_changed(self, idx: int) -> None:
+        if idx < 0 or not self._profile_combo.isEnabled():
+            return
+        prof_name = self._profile_combo.currentText()
+        if prof_name:
+            self.load_profile_requested.emit(prof_name)
+            
+    def _on_save_profile_clicked(self) -> None:
+        if not self._profile_combo.isEnabled(): return
+        prof_name = self._profile_combo.currentText()
+        if prof_name:
+            self.save_profile_requested.emit(prof_name)
+            
+    def _on_save_profile_as_clicked(self) -> None:
+        from PyQt6.QtWidgets import QInputDialog
+        prof_name, ok = QInputDialog.getText(self, "Save Profile As", "New profile name:")
+        if ok and prof_name.strip():
+            self.save_profile_requested.emit(prof_name.strip())
+
+    # -------------------- Per-video UI wiring --------------------
+
+    def _wire_value_changed_signals(self) -> None:
+        """Connect all interactive elements to emit value_changed."""
+        def _emit(*args, **kwargs):
+            self.value_changed.emit()
+            
+        # Hook up inputs (QDoubleSpinBox, QSpinBox)
+        for w in self.findChildren(QAbstractSpinBox):
+            if hasattr(w, "valueChanged"):
+                try: w.valueChanged.disconnect() 
+                except: pass
+                w.valueChanged.connect(_emit)
+                
+        # Hook up checkboxes
+        for w in self.findChildren(QCheckBox):
+            if hasattr(w, "toggled"):
+                try: w.toggled.disconnect()
+                except: pass
+                w.toggled.connect(_emit)
+                
+        # Hook up comboboxes
+        for w in self.findChildren(QComboBox):
+            if hasattr(w, "currentIndexChanged"):
+                try: w.currentIndexChanged.disconnect()
+                except: pass
+                w.currentIndexChanged.connect(_emit)
+
+    def dump_ot_params(self) -> dict:
+        return {
+            "tracking": self.get_tracking_params(),
+            "postprocess": self.get_postprocess_params(),
+            "scale": self.get_scale_params(),
+            "frame_range": self.get_frame_range(),
+            # add gate policy to save too
+            "gate_policy": self._preview_gate_policy,
+        }
+        
+    def load_ot_params(self, d: dict) -> None:
+        # Block signals during loading to avoid loopbacks
+        was_blocked = self.blockSignals(True)
+        
+        # Load from dict, mapping to controls appropriately.
+        tp = d.get("tracking", {})
+        self._roi_margin.setValue(tp.get("roi_margin", 1.8))
+        self._adaptive_roi.setChecked(tp.get("adaptive_roi", True))
+        self._invert.setChecked(tp.get("invert", True))
+        self._blur_sigma.setValue(tp.get("blur_sigma", 1.2))
+        self._radial_grad_threshold.setValue(tp.get("radial_grad_threshold", 2.0))
+        self._auto_polarity.setChecked(tp.get("auto_polarity", True))
+        self._use_annulus.setChecked(tp.get("annulus_enabled", True))
+        self._annulus_auto.setChecked(tp.get("annulus_auto", True))
+        self._annulus_r_inner.setValue(tp.get("annulus_r_inner_px") or 0.0)
+        self._annulus_r_outer.setValue(tp.get("annulus_r_outer_px") or 0.0)
+        self._annulus_profile_smooth.setValue(tp.get("annulus_profile_smooth", 3))
+
+        pp = d.get("postprocess", {})
+        self._pp_enabled.setChecked(pp.get("enabled", True))
+        self._qc_enabled.setChecked(pp.get("qc_enabled", True))
+        self._qc_q_min.setValue(pp.get("q_min", 0.0))
+        self._qc_jump_max.setValue(pp.get("jump_max_px", 50.0))
+        dt_mode = pp.get("drift_mode", "detrend_linear")
+        idx = self._drift_mode.findData(dt_mode)
+        if idx >= 0:
+            self._drift_mode.setCurrentIndex(idx)
+        self._drift_window_s.setValue(pp.get("drift_window_s", 1.0))
+        self._temperature_c.setValue(pp.get("temperature_c", 25.0))
+        self._bead_diameter_um.setValue(pp.get("bead_diameter_um", 1.0))
+        
+        if "stage_speed_um_s" in pp:
+            self._stage_speed.setValue(pp.get("stage_speed_um_s", 0.0))
+        if "drag_axis" in pp:
+            idx = self._drag_axis.findData(pp.get("drag_axis", "x"))
+            if idx >= 0: self._drag_axis.setCurrentIndex(idx)
+        if "viscosity_pa_s" in pp:
+            self._viscosity.setValue(pp.get("viscosity_pa_s", 0.001))
+
+        sp = d.get("scale", {})
+        self._use_dataset_scale.setChecked(sp.get("use_dataset_scale", True))
+        self._um_per_px.setValue(sp.get("um_per_px", 0.066528))
+        
+        fr = d.get("frame_range", [0, 0])
+        self._start_frame.setValue(fr[0])
+        self._end_frame.setValue(fr[1])
+        
+        gp = d.get("gate_policy", "STRICT")
+        self._preview_gate_policy = gp
+        self.btn_preview_gate.setText(f"Preview Gate ▹ {gp}")
+
+        self.blockSignals(was_blocked)
+        # Manually trigger a UI refresh event for parents
+        self.value_changed.emit()
 
     # -------------------- API pro Shell --------------------
 
@@ -346,6 +730,14 @@ class PipelinePanel(QWidget):
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
             self._progress_label.setText("Ready")
+            
+        # Disable buttons that shouldn't be clicked during run
+        for b in [self.btn_save_scale]:
+            if hasattr(self, b): # Just in case
+                getattr(self, b).setEnabled(not running)
+            else:
+                # Direct access if known
+                self.btn_save_scale.setEnabled(not running)
 
     def set_batch_progress(self, done: int, total: int, filename: str = "", pct: int = 0) -> None:
         """Update file counter label and progress bar value (pct = 0..100 within current video)."""
@@ -361,12 +753,17 @@ class PipelinePanel(QWidget):
         self.progress.setValue(pct)
 
     def get_tracking_params(self) -> dict:
-        # method UI zatím nemáme → držíme RS jako default
+        # method UI is removed, keep RS as default
         use_ann = bool(self._use_annulus.isChecked())
         r_in = float(self._annulus_r_inner.value())
         r_out = float(self._annulus_r_outer.value())
-        return {
-            "method": str(self._tracking_method),
+        
+        is_adv = bool(self._trk_advanced.isChecked())
+            
+        pms = {
+            "method": "RADIAL_SYMMETRY",
+            "compute_profile": "auto",
+            "roi_margin": float(self._roi_margin.value()),
             "adaptive_roi": bool(self._adaptive_roi.isChecked()),
             "invert": bool(self._invert.isChecked()),
             "blur_sigma": float(self._blur_sigma.value()),
@@ -378,23 +775,63 @@ class PipelinePanel(QWidget):
             "annulus_r_outer_px": (None if (not use_ann or r_out <= 0) else r_out),
             "annulus_profile_smooth": int(self._annulus_profile_smooth.value()),
         }
+        
+        # If Advanced is OFF, force safe defaults for hidden parameters
+        if not is_adv:
+            pms["blur_sigma"] = 1.2
+            pms["radial_grad_threshold"] = 2.0
+            if use_ann:
+                pms["annulus_auto"] = True 
+
+        return pms
 
     def get_postprocess_params(self) -> dict:
-        return {
+        mode = getattr(self, "_calibration_mode", "Brownian")
+        is_adv = bool(self._pp_advanced.isChecked())
+        
+        params = {
             "enabled": bool(self._pp_enabled.isChecked()),
             "qc_enabled": bool(self._qc_enabled.isChecked()),
             "q_min": float(self._qc_q_min.value()),
             "jump_max_px": float(self._qc_jump_max.value()),
-            "drift_enabled": bool(self._drift_enabled.isChecked()),
+            "drift_mode": str(self._drift_mode.currentData()),
             "drift_window_s": float(self._drift_window_s.value()),
             "export_um_columns": True,
-            "physics_mode": str(self._physics_mode.currentData()),
-            "stage_speed_um_s": float(self._stage_speed.value()),
-            "drag_axis": str(self._drag_axis.currentData()),
-            "viscosity_pa_s": float(self._viscosity.value()),
+            "calibration_mode": mode,
+            "strategy": str(self._strategy_selector.currentData()),
             "temperature_c": float(self._temperature_c.value()),
             "bead_diameter_um": float(self._bead_diameter_um.value()),
         }
+        
+        # If Advanced is OFF, force safe defaults for hidden parameters
+        if not is_adv:
+            params["q_min"] = 0.0
+            params["jump_max_px"] = 50.0
+            params["drift_window_s"] = 1.0
+
+        if mode == "Drag":
+            params.update({
+                "stage_speed_um_s": float(self._stage_speed.value()),
+                "drag_axis": str(self._drag_axis.currentData()),
+                "viscosity_pa_s": float(self._viscosity.value()),
+            })
+        return params
+
+    def get_strategy_params(self) -> dict:
+        mode = getattr(self, "_calibration_mode", "Brownian")
+        params = {
+            "calibration_mode": mode,
+            "strategy": str(self._strategy_selector.currentData()),
+            "temperature_c": float(self._temperature_c.value()),
+            "bead_diameter_um": float(self._bead_diameter_um.value()),
+        }
+        if mode == "Drag":
+            params.update({
+                "stage_speed_um_s": float(self._stage_speed.value()),
+                "drag_axis": str(self._drag_axis.currentData()),
+                "viscosity_pa_s": float(self._viscosity.value()),
+            })
+        return params
 
     def get_scale_params(self) -> dict:
         return {
@@ -405,11 +842,7 @@ class PipelinePanel(QWidget):
     def get_frame_range(self) -> tuple[int, int]:
         return int(self._start_frame.value()), int(self._end_frame.value())
 
-    def set_batch_running(self, running: bool) -> None:
-        for b in [
-            self.btn_save_scale,
-        ]:
-            b.setEnabled(not running)
+
 
     def set_scale_status(self, text: str) -> None:
         self._scale_status.setText(text)
@@ -423,5 +856,64 @@ class PipelinePanel(QWidget):
     def set_end_frame(self, end_frame: int) -> None:
         self._end_frame.setValue(int(end_frame))
 
-    def set_tracking_method(self, method: str) -> None:
-        self._tracking_method = str(method)
+    def _set_row_visible(self, field: QWidget, visible: bool) -> None:
+        field.setVisible(visible)
+        # Check Tracking layout
+        if hasattr(self, "params_box_layout") and self.params_box_layout is not None:
+            label = self.params_box_layout.labelForField(field)
+            if label:
+                label.setVisible(visible)
+        # Check Postprocess layout
+        if hasattr(self, "post_box_layout") and self.post_box_layout is not None:
+            label = self.post_box_layout.labelForField(field)
+            if label:
+                label.setVisible(visible)
+
+    def _update_strategy_dropdown(self, mode: str) -> None:
+        current_data = str(self._strategy_selector.currentData()) if self._strategy_selector.currentData() else ""
+
+        self._strategy_selector.blockSignals(True)
+        self._strategy_selector.clear()
+
+        if mode == "Brownian":
+            self._strategy_selector.addItem("PSD_Welch (Scipy/Hann)", "PSD_Welch")
+            self._strategy_selector.addItem("PSD_ProcFFT (MATLAB)", "PSD_ProcFFT")
+            
+            idx = self._strategy_selector.findData(current_data)
+            if idx >= 0:
+                self._strategy_selector.setCurrentIndex(idx)
+            else:
+                self._strategy_selector.setCurrentIndex(0)
+                import logging
+                logging.getLogger(__name__).info(f"Strategy auto-switched to PSD_Welch for mode {mode}")
+                
+        elif mode == "Drag":
+            self._strategy_selector.addItem("Drag (Constant Velocity)", "Drag_ConstantVelocity")
+            
+            idx = self._strategy_selector.findData(current_data)
+            if idx >= 0:
+                self._strategy_selector.setCurrentIndex(idx)
+            else:
+                self._strategy_selector.setCurrentIndex(0)
+                import logging
+                logging.getLogger(__name__).info(f"Strategy auto-switched to Drag_ConstantVelocity for mode {mode}")
+                
+        self._strategy_selector.blockSignals(False)
+
+    def set_calibration_mode(self, mode: str) -> None:
+        self._calibration_mode = str(mode)
+        self._update_strategy_dropdown(mode)
+        
+        if mode == "Brownian":
+            self._set_row_visible(self._stage_speed, False)
+            self._set_row_visible(self._drag_axis, False)
+            self._set_row_visible(self._viscosity, False)
+            self._set_row_visible(self._bead_diameter_um, True)
+        elif mode == "Drag":
+            self._set_row_visible(self._stage_speed, True)
+            self._set_row_visible(self._drag_axis, True)
+            self._set_row_visible(self._viscosity, True)
+            self._set_row_visible(self._bead_diameter_um, True)
+
+    def is_auto_roi_on_load(self) -> bool:
+        return self.auto_roi_on_load_cb.isChecked()

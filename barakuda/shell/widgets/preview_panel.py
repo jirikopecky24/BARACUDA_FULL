@@ -4,7 +4,9 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
+pg.setConfigOptions(imageAxisOrder='row-major')
+
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTabWidget, QSlider, QHBoxLayout
@@ -15,24 +17,35 @@ from barakuda.core.video_reader import VideoReader
 
 
 class PreviewPanel(QWidget):
-    def __init__(self, parent=None) -> None:
+    roi_changed = pyqtSignal()
+
+    def __init__(self, parent=None, device_kind: str = "AFM") -> None:
         super().__init__(parent)
+        self._device_kind = device_kind
 
         self._title = QLabel("Preview")
         self._title.setStyleSheet("font-weight: 600;")
 
         self._tabs = QTabWidget()
 
-        self._view_before = pg.ImageView()
-        self._view_before.ui.roiBtn.hide()
-        self._view_before.ui.menuBtn.hide()
+        self._view_before = pg.GraphicsLayoutWidget()
+        self._vb_before = self._view_before.addViewBox(lockAspect=True)
+        self._vb_before.invertY(True)
+        self._img_before = pg.ImageItem()
+        self._vb_before.addItem(self._img_before)
 
-        self._view_after = pg.ImageView()
-        self._view_after.ui.roiBtn.hide()
-        self._view_after.ui.menuBtn.hide()
+        self._view_after = pg.GraphicsLayoutWidget()
+        self._vb_after = self._view_after.addViewBox(lockAspect=True)
+        self._vb_after.invertY(True)
+        self._img_after = pg.ImageItem()
+        self._vb_after.addItem(self._img_after)
 
         self._tabs.addTab(self._view_before, "BEFORE")
         self._tabs.addTab(self._view_after, "AFTER")
+
+        # Link pan/zoom between tabs so the views perfectly align
+        self._vb_after.setXLink(self._vb_before)
+        self._vb_after.setYLink(self._vb_before)
 
         # --- video controls ---
         self._video_row = QWidget()
@@ -55,7 +68,7 @@ class PreviewPanel(QWidget):
 
         self._video_row.setVisible(False)
 
-        self._info = QLabel("Vyber soubor vlevo.")
+        self._info = QLabel("Select a file on the left.")
         self._info.setStyleSheet("color: #666;")
         self._info.setWordWrap(True)
 
@@ -77,10 +90,14 @@ class PreviewPanel(QWidget):
 
         self._setting_slider: bool = False
 
-        # ROI
-        self._roi: pg.RectROI | None = None
+        # Per-device ROI (never shared between AFM and OT)
+        self._roi_afm: pg.RectROI | None = None
+        self._roi_ot: pg.RectROI | None = None
+        self._roi_afm_added: bool = False
+        self._roi_ot_added: bool = False
         self._roi_shape: tuple[int, int] | None = None  # (H,W)
         self._clamping_roi: bool = False
+        self._syncing_roi: bool = False
 
         # scale info to display
         self._scale_text: str = "Scale: not set (px only)"
@@ -148,15 +165,63 @@ class PreviewPanel(QWidget):
             except Exception as e:
                 self._clear_views()
                 self._video_row.setVisible(False)
-                self._info.setText(f"{path}\n\nVIDEO: chyba načtení\n{e!r}")
+                self._info.setText(f"{path}\n\nVIDEO: load error\n{e!r}")
             return
 
         self._video_row.setVisible(False)
 
+        # --- SPM file: load via AFMReader, normalize for display ---
+        if str(path).lower().endswith(".spm"):
+            try:
+                import logging
+                _log = logging.getLogger(__name__)
+
+                from barakuda.devices.afm.io.afmreader_loader import load_spm_height
+                height_img, meta = load_spm_height(str(path))
+
+                _log.info(
+                    "SPM loaded via AFMReader | channel=%s | shape=%s | pixel_to_nm=%s | loader=%s",
+                    meta.get("selected_channel", "?"),
+                    meta.get("shape", "?"),
+                    meta.get("pixel_to_nm", "?"),
+                    meta.get("loader", "?"),
+                )
+
+                # Percentile normalization for preview display
+                finite = height_img[np.isfinite(height_img)]
+                if len(finite) > 0:
+                    p1, p99 = np.percentile(finite, [1, 99])
+                else:
+                    p1, p99 = 0.0, 1.0
+                norm = (height_img - p1) / (p99 - p1 + 1e-9)
+                norm = np.clip(norm, 0.0, 1.0)
+                preview_uint8 = (norm * 255.0).astype(np.uint8)
+                arr = np.stack([preview_uint8] * 3, axis=-1)  # grayscale RGB
+
+                self._current_frame_index = 0
+                self._set_before_and_after(arr)
+                self._ensure_roi_for_image(arr.shape[0], arr.shape[1])
+
+                self._info_meta = {
+                    "path": str(path),
+                    "type": "spm",
+                    "shape": f"{arr.shape}, dtype={height_img.dtype}",
+                    "channel": str(meta.get("selected_channel", "?")),
+                    "pixel_to_nm": str(meta.get("pixel_to_nm", "?")),
+                    "loader": str(meta.get("loader", "?")),
+                }
+                self._refresh_info_block()
+                return
+            except Exception as e:
+                self._clear_views()
+                self._info.setText(f"{path}\n\nSPM: load error\n{e!r}")
+                return
+
+        # --- Standard image file: load via Qt QImage ---
         arr = self._load_image_qt(path)
         if arr is None:
             self._clear_views()
-            self._info.setText(f"{path}\n\nNelze zobrazit jako obrázek (Qt QImage to nenačetl).")
+            self._info.setText(f"{path}\n\nCannot display as image (Qt QImage failed to load).")
             return
 
         self._current_frame_index = 0
@@ -172,7 +237,10 @@ class PreviewPanel(QWidget):
 
     def set_after_image(self, arr: np.ndarray) -> None:
         self._after_locked = True
-        self._view_after.setImage(np.asarray(arr), autoLevels=True)
+        
+        # UI JUST REPLACES THE IMAGE ON THE EXISTING ITEM
+        # DOES NOT FIT, DOES NOT CLEAR ViewBox, DOES NOT CREATE NEW ITEM
+        self._img_after.setImage(arr)
 
     def set_after_from_file(self, path_str: str) -> bool:
         """Load an image via Qt and show it on AFTER tab.
@@ -201,6 +269,11 @@ class PreviewPanel(QWidget):
     def get_before_image(self) -> np.ndarray | None:
         return self._last_before
 
+    def get_image_size(self) -> tuple[int, int] | None:
+        if self._last_before is not None:
+            return (self._last_before.shape[0], self._last_before.shape[1])
+        return None
+
     def get_current_frame_index(self) -> int:
         return int(self._current_frame_index)
 
@@ -228,25 +301,44 @@ class PreviewPanel(QWidget):
             return None
         return float(self._reader.meta.fps)
 
+    def _active_roi(self) -> pg.RectROI | None:
+        """Return the ROI for the current device_kind."""
+        return self._roi_afm if self._device_kind == "AFM" else self._roi_ot
+
     def get_roi_rect(self) -> tuple[int, int, int, int] | None:
-        if self._roi is None or self._roi_shape is None:
+        roi = self._active_roi()
+        if roi is None or self._last_before is None:
             return None
 
-        h, w = self._roi_shape
-        pos = self._roi.pos()
-        size = self._roi.size()
+        img = self._last_before  # shape (H, W) or (H, W, 3)
+        H, W = img.shape[:2]
 
-        x = int(round(float(pos.x())))
-        y = int(round(float(pos.y())))
-        rw = int(round(float(size.x())))
-        rh = int(round(float(size.y())))
+        # IMPORTANT: use getArraySlice via the BEFORE ImageItem
+        # so pyqtgraph handles all coordinate transforms internally.
+        sl, _ = roi.getArraySlice(img, self._img_before)
 
-        x = max(0, min(x, w - 1))
-        y = max(0, min(y, h - 1))
-        rw = max(1, min(rw, w - x))
-        rh = max(1, min(rh, h - y))
+        y0, y1 = int(sl[0].start), int(sl[0].stop)
+        x0, x1 = int(sl[1].start), int(sl[1].stop)
 
-        return (x, y, rw, rh)
+        # clamp safety
+        x0 = max(0, min(x0, W - 1))
+        x1 = max(1, min(x1, W))
+        y0 = max(0, min(y0, H - 1))
+        y1 = max(1, min(y1, H))
+
+        return (x0, y0, x1 - x0, y1 - y0)
+
+    def set_roi_rect(self, x: int, y: int, w: int, h: int) -> None:
+        roi = self._active_roi()
+        if roi is not None:
+            self._clamping_roi = True
+            try:
+                roi.setPos([float(x), float(y)], update=True)
+                roi.setSize([float(w), float(h)], update=True)
+            finally:
+                self._clamping_roi = False
+            self._clamp_roi_to_image(roi)
+            self._refresh_info_block()
 
     # ---------------- slider ----------------
 
@@ -262,7 +354,10 @@ class PreviewPanel(QWidget):
 
             self._current_frame_index = i
             self._last_before = frame_rgb
-            self._view_before.setImage(frame_rgb, autoLevels=True)
+            
+            # Slider change invalidates previous preview overlay
+            self.unlock_after()
+            self._set_before_and_after(frame_rgb, is_initial_load=False)
 
             self._ensure_roi_for_image(frame_rgb.shape[0], frame_rgb.shape[1])
             self._update_video_labels(i)
@@ -272,7 +367,7 @@ class PreviewPanel(QWidget):
                 self._refresh_info_block()
 
         except Exception as e:
-            self._info.setText(f"{self._video_path}\n\nVIDEO: chyba při čtení snímku\n{e!r}")
+            self._info.setText(f"{self._video_path}\n\nVIDEO: frame read error\n{e!r}")
 
     # ---------------- internal UI helpers ----------------
 
@@ -291,11 +386,21 @@ class PreviewPanel(QWidget):
             lines.append(f"frames={meta.get('frames', 'n/a')}")
             lines.append(f"duration={meta.get('duration', 'n/a')}")
             lines.append(f"current={meta.get('current', 'n/a')}")
+        elif meta.get("type") == "spm":
+            lines.append(f"shape={meta.get('shape', 'n/a')}")
+            lines.append(f"channel={meta.get('channel', 'n/a')}")
+            lines.append(f"pixel_to_nm={meta.get('pixel_to_nm', 'n/a')}")
+            lines.append(f"loader={meta.get('loader', 'n/a')}")
         else:
             lines.append(f"shape={meta.get('shape', 'n/a')}")
 
-        # ALWAYS show scale at bottom
-        lines.append(self._scale_text)
+        # ALWAYS show scale at bottom, except for SPM where it's native to the device panel
+        if meta.get("type") != "spm":
+            lines.append(self._scale_text)
+
+        roi = self.get_roi_rect()
+        if roi is not None:
+            lines.append(f"ROI: x={roi[0]}, y={roi[1]}, w={roi[2]}, h={roi[3]}")
 
         self._info.setText("\n".join(lines))
 
@@ -309,53 +414,77 @@ class PreviewPanel(QWidget):
         t = float(i) / fps
         self._frame_label.setText(f"frame: {i}/{total-1}   t: {t:.3f} s")
 
-    def _set_before_and_after(self, arr: np.ndarray) -> None:
+    def _set_before_and_after(self, arr: np.ndarray, is_initial_load: bool = True) -> None:
         arr = np.asarray(arr)
         self._last_before = arr
-        self._view_before.setImage(arr, autoLevels=True)
+        
+        self._img_before.setImage(arr)
+        
         if not self._after_locked:
-            self._view_after.setImage(arr, autoLevels=True)
+            self._img_after.setImage(arr)
+            
+        if is_initial_load:
+            self._vb_before.autoRange()
+            self._fit_imageview(self._vb_before, self._img_before)
+            
+            if not self._after_locked:
+                self._vb_after.autoRange()
+                self._fit_imageview(self._vb_after, self._img_after)
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
-        Create ROI once and ensure it stays inside image bounds.
-        IMPORTANT: Add 4 corner scale handles so ROI is easy to reshape.
+        Create per-device ROI once and ensure it stays inside image bounds.
+        AFM: 4 corner scale handles (no translate).
+        OT:  4 corner scale handles + center translate handle.
         """
-        if self._roi is None:
-            # Yellow ROI frame
-            pen = pg.mkPen((255, 255, 0), width=2)
-
-            self._roi = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
-
-            # Remove default single handle behavior and add explicit corner handles
-            # Four corners:
-            # (pos, center)
-            self._roi.addScaleHandle([0, 0], [1, 1])  # top-left
-            self._roi.addScaleHandle([1, 0], [0, 1])  # top-right
-            self._roi.addScaleHandle([0, 1], [1, 0])  # bottom-left
-            self._roi.addScaleHandle([1, 1], [0, 0])  # bottom-right
-
-            # Optional: side handles (more convenient for thin rectangles)
-            self._roi.addScaleHandle([0.5, 0], [0.5, 1])  # top
-            self._roi.addScaleHandle([0.5, 1], [0.5, 0])  # bottom
-            self._roi.addScaleHandle([0, 0.5], [1, 0.5])  # left
-            self._roi.addScaleHandle([1, 0.5], [0, 0.5])  # right
-
-            self._view_before.addItem(self._roi)
-            self._roi.sigRegionChanged.connect(self._on_roi_changed)
+        if self._device_kind == "AFM":
+            if self._roi_afm is None:
+                pen = pg.mkPen((255, 255, 0), width=2)
+                self._roi_afm = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
+                self._roi_afm.addScaleHandle([0, 0], [1, 1])
+                self._roi_afm.addScaleHandle([1, 0], [0, 1])
+                self._roi_afm.addScaleHandle([0, 1], [1, 0])
+                self._roi_afm.addScaleHandle([1, 1], [0, 0])
+                if not self._roi_afm_added:
+                    self._vb_before.addItem(self._roi_afm)
+                    self._roi_afm.setZValue(10)
+                    self._roi_afm_added = True
+                self._roi_afm.sigRegionChanged.connect(self._on_roi_changed)
+        else:
+            # OT: corners + center translate
+            if self._roi_ot is None:
+                pen = pg.mkPen((0, 200, 255), width=2)  # cyan to distinguish from AFM
+                self._roi_ot = pg.RectROI([W * 0.25, H * 0.25], [W * 0.5, H * 0.5], pen=pen)
+                self._roi_ot.addScaleHandle([0, 0], [1, 1])
+                self._roi_ot.addScaleHandle([1, 0], [0, 1])
+                self._roi_ot.addScaleHandle([0, 1], [1, 0])
+                self._roi_ot.addScaleHandle([1, 1], [0, 0])
+                self._roi_ot.addTranslateHandle([0.5, 0.5])
+                if not self._roi_ot_added:
+                    self._vb_before.addItem(self._roi_ot)
+                    self._roi_ot.setZValue(10)
+                    self._roi_ot_added = True
+                self._roi_ot.sigRegionChanged.connect(self._on_roi_changed)
 
         self._roi_shape = (int(H), int(W))
-        self._clamp_roi_to_image()
+        self._clamp_roi_to_image(self._active_roi())
 
     def _on_roi_changed(self) -> None:
-        self._clamp_roi_to_image()
+        self._clamp_roi_to_image(self._active_roi())
+        self._refresh_info_block()
+        if not getattr(self, "_clamping_roi", False):
+            self.roi_changed.emit()
 
-    def _clamp_roi_to_image(self) -> None:
-        if self._roi is None or self._roi_shape is None or self._clamping_roi:
+
+
+    def _clamp_roi_to_image(self, target_roi=None) -> None:
+        if target_roi is None:
+            target_roi = self._active_roi()
+        if target_roi is None or self._roi_shape is None or self._clamping_roi:
             return
         h, w = self._roi_shape
-        pos = self._roi.pos()
-        size = self._roi.size()
+        pos = target_roi.pos()
+        size = target_roi.size()
 
         x = float(pos.x())
         y = float(pos.y())
@@ -387,16 +516,28 @@ class PreviewPanel(QWidget):
         if changed:
             self._clamping_roi = True
             try:
-                self._roi.setPos([x, y], update=True)
-                self._roi.setSize([rw, rh], update=True)
+                target_roi.setPos([x, y], update=True)
+                target_roi.setSize([rw, rh], update=True)
             finally:
                 self._clamping_roi = False
 
     def _clear_views(self) -> None:
         self._last_before = None
         self._after_locked = False
-        self._view_before.clear()
-        self._view_after.clear()
+        self._img_before.clear()
+        self._img_after.clear()
+        # Reset the active device's ROI
+        if self._device_kind == "AFM":
+            if self._roi_afm is not None and self._roi_afm_added:
+                self._vb_before.removeItem(self._roi_afm)
+            self._roi_afm = None
+            self._roi_afm_added = False
+        else:
+            if self._roi_ot is not None and self._roi_ot_added:
+                self._vb_before.removeItem(self._roi_ot)
+            self._roi_ot = None
+            self._roi_ot_added = False
+        self._roi_shape = None
 
     def _load_image_qt(self, path: Path) -> np.ndarray | None:
         img = QImage(str(path))
@@ -427,3 +568,13 @@ class PreviewPanel(QWidget):
         
         # 4) Make a deep copy to detach from QImage memory
         return arr.copy()
+
+    def _fit_imageview(self, vb: pg.ViewBox, img: pg.ImageItem) -> None:
+        try:
+            # get image bounds only (ignore ROI)
+            rect = img.mapRectToView(img.boundingRect())
+
+            vb.setAspectLocked(True)
+            vb.setRange(rect, padding=0.02)
+        except Exception:
+            pass

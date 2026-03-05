@@ -179,6 +179,10 @@ def export_ot_results_xlsx(
     _add_csv_sheet("PSD_X", psd_x_csv_path)
     _add_csv_sheet("PSD_Y", psd_y_csv_path)
 
+    # Derived physics (if present)
+    derived_csv = output_dir / f"{base_name}_derived.csv"
+    _add_csv_sheet("Derived_Physics", derived_csv)
+
     # ---------- Metadata sheet (ALWAYS) ----------
     ws_meta = wb.create_sheet("Metadata")
     ws_meta.append(["Key", "Value"])

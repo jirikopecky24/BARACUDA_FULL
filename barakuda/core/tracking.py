@@ -46,8 +46,12 @@ def roi_follow_center(
     rh = int(max(1, roi.h))
 
     # Center -> top-left
-    x = int(round(float(center_x_px) - rw / 2.0))
-    y = int(round(float(center_y_px) - rh / 2.0))
+    # Use exact same math as auto_roi.py exact center math
+    # x = cx - (rw-1)/2.0
+    half_w = (rw - 1) / 2.0
+    half_h = (rh - 1) / 2.0
+    x = int(round(float(center_x_px) - half_w))
+    y = int(round(float(center_y_px) - half_h))
 
     if x < 0:
         x = 0

@@ -6,7 +6,11 @@ from typing import Any, Dict, Optional, Callable
 
 import csv
 import json
+import re
+import shutil
 import time
+from datetime import datetime
+
 import numpy as np
 
 from PyQt6.QtWidgets import QApplication
@@ -21,6 +25,9 @@ from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, k
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
 from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
+
+# Feature flag for the new OT pipeline (Bible v2.1)
+_USE_OT_PIPELINE = False
 
 
 @dataclass(frozen=True)
@@ -282,7 +289,43 @@ class BatchController:
                 continue
 
             # --- OT-specific gate ---
-            if preview_roi_rect is None:
+            # Determine if Auto ROI On Load is ON
+            is_auto_roi_on_load = False
+            try:
+                if hasattr(device_panel, "is_auto_roi_on_load"):
+                    is_auto_roi_on_load = device_panel.is_auto_roi_on_load()
+            except Exception:
+                pass
+
+            file_roi = None
+            if is_auto_roi_on_load:
+                try:
+                    from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
+                    scale_params = device_panel.get_scale_params()
+                    um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
+                    
+                    dia_auto = 1.0
+                    if hasattr(device_panel, "get_postprocess_params"):
+                        dia_auto = float(device_panel.get_postprocess_params().get("bead_diameter_um", 1.0))
+                    elif hasattr(device_panel, "_bead_diameter_um"):
+                        dia_auto = float(device_panel._bead_diameter_um.value())
+                    
+                    margin_auto = 1.8
+                    if hasattr(device_panel, "get_tracking_params"):
+                        margin_auto = float(device_panel.get_tracking_params().get("roi_margin", 1.8))
+                    elif hasattr(device_panel, "_roi_margin"):
+                        margin_auto = float(device_panel._roi_margin.value())
+
+                    frame0 = vr.get_frame(0)
+                    rx, ry, rw, rh = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
+                    file_roi = (rx, ry, rw, rh)
+                except Exception as e:
+                    self._log(f"WARN: auto ROI failed for {p.name}: {e!r}")
+            
+            if file_roi is None:
+                file_roi = preview_roi_rect
+
+            if file_roi is None:
                 try:
                     vr.close()
                 except Exception:
@@ -300,7 +343,7 @@ class BatchController:
                 except Exception:
                     method = TrackingMethod.RADIAL_SYMMETRY
 
-                roi_obj = Roi(*preview_roi_rect)
+                roi_obj = Roi(*file_roi)
             except Exception as e:
                 try:
                     vr.close()
@@ -492,79 +535,49 @@ class BatchController:
         roi_rect: tuple[int, int, int, int],
         dataset_set_status_fn: Callable[[Path, str], None],
         progress_fn: Callable[[int, int, str, int], None],
+        checked_paths: list[Path] | list[str] | None = None,
     ) -> None:
         if not self._preview_done:
             self._log("Run Batch blocked: Preview Gate has not passed.")
             return
 
         ok_paths = [Path(r.path) for r in self._last_preview_results if r.ok]
+        if checked_paths is not None:
+            cset = {str(Path(p)) for p in checked_paths}
+            ok_paths = [p for p in ok_paths if str(p) in cset]
+
         if not ok_paths:
-            self._log("Run Batch: nothing to run (0 PASS items).")
+            self._log("Run Batch: nothing to run (0 checked PASS items).")
             return
 
         self._log(f"Run Batch start: PASS items={len(ok_paths)}")
         self._stop_requested = False
         self.last_after_overlay_path = None
         progress_fn(0, len(ok_paths), "", 0)
-        QApplication.processEvents()
 
         if device_id != "optical_tweezers":
             self._log(f"Run Batch: device '{device_id}' not implemented yet.")
             return
 
-        tracking_params = device_panel.get_tracking_params()
-        post_params = device_panel.get_postprocess_params()
-        # Fail-safe defaults (must exist for audit + calibration)
-        post_params.setdefault("temperature_c", 25.0)
-        post_params.setdefault("bead_diameter_um", 1.0)
-        self._log(f"[OT] postprocess params: bead_diameter_um={post_params.get('bead_diameter_um')} temperature_c={post_params.get('temperature_c')}")
-
-        scale_params = device_panel.get_scale_params()
-        start_frame, end_frame = device_panel.get_frame_range()
-
-        method_str = str(tracking_params.get("method", "RADIAL_SYMMETRY"))
-        try:
-            method = TrackingMethod(method_str)
-        except Exception:
-            method = TrackingMethod.RADIAL_SYMMETRY
-
-        invert = bool(tracking_params.get("invert", True))
-        blur_sigma = float(tracking_params.get("blur_sigma", 1.2))
-        grad_th = float(tracking_params.get("radial_grad_threshold", 2.0))
-        auto_pol = bool(tracking_params.get("auto_polarity", True))
-        adaptive_roi = bool(tracking_params.get("adaptive_roi", True))
-
-        ann_enabled = bool(tracking_params.get("annulus_enabled", True))
-        ann_auto = bool(tracking_params.get("annulus_auto", True))
-        ann_r_in = tracking_params.get("annulus_r_inner_px", None)
-        ann_r_out = tracking_params.get("annulus_r_outer_px", None)
-        ann_smooth = int(tracking_params.get("annulus_profile_smooth", 3))
-
-        pp_enabled = bool(post_params.get("enabled", True))
-        pp = PostprocessParams(
-            qc_enabled=bool(post_params.get("qc_enabled", True)),
-            q_min=float(post_params.get("q_min", 0.0)),
-            jump_max_px=float(post_params.get("jump_max_px", 50.0)),
-            drift_enabled=bool(post_params.get("drift_enabled", True)),
-            drift_window_s=float(post_params.get("drift_window_s", 1.0)),
-            physics_mode=str(post_params.get("physics_mode", "BROWNIAN")),
-            stage_speed_um_s=float(post_params.get("stage_speed_um_s", 0.0)),
-            drag_axis=str(post_params.get("drag_axis", "x")),
-            viscosity_pa_s=float(post_params.get("viscosity_pa_s", 1.0e-3)),
-            bead_radius_um=float(post_params.get("bead_radius_um", 0.5)),
-            temperature_c=float(post_params.get("temperature_c", 25.0)),
-            bead_diameter_um=float(post_params.get("bead_diameter_um", 1.0)),
-        )
-
-        use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
-        ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
-
-        self._log(f"[OT] Using bead_diameter_um={pp.bead_diameter_um} (from UI postprocess params)")
-
+        # Note: We now fetch parameters *inside* the loop so that if device_panel
+        # supports per-video overrides (like MockPanel does), we use them.
+        
         base_roi = Roi(*roi_rect)
 
         ok_paths = [Path(p) for p in ok_paths]
         ok_paths = self._reorder_for_pairing(ok_paths)
+
+        _ot_mirror_root: Path | None = None
+        _ot_items_root: Path | None = None
+        _ot_batch_id: str | None = None
+        _ot_batch_created_at: str | None = None
+        _ot_batch_items: list[dict] = []
+        if device_id == "optical_tweezers":
+            _ot_batch_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            _ot_mirror_root = self.run_manager.runs_folder / "ot" / _ot_batch_id
+            _ot_items_root = _ot_mirror_root / "items"
+            _ot_items_root.mkdir(parents=True, exist_ok=True)
+            _ot_batch_created_at = datetime.now().isoformat()
 
         baseline_by_key: dict[str, dict[str, Any]] = {}
 
@@ -576,12 +589,86 @@ class BatchController:
 
             file_path = Path(file_path)
             dataset_set_status_fn(file_path, "running")
-            QApplication.processEvents()
+            
+            # Inform the mock panel of the current file being processed
+            if hasattr(device_panel, "set_current_path"):
+                device_panel.set_current_path(str(file_path))
+                
+            tracking_params = device_panel.get_tracking_params()
+            post_params = device_panel.get_postprocess_params()
+            post_params.setdefault("temperature_c", 25.0)
+            post_params.setdefault("bead_diameter_um", 1.0)
+            
+            scale_params = device_panel.get_scale_params()
+            start_frame, end_frame = device_panel.get_frame_range()
+            
+            method_str = str(tracking_params.get("method", "RADIAL_SYMMETRY"))
+            try:
+                method = TrackingMethod(method_str)
+            except Exception:
+                method = TrackingMethod.RADIAL_SYMMETRY
+
+            invert = bool(tracking_params.get("invert", True))
+            blur_sigma = float(tracking_params.get("blur_sigma", 1.2))
+            grad_th = float(tracking_params.get("radial_grad_threshold", 2.0))
+            auto_pol = bool(tracking_params.get("auto_polarity", True))
+            adaptive_roi = bool(tracking_params.get("adaptive_roi", True))
+
+            ann_enabled = bool(tracking_params.get("annulus_enabled", True))
+            ann_auto = bool(tracking_params.get("annulus_auto", True))
+            ann_r_in = tracking_params.get("annulus_r_inner_px", None)
+            ann_r_out = tracking_params.get("annulus_r_outer_px", None)
+            ann_smooth = int(tracking_params.get("annulus_profile_smooth", 3))
+
+            pp_enabled = bool(post_params.get("enabled", True))
+            pp = PostprocessParams(
+                qc_enabled=bool(post_params.get("qc_enabled", True)),
+                q_min=float(post_params.get("q_min", 0.0)),
+                jump_max_px=float(post_params.get("jump_max_px", 50.0)),
+                drift_enabled=bool(post_params.get("drift_enabled", True)),
+                drift_window_s=float(post_params.get("drift_window_s", 1.0)),
+                physics_mode=str(post_params.get("physics_mode", "BROWNIAN")),
+                stage_speed_um_s=float(post_params.get("stage_speed_um_s", 0.0)),
+                drag_axis=str(post_params.get("drag_axis", "x")),
+                viscosity_pa_s=float(post_params.get("viscosity_pa_s", 1.0e-3)),
+                bead_radius_um=float(post_params.get("bead_radius_um", 0.5)),
+                temperature_c=float(post_params.get("temperature_c", 25.0)),
+                bead_diameter_um=float(post_params.get("bead_diameter_um", 1.0)),
+            )
+
+            use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
+            ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
 
             try:
                 reader = VideoReader(file_path)
                 fps = float(reader.meta.fps)
                 fc = int(reader.meta.frame_count)
+
+                # Auto-ROI per file if enabled
+                file_roi_rect = roi_rect
+                is_auto_roi_on_load = False
+                try:
+                    if hasattr(device_panel, "is_auto_roi_on_load"):
+                        is_auto_roi_on_load = device_panel.is_auto_roi_on_load()
+                except Exception:
+                    pass
+                    
+                if is_auto_roi_on_load:
+                    try:
+                        from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
+                        scale_params = device_panel.get_scale_params()
+                        um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
+                        
+                        dia_auto = float(post_params.get("bead_diameter_um", 1.0))
+                        margin_auto = float(tracking_params.get("roi_margin", 1.8))
+
+                        frame0 = reader.get_frame(0)
+                        file_roi_rect = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
+                        self._log(f"[OT] Auto ROI for {file_path.name}: {file_roi_rect}")
+                    except Exception as e:
+                        self._log(f"WARN: auto ROI failed for {file_path.name}: {e!r}")
+                
+                base_roi = Roi(*file_roi_rect)
 
                 s = int(start_frame)
                 e = int(end_frame)
@@ -618,7 +705,7 @@ class BatchController:
                         "invert": invert,
                         "blur_sigma": blur_sigma,
                         "radial_grad_threshold": grad_th,
-                        "roi": list(roi_rect),
+                        "roi": list(file_roi_rect),
                         "adaptive_roi": adaptive_roi,
                         "fps": fps,
                         "frame_count": fc,
@@ -652,7 +739,72 @@ class BatchController:
                 result = self.run_manager.create_run(file_path, config)
                 run_dir = result.run_dir
                 stem = Path(file_path).stem
+                
+                # --- OT Pipeline v2.1 Shadow Run ---
+                _USE_OT_PIPELINE = True  # TEMPORARY
+                if _USE_OT_PIPELINE:
+                    def _trace(msg: str) -> None:
+                        try:
+                            with open("ot_shadow_trace.log", "a", encoding="utf-8") as f:
+                                f.write(msg + "\n")
+                        except Exception:
+                            pass
+                    
+                    try:
+                        _trace(f"ENTER shadow for <{file_path.name}>")
+                        self._log(f"[OT shadow] Running OTPipeline v2.1 for {file_path.name}...")
+                        from barakuda.devices.optical_tweezers.pipeline.orchestrator import OTPipeline
+                        from barakuda.devices.optical_tweezers.export.exporter import OTExporter
+                        
+                        strat_name = str(post_params.get("strategy", "PSD_Welch"))
+                        if strat_name == "Drag_ConstantVelocity":
+                            from barakuda.devices.optical_tweezers.strategies.drag_constant_velocity import DragConstantVelocityStrategy
+                            strat = DragConstantVelocityStrategy()
+                        elif strat_name == "Piezo_Oscillation":
+                            from barakuda.devices.optical_tweezers.strategies.piezo_oscillation import PiezoOscillationStrategy
+                            strat = PiezoOscillationStrategy()
+                        elif strat_name == "PSD_ProcFFT":
+                            from barakuda.devices.optical_tweezers.strategies.psd_procfft import PsdProcFftStrategy
+                            strat = PsdProcFftStrategy()
+                        else:  # PSD_Welch or PSD_Lorentzian fallback
+                            from barakuda.devices.optical_tweezers.strategies.psd_welch import PsdWelchStrategy
+                            strat = PsdWelchStrategy()
+                            
+                        shadow_dir = run_dir / "ot_v2_shadow"
+                        shadow_dir.mkdir(parents=True, exist_ok=True)
+                        exporter = OTExporter(shadow_dir)
+                        pipeline = OTPipeline(strat, exporter, self._log)
+                        
+                        shadow_config = {
+                            "tracking": config["tracking"],
+                            "calibration": config["calibration"],
+                            "preprocess": {
+                                "drift_mode": str(post_params.get("drift_mode", "none")),
+                                "cutoff_hz": 3.0,
+                                "filter_type": "butterworth",
+                                "order": 4
+                            },
+                            "qc": {
+                                "qc_enabled": bool(post_params.get("qc_enabled", True)),
+                                "q_min": float(post_params.get("q_min", 0.0)),
+                                "jump_max_px": float(post_params.get("jump_max_px", 50.0))
+                            },
+                            "strategy_params": post_params
+                        }
+                        
+                        pipeline.run(str(file_path), shadow_config)
+                        
+                        _trace("EXIT shadow OK")
+                        self._log(f"[OT shadow] OTPipeline finished successfully for {file_path.name}.")
+                    except Exception as err:
+                        _trace(f"EXIT shadow FAIL: {err!r}")
+                        import traceback
+                        self._log(f"[OT shadow] OTPipeline failed: {err!r}")
+                        self._log(traceback.format_exc())
+                # -----------------------------------
+
                 traj_path = run_dir / f"{stem}_trajectory.csv"
+
 
                 # Tracking loop bookkeeping for overlays:
                 first_frame = None
@@ -666,7 +818,7 @@ class BatchController:
                 with traj_path.open("w", newline="", encoding="utf-8") as f_meta:
                     f_meta.write(f"# source_file={file_path.name}\n")
                     f_meta.write(f"# method={method.value}\n")
-                    f_meta.write(f"# roi={list(roi_rect)}\n")
+                    f_meta.write(f"# roi={list(file_roi_rect)}\n")
                     f_meta.write(f"# adaptive_roi={adaptive_roi}\n")
                     f_meta.write(f"# auto_polarity={auto_pol}\n")
                     f_meta.write(f"# invert={invert}\n")
@@ -700,7 +852,6 @@ class BatchController:
                         if frame_idx % 10 == 0 or fi == e:
                             pct = int(100 * frame_idx / total_frames)
                             progress_fn(done, len(ok_paths), file_path.name, pct)
-                            QApplication.processEvents()
 
                         frame = reader.get_frame(fi)
                         roi_obj = current_roi
@@ -727,7 +878,7 @@ class BatchController:
                         last_xy = (float(det.x_px), float(det.y_px))
                         last_roi = (roi_obj.x, roi_obj.y, roi_obj.w, roi_obj.h)
 
-                        if adaptive_roi:
+                        if adaptive_roi and first_frame is not None and fi > s:
                             # Follow the detected center with fixed window size.
                             current_roi = roi_follow_center(frame.shape, current_roi, det.x_px, det.y_px)
 
@@ -741,7 +892,6 @@ class BatchController:
                             f"{det.peak:.6f}",
                             int(roi_obj.x), int(roi_obj.y), int(roi_obj.w), int(roi_obj.h),
                         ])
-                        QApplication.processEvents()
 
                 reader.close()
 
@@ -749,7 +899,6 @@ class BatchController:
                     dataset_set_status_fn(file_path, "stopped")
                     done += 1
                     progress_fn(done, len(ok_paths), file_path.name, 100)
-                    QApplication.processEvents()
                     break
 
                 # Save overlays (never crash the run)
@@ -967,6 +1116,7 @@ class BatchController:
                     _hist_x = run_dir / f"{stem}_hist_x.csv"
                     _hist_y = run_dir / f"{stem}_hist_y.csv"
                     _hist_r = run_dir / f"{stem}_hist_r.csv"
+                    _derived = run_dir / f"{stem}_derived.csv"
 
                     # --- metadata.csv (audit-first, key/value) ---
                     def _flatten(prefix: str, obj: Any, out: list[tuple[str, str]]) -> None:
@@ -1031,6 +1181,7 @@ class BatchController:
                             ("PSD_X", _psd_x, False),
                             ("PSD_Y", _psd_y, False),
                             ("Calibration", _cal_csv, False),
+                            ("Derived_Physics", _derived, False),
                             ("Hist_X", _hist_x, False),
                             ("Hist_Y", _hist_y, False),
                             ("Hist_R", _hist_r, False),
@@ -1079,6 +1230,7 @@ class BatchController:
                     _move_to(_hist_x, dir_physics)
                     _move_to(_hist_y, dir_physics)
                     _move_to(_hist_r, dir_physics)
+                    _move_to(_derived, dir_physics)
                     
                     # Optional: Move 2-video compare artifacts to physics
                     _move_to(run_dir / f"{stem}_compare.csv", dir_physics)
@@ -1089,6 +1241,109 @@ class BatchController:
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
 
+                # --- OT archive mirror ---
+                try:
+                    if _ot_items_root is not None and _ot_batch_id is not None:
+                        _base = Path(file_path).stem
+                        _safe = re.sub(r"[^A-Za-z0-9._\-]", "_", _base)
+                        _item_id = _safe
+                        _n = 1
+                        while (_ot_items_root / _item_id).exists():
+                            _item_id = f"{_safe}_{_n:02d}"
+                            _n += 1
+
+                        _item_root = _ot_items_root / _item_id
+                        for _sd in ("raw", "module/ot", "results", "qc", "artifacts"):
+                            (_item_root / _sd).mkdir(parents=True, exist_ok=True)
+
+                        # C) copy raw video
+                        _src_video = Path(file_path)
+                        _dst_video = _item_root / "raw" / _src_video.name
+                        if not _dst_video.exists() or _dst_video.stat().st_size != _src_video.stat().st_size:
+                            shutil.copy2(_src_video, _dst_video)
+
+                        # D) copy acquisition meta if present
+                        _meta_src: Path | None = None
+                        for _mc in (
+                            _src_video.parent / f"{_src_video.stem}_meta.json",
+                            _src_video.parent / f"{_src_video.name}_meta.json",
+                        ):
+                            if _mc.exists():
+                                _meta_src = _mc
+                                break
+                        _archived_meta: str | None = None
+                        if _meta_src is not None:
+                            shutil.copy2(_meta_src, _item_root / "raw" / "video_meta.json")
+                            _archived_meta = "raw/video_meta.json"
+
+                        # E) mirror run_dir content into module/ot
+                        _mod_ot = _item_root / "module" / "ot"
+                        for _entry in run_dir.iterdir():
+                            _dst_e = _mod_ot / _entry.name
+                            if _entry.is_dir():
+                                shutil.copytree(_entry, _dst_e, dirs_exist_ok=True)
+                            else:
+                                shutil.copy2(_entry, _dst_e)
+
+                        # F) artifacts inventory
+                        _inv: list[str] = []
+                        for _ap in _item_root.rglob("*"):
+                            if _ap.is_file():
+                                try:
+                                    _inv.append(str(_ap.relative_to(_item_root)).replace("\\", "/"))
+                                except Exception:
+                                    pass
+
+                        _fps_source = "acquisition_meta" if _archived_meta else "unknown"
+                        (_item_root / "item.json").write_text(
+                            json.dumps({
+                                "schema_version": 1,
+                                "module": "ot",
+                                "batch_id": _ot_batch_id,
+                                "item_id": _item_id,
+                                "source_input_path": str(file_path),
+                                "archived_raw_video": f"raw/{_src_video.name}",
+                                "archived_meta": _archived_meta,
+                                "mirrored_from_run_dir": str(run_dir),
+                                "created_at": datetime.now().isoformat(),
+                                "artifacts_inventory": _inv,
+                                "fps_source": _fps_source,
+                            }, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+
+                        # G) write/update batch.json
+                        _batch_json_path = _ot_mirror_root / "batch.json"
+                        _batch_items_entry = {
+                            "item_id": _item_id,
+                            "source_file_name": _src_video.name,
+                            "item_path": f"items/{_item_id}/",
+                        }
+                        _ot_batch_items.append(_batch_items_entry)
+                        _batch_payload: dict = {
+                            "schema_version": 1,
+                            "module": "ot",
+                            "batch_id": _ot_batch_id,
+                            "created_at": _ot_batch_created_at,
+                            "items": _ot_batch_items,
+                        }
+                        if _batch_json_path.exists():
+                            try:
+                                _existing = json.loads(_batch_json_path.read_text(encoding="utf-8"))
+                                _existing_ids = {i["item_id"] for i in _existing.get("items", [])}
+                                for _bi in _ot_batch_items:
+                                    if _bi["item_id"] not in _existing_ids:
+                                        _existing.setdefault("items", []).append(_bi)
+                                _batch_payload = _existing
+                            except Exception:
+                                pass
+                        _batch_json_path.write_text(
+                            json.dumps(_batch_payload, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                except Exception as _mirror_err:
+                    self._log(f"WARN: OT mirror failed ({file_path.name}): {_mirror_err!r}")
+
                 dataset_set_status_fn(file_path, "done")
                 self._log(f"OK: {file_path.name} -> {result.run_id}")
 
@@ -1098,7 +1353,6 @@ class BatchController:
 
             done += 1
             progress_fn(done, len(ok_paths), file_path.name, 100)
-            QApplication.processEvents()
 
         self._log("Run Batch done ✅")
 
@@ -1114,13 +1368,9 @@ class BatchController:
         import json
         import numpy as np
         import imageio.v3 as iio
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from skimage.color import label2rgb
-        from skimage import measure
 
-        from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams, segment_bacteria_afm
+        from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
+        from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
 
         total = len(file_paths)
         progress_fn(0, total, "", 0)
@@ -1128,18 +1378,41 @@ class BatchController:
         # ROI
         x, y, w, h = roi_rect
 
+        def _f(key, default): return float(afm_params.get(key, default))
+        def _i(key, default): return int(afm_params.get(key, default))
+        def _b(key, default): return bool(afm_params.get(key, default))
+        def _s(key, default): return str(afm_params.get(key, default))
+
         for i, p in enumerate(file_paths, start=1):
             try:
                 dataset_set_status_fn(p, "running")
 
-                img_orig = iio.imread(p)
-                img = img_orig
-                if img.ndim == 3:
-                    if img.shape[-1] >= 3:
-                        img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
-                    else:
-                        img = img[..., 0]
-                img = np.asarray(img, dtype=np.float32)
+                # --- LOAD IMAGE ---
+                loader_meta = {}
+                if str(p).lower().endswith(".spm"):
+                    try:
+                        from barakuda.devices.afm.io.afmreader_loader import load_spm_height
+                        img, loader_meta = load_spm_height(str(p))
+                        self._log(f"[AFM] Loaded .spm via {loader_meta.get('loader', '?')}: "
+                                  f"channel={loader_meta.get('selected_channel', '?')}, "
+                                  f"shape={loader_meta.get('shape', '?')}, "
+                                  f"px_to_nm={loader_meta.get('pixel_to_nm', '?')}")
+                    except Exception as e:
+                        self._log(f"ERROR: Failed to load .spm file {p.name}: {e!r}")
+                        dataset_set_status_fn(p, "failed")
+                        continue
+                else:
+                    img_orig = iio.imread(p)
+                    img = img_orig
+                    if img.ndim == 3:
+                        if img.shape[-1] >= 3:
+                            img = (img[..., 0].astype(np.float32) * 0.299 +
+                                   img[..., 1].astype(np.float32) * 0.587 +
+                                   img[..., 2].astype(np.float32) * 0.114)
+                        else:
+                            img = img[..., 0]
+                    img = np.asarray(img, dtype=np.float32)
+                    loader_meta = {"loader": "imageio", "loader_reason": "standard image file"}
 
                 H, W = int(img.shape[0]), int(img.shape[1])
                 # clamp ROI
@@ -1149,11 +1422,10 @@ class BatchController:
                 h0 = max(1, min(int(h), H - y0))
 
                 roi_img = img[y0:y0 + h0, x0:x0 + w0]
-                roi_img_orig = img_orig[y0:y0 + h0, x0:x0 + w0]
 
                 cfg = {
                     "device": "afm",
-                    "method": "BACTERIA_SEGMENT",
+                    "method": "AFM_V2",
                     "roi_rect": [x0, y0, w0, h0],
                     "params": afm_params,
                 }
@@ -1162,154 +1434,314 @@ class BatchController:
                 run_dir = run.run_dir
                 stem = p.stem
 
-                pp = self._build_afm_seg_params(afm_params)
+                # --- BUILD V2 PARAMS (Cellpose-only) ---
+                _cp_diam_px = afm_params.get("cp_diameter_px")
+                p_v2 = AfmV2Params(
+                    compute_profile=_s("compute_profile", "auto"),
+                    preview_fast_mode=_b("preview_fast_mode", False),
+                    preview_downscale=_f("preview_downscale", 0.5),
+                    invert=_b("invert", False),
+                    clip_p_low=_f("clip_p_low", 1.0),
+                    clip_p_high=_f("clip_p_high", 99.0),
+                    cp_model=_s("cp_model", "cyto3"),
+                    cp_diameter_mode=_s("cp_diameter_mode", "auto"),
+                    cp_diameter_px=int(_cp_diam_px) if _cp_diam_px is not None else None,
+                    cp_flow_threshold=_f("cp_flow_threshold", 0.4),
+                    cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
+                    rods_only=_b("rods_only", True),
+                    rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
+                    rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
+                    rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
+                    rods_min_area_px=_i("rods_min_area_px", 8),
+                    ellipse_thickness_px=_i("ellipse_thickness_px", 2),
+                    ellipse_alpha=_f("ellipse_alpha", 0.6),
+                )
 
-                res = segment_bacteria_afm(roi_img, pp)
-                mask = res["mask"]
+                # --- RUN V2 PIPELINE ---
+                res = run_afm_v2(roi_img, p_v2, float(loader_meta.get("afm_um_per_px", 0.0)))
                 labels = res["labels"]
+                rod_labels = res["rod_labels"]
+                rod_table = res["rod_table"]
+                audit = res["audit"]
 
-                # ---- artifacts ----
-                mask_path = run_dir / f"{stem}_mask.png"
-                labels_path = run_dir / f"{stem}_labels.png"
-                overlay_path = run_dir / f"{stem}_overlay.png"
-                objects_csv = run_dir / f"{stem}_objects.csv"
-                summary_json = run_dir / f"{stem}_summary.json"
-                area_hist_png = run_dir / f"{stem}_area_hist.png"
+                # --- Map coords back to FULL image ---
+                if "centroid_x" in rod_table and len(rod_table["centroid_x"]) > 0:
+                    rod_table["centroid_x"] += x0
+                    rod_table["centroid_y"] += y0
 
-                iio.imwrite(mask_path, (mask.astype(np.uint8) * 255))
-                labels_rgb = (label2rgb(labels, bg_label=0) * 255).astype(np.uint8)
-                iio.imwrite(labels_path, labels_rgb)
+                # --- Merge loader metadata into audit ---
+                audit["device"] = "AFM"
+                audit["loader"] = loader_meta.get("loader", "unknown")
+                audit["selected_channel"] = loader_meta.get("selected_channel", "unknown")
+                audit["afmreader_version"] = loader_meta.get("afmreader_version", None)
+                audit["pixel_to_nm"] = loader_meta.get("pixel_to_nm", 0.0)
+                audit["pixel_to_nm_source"] = loader_meta.get("pixel_to_nm_source", "unknown")
+                audit["afm_um_per_px"] = loader_meta.get("afm_um_per_px", 0.0)
+                audit["afm_um_per_px_source"] = loader_meta.get("afm_um_per_px_source", "unknown")
 
-                if getattr(pp, "save_overlay", True):
-                    # 1. Prepare base RGB image
-                    # roi_img can be (H,W) or (H,W,3) or (H,W,4)
-                    base_h, base_w = roi_img_orig.shape[:2]
-                    if roi_img_orig.ndim == 2:
-                        # Grayscale -> RGB
-                        rgb = np.stack([roi_img_orig]*3, axis=-1)
-                    elif roi_img_orig.ndim == 3:
-                        if roi_img_orig.shape[2] == 4:
-                            rgb = roi_img_orig[..., :3] # RGBA -> RGB
-                        else:
-                            rgb = roi_img_orig # RGB
-                    else:
-                        # Fallback for safe handling
-                        rgb = np.zeros((base_h, base_w, 3), dtype=roi_img_orig.dtype)
+                n_rods = len(rod_table.get("label", []))
 
-                    # Ensure float for blending or uint8 for saving? 
-                    # Let's work in uint8 if input is uint8, or float if float.
-                    # Usually iio.imread returns uint8.
-                    if rgb.dtype != np.uint8:
-                        # normalize to 0..255
-                        rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-9) * 255.0
-                        rgb = rgb.astype(np.uint8)
+                # --- EXPORT: rods_mask.png (FULL SIZE) ---
+                rods_mask_path = run_dir / f"{stem}_rods_mask.png"
+                full_mask = np.zeros((H, W), dtype=np.uint8)
+                full_mask[y0:y0+h0, x0:x0+w0] = (rod_labels > 0).astype(np.uint8) * 255
+                iio.imwrite(rods_mask_path, full_mask)
 
-                    overlay = rgb.copy()
+                # --- EXPORT: rods_props.csv (with orientation_folded_rad) ---
+                rods_csv = run_dir / f"{stem}_rods_props.csv"
+                cols = ["label", "centroid_x", "centroid_y", "orientation_rad",
+                        "orientation_folded_rad",
+                        "major_axis_px", "minor_axis_px", "aspect_ratio",
+                        "eccentricity", "solidity", "area_px"]
 
-                    # 2. Prepare boundaries
-                    # Find boundaries from labels (cleaner) or mask
-                    from skimage.segmentation import find_boundaries
-                    if labels.max() > 0:
-                        bounds = find_boundaries(labels, mode='outer')
-                    else:
-                        bounds = find_boundaries(mask, mode='outer')
-                    
-                    overlay_float = overlay.astype(np.float32)
-                    red_color = np.array([255.0, 0.0, 0.0])
-                    
-                    # 3. Alpha blend mask (DISABLED per user request)
-                    # We only want boundaries.
-                    # mask_bool = (mask > 0)
-                    # m_exp = mask_bool[..., None]
-                    # overlay_float = np.where(m_exp, overlay_float * (1 - alpha) + red_color * alpha, overlay_float)
-                    
-                    # 4. Solid red boundaries
-                    # boundaries is (H,W) bool
-                    b_exp = bounds[..., None]
-                    overlay_float = np.where(b_exp, red_color, overlay_float)
-                    
-                    # 5. Save
-                    overlay_u8 = np.clip(overlay_float, 0, 255).astype(np.uint8)
-                    iio.imwrite(overlay_path, overlay_u8)
+                # Compute folded orientation: (pi/2) - abs(orientation_rad)
+                import math as _math
+                ori_raw = np.asarray(rod_table.get("orientation_rad", []), dtype=np.float64)
+                ori_folded = ((_math.pi / 2.0) - np.abs(ori_raw))
+                rod_table["orientation_folded_rad"] = ori_folded
 
-                # objects.csv
-                with objects_csv.open("w", encoding="utf-8", newline="") as f:
+                with rods_csv.open("w", encoding="utf-8", newline="") as f:
                     wcsv = csv.writer(f)
-                    wcsv.writerow(["label", "area_px", "centroid_x_px", "centroid_y_px", "perimeter_px", "eccentricity", "solidity"])
-                    for o in res["objects"]:
-                        wcsv.writerow([
-                            o["label"], o["area_px"],
-                            f"{o['centroid_x_px']:.6f}", f"{o['centroid_y_px']:.6f}",
-                            f"{o['perimeter_px']:.6f}", f"{o['eccentricity']:.6f}", f"{o['solidity']:.6f}",
-                        ])
+                    wcsv.writerow(cols)
+                    for k in range(n_rods):
+                        row = []
+                        for c in cols:
+                            val = rod_table[c][k]
+                            row.append(f"{val:.6f}" if isinstance(val, (float, np.floating)) else str(val))
+                        wcsv.writerow(row)
 
-                # summary.json (audit-first + ROI)
+                # --- EXPORT: orientation histograms (Sturges, 4 variants) ---
+                _ori_hist_audit = {}
+                if n_rods > 0:
+                    try:
+                        import math as _math2
+                        import matplotlib
+                        matplotlib.use("Agg")
+                        import matplotlib.pyplot as plt
+
+                        sturges_k = max(1, _math2.ceil(_math2.log2(n_rods) + 1))
+                        _ori_hist_audit = {"rule": "sturges", "n": n_rods, "bins": sturges_k}
+                        _R2D = 180.0 / _math2.pi
+                        _RWIDTH = 0.92
+
+                        # ---------- helper: render one histogram ----------
+                        def _render_hist(data, bins, hist_range, xlabel, ylabel,
+                                         title, out_path, density=False):
+                            counts, edges = np.histogram(
+                                data, bins=bins, range=hist_range, density=density,
+                            )
+                            bw = np.diff(edges)
+                            fig, ax = plt.subplots(figsize=(6, 4))
+                            ax.bar(
+                                edges[:-1] + bw * (1.0 - _RWIDTH) / 2.0,
+                                counts, width=bw * _RWIDTH,
+                                align="edge",
+                                facecolor="none", edgecolor="black", linewidth=1.0,
+                            )
+                            ax.set_xlabel(xlabel)
+                            ax.set_ylabel(ylabel)
+                            ax.set_title(title)
+                            fig.tight_layout()
+                            fig.savefig(str(out_path), dpi=300, facecolor="white")
+                            plt.close(fig)
+                            return counts, edges
+
+                        # ---- orientation_rad ----
+                        range_raw = (-_math2.pi / 2, _math2.pi / 2)
+                        title_raw = f"Orientation (N={n_rods}, bins={sturges_k})"
+
+                        cnt_raw_c, edg_raw_c = _render_hist(
+                            ori_raw, sturges_k, range_raw,
+                            "Orientation (rad)", "Count", title_raw,
+                            run_dir / f"{stem}_orientation_hist_rad_count.png",
+                        )
+                        cnt_raw_d, edg_raw_d = _render_hist(
+                            ori_raw, sturges_k, range_raw,
+                            "Orientation (°)", "Frequency (%)", title_raw,
+                            run_dir / f"{stem}_orientation_hist_deg_density.png",
+                            density=True,
+                        )
+                        # fix x-axis to degrees for the density plot
+                        # (re-render with converted edges + percentage y)
+                        cnt_raw_d2, _ = np.histogram(ori_raw * _R2D, bins=sturges_k,
+                                                     range=(range_raw[0]*_R2D, range_raw[1]*_R2D),
+                                                     density=True)
+                        cnt_raw_d2_pct = cnt_raw_d2 * 100.0
+                        edg_raw_d2 = edg_raw_d * _R2D
+                        fig_d, ax_d = plt.subplots(figsize=(6, 4))
+                        bw_d = np.diff(edg_raw_d2)
+                        ax_d.bar(edg_raw_d2[:-1] + bw_d*(1-_RWIDTH)/2, cnt_raw_d2_pct,
+                                 width=bw_d*_RWIDTH, align="edge",
+                                 facecolor="none", edgecolor="black", linewidth=1.0)
+                        ax_d.set_xlabel("Orientation (°)")
+                        ax_d.set_ylabel("Frequency (%)")
+                        ax_d.set_title(title_raw)
+                        fig_d.tight_layout()
+                        fig_d.savefig(str(run_dir / f"{stem}_orientation_hist_deg_density.png"),
+                                      dpi=300, facecolor="white")
+                        plt.close(fig_d)
+
+                        # ---- orientation_folded_rad ----
+                        range_fld = (0.0, _math2.pi / 2)
+                        title_fld = f"Folded orientation (N={n_rods}, bins={sturges_k})"
+
+                        cnt_fld_c, edg_fld_c = _render_hist(
+                            ori_folded, sturges_k, range_fld,
+                            "Folded orientation (rad)", "Count", title_fld,
+                            run_dir / f"{stem}_orientation_folded_hist_rad_count.png",
+                        )
+                        cnt_fld_d2, _ = np.histogram(ori_folded * _R2D, bins=sturges_k,
+                                                     range=(range_fld[0]*_R2D, range_fld[1]*_R2D),
+                                                     density=True)
+                        cnt_fld_d2_pct = cnt_fld_d2 * 100.0
+                        edg_fld_d2 = edg_fld_c * _R2D
+                        fig_f, ax_f = plt.subplots(figsize=(6, 4))
+                        bw_f = np.diff(edg_fld_d2)
+                        ax_f.bar(edg_fld_d2[:-1] + bw_f*(1-_RWIDTH)/2, cnt_fld_d2_pct,
+                                 width=bw_f*_RWIDTH, align="edge",
+                                 facecolor="none", edgecolor="black", linewidth=1.0)
+                        ax_f.set_xlabel("Folded orientation (°)")
+                        ax_f.set_ylabel("Frequency (%)")
+                        ax_f.set_title(title_fld)
+                        fig_f.tight_layout()
+                        fig_f.savefig(str(run_dir / f"{stem}_orientation_folded_hist_deg_density.png"),
+                                      dpi=300, facecolor="white")
+                        plt.close(fig_f)
+
+                        # --- JSON metadata (extended) ---
+                        hist_json_path = run_dir / f"{stem}_orientation_hist.json"
+                        hist_json_path.write_text(json.dumps({
+                            "orientation_rad": {
+                                "n_samples": n_rods,
+                                "sturges_bins": sturges_k,
+                                "range_rad": list(range_raw),
+                                "range_deg": [range_raw[0]*_R2D, range_raw[1]*_R2D],
+                                "bin_edges_rad": edg_raw_c.tolist(),
+                                "bin_edges_deg": edg_raw_d2.tolist(),
+                                "counts": cnt_raw_c.tolist(),
+                                "density": cnt_raw_d2.tolist(),
+                                "units": "rad",
+                                "y_mode": "count+density",
+                                "rwidth": _RWIDTH,
+                                "parameter": "orientation_rad",
+                                "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
+                                "compute_profile": cp_audit.get("compute_profile", "unknown"),
+                            },
+                            "orientation_folded_rad": {
+                                "n_samples": n_rods,
+                                "sturges_bins": sturges_k,
+                                "range_rad": list(range_fld),
+                                "range_deg": [range_fld[0]*_R2D, range_fld[1]*_R2D],
+                                "bin_edges_rad": edg_fld_c.tolist(),
+                                "bin_edges_deg": edg_fld_d2.tolist(),
+                                "counts": cnt_fld_c.tolist(),
+                                "density": cnt_fld_d2.tolist(),
+                                "units": "rad",
+                                "y_mode": "count+density",
+                                "rwidth": _RWIDTH,
+                                "parameter": "orientation_folded_rad",
+                                "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
+                                "compute_profile": cp_audit.get("compute_profile", "unknown"),
+                            },
+                        }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                    except Exception as e:
+                        self._log(f"WARN: orientation histogram failed ({p.name}): {e!r}")
+
+                # --- EXPORT: overlay.png (FULL SIZE with ROI box) ---
+                if bool(afm_params.get("save_overlay", True)):
+                    from barakuda.devices.afm.core.afm_v2_pipeline import _normalize
+                    full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
+                    full_img8 = (full_norm * 255.0).astype(np.uint8)
+                    overlay = render_ellipse_overlay(full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px), ellipse_alpha=float(p_v2.ellipse_alpha))
+                    
+                    import cv2
+                    cv2.rectangle(overlay, (x0, y0), (x0+w0, y0+h0), (255, 255, 0), max(1, int(p_v2.ellipse_thickness_px)))
+
+                    overlay_path = run_dir / f"{stem}_overlay.png"
+                    iio.imwrite(overlay_path, overlay)
+
+                    # --- EXPORT: contours-only PNG (transparent background) ---
+                    # Render ellipse outlines on a transparent RGBA canvas
+                    contours_rgba = np.zeros((H, W, 4), dtype=np.uint8)  # fully transparent
+                    # Reuse ellipse perimeter mask from overlay_ellipse logic
+                    from skimage import draw as sk_draw, morphology as sk_morph
+                    ell_mask = np.zeros((H, W), dtype=bool)
+                    for _ki in range(n_rods):
+                        _cy = float(rod_table["centroid_y"][_ki])
+                        _cx = float(rod_table["centroid_x"][_ki])
+                        _maj = float(rod_table["major_axis_px"][_ki])
+                        _mio = float(rod_table["minor_axis_px"][_ki])
+                        _ang = float(rod_table["orientation_rad"][_ki])
+                        _rr = max(1, int(round(_maj / 2.0)))
+                        _rc = max(1, int(round(_mio / 2.0)))
+                        try:
+                            _pr, _pc = sk_draw.ellipse_perimeter(
+                                int(round(_cy)), int(round(_cx)),
+                                _rr, _rc, orientation=-_ang, shape=(H, W),
+                            )
+                            ell_mask[_pr, _pc] = True
+                        except Exception:
+                            continue
+                    if int(p_v2.ellipse_thickness_px) > 1:
+                        ell_mask = sk_morph.binary_dilation(ell_mask, sk_morph.disk(int(p_v2.ellipse_thickness_px) - 1))
+                    contours_rgba[ell_mask, 0] = 255  # R
+                    contours_rgba[ell_mask, 1] = 255  # G
+                    contours_rgba[ell_mask, 2] = 0    # B
+                    contours_rgba[ell_mask, 3] = 255  # A (opaque where ellipse)
+                    contours_path = run_dir / f"{stem}_contours.png"
+                    iio.imwrite(contours_path, contours_rgba)
+
+                # --- EXPORT: summary.json (full audit + top-level must-have) ---
+                summary_json = run_dir / f"{stem}_summary.json"
+                
+                cp_audit = audit.get("cellpose", {})
+                timings = audit.get("timings_ms", {})
+                diam_eff = cp_audit.get("diameter_effective_px", "Auto")
+                
                 payload = {
-                    "summary": res["summary"],
-                    "audit": res["audit"],
+                    # Top-level must-have keys (Bible spec)
+                    "pipeline_version": audit.get("pipeline_version", "AFM_V2_CELLPOSE"),
+                    "device": "AFM",
+                    "loader": audit.get("loader", "unknown"),
+                    "selected_channel": audit.get("selected_channel", "unknown"),
+                    "afm_um_per_px": audit.get("afm_um_per_px", 0.0),
+                    "afm_um_per_px_source": audit.get("afm_um_per_px_source", "unknown"),
+                    "afm_scan_size_um": loader_meta.get("afm_scan_size_um", 0.0),
+                    
+                    # Compute & Environment
+                    "compute_profile": cp_audit.get("compute_profile", "unknown"),
+                    "compute_device_resolved": cp_audit.get("device", "unknown"),
+                    "torch_version": cp_audit.get("torch_version", "unknown"),
+                    "cellpose_version": cp_audit.get("cellpose_version", "unknown"),
+                    
+                    # Core AFM Params
+                    "cellpose_model": cp_audit.get("cellpose_model", p_v2.cp_model),
+                    "diameter_mode": p_v2.cp_diameter_mode,
+                    "diameter_effective_px": diam_eff,
+                    "flow_threshold": cp_audit.get("flow_threshold", p_v2.cp_flow_threshold),
+                    "cellprob_threshold": cp_audit.get("cellprob_threshold", p_v2.cp_cellprob_threshold),
+                    "rod_filter": audit.get("rod_filter", {}),
+                    
+                    # Performance & Diagnostics
+                    "preview_downscale_applied": audit.get("preview_downscale_applied", False),
+                    "preview_downscale_factor": audit.get("preview_downscale_factor", 1.0),
+                    "timings_ms": timings,
+                    
+                    # Batch metadata
+                    "n_labels": int(labels.max()),
+                    "n_rods": n_rods,
                     "roi_rect": [x0, y0, w0, h0],
                     "source_image": p.name,
+                    # Orientation histogram audit
+                    "orientation_histogram": _ori_hist_audit,
+                    # Full audit trace (for granular bug reports)
+                    "audit": audit,
                 }
-                summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-                # frequencies plot (četnosti)
-                bins = res["summary"]["area_frequencies"]["bins"]
-                if bins:
-                    xs = [0.5 * (b["bin_lo"] + b["bin_hi"]) for b in bins]
-                    ys = [b["count"] for b in bins]
-                    fig = plt.figure(figsize=(7, 4))
-                    ax = fig.add_subplot(1, 1, 1)
-                    ax.plot(xs, ys)
-                    ax.set_xlabel("area [px]")
-                    ax.set_ylabel("count")
-                    ax.set_title(f"Area frequencies (n={res['summary']['count_bacteria']})")
-                    fig.tight_layout()
-                    fig.savefig(area_hist_png, dpi=180)
-                    plt.close(fig)
-
-                # bundle results.csv
-                results_csv = run_dir / f"{stem}_results.csv"
-                with results_csv.open("w", encoding="utf-8", newline="") as out:
-                    out.write("# [Metadata]\n")
-                    out.write("key,value\n")
-                    out.write(f"device,afm\n")
-                    out.write(f"method,BACTERIA_SEGMENT\n")
-                    out.write(f"roi_rect,{json.dumps([x0,y0,w0,h0])}\n")
-                    out.write(f"count_bacteria,{res['summary']['count_bacteria']}\n")
-                    out.write("\n# [Summary]\n")
-                    out.write(json.dumps(res["summary"], ensure_ascii=False, indent=2))
-                    out.write("\n\n# [Objects]\n")
-                    out.write(objects_csv.read_text(encoding="utf-8"))
-
-                # bundle results.xlsx (Metadata + Summary + Objects)
-                try:
-                    from openpyxl import Workbook
-                    wb = Workbook()
-                    ws_m = wb.active
-                    ws_m.title = "Metadata"
-                    ws_m.append(["key", "value"])
-                    ws_m.append(["device", "afm"])
-                    ws_m.append(["method", "BACTERIA_SEGMENT"])
-                    ws_m.append(["roi_rect", json.dumps([x0, y0, w0, h0])])
-                    for k, v in res["audit"]["params"].items():
-                        ws_m.append([f"param.{k}", str(v)])
-
-                    ws_s = wb.create_sheet("Summary")
-                    ws_s.append(["key", "value"])
-                    for k, v in res["summary"].items():
-                        ws_s.append([k, json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)])
-
-                    ws_o = wb.create_sheet("Objects")
-                    with objects_csv.open("r", encoding="utf-8") as f:
-                        for line in f.read().splitlines():
-                            ws_o.append(line.split(","))
-
-                    wb.save(run_dir / f"{stem}_results.xlsx")
-                except Exception as e:
-                    self._log(f"WARN: AFM XLSX export failed ({p.name}): {e!r}")
+                summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
                 dataset_set_status_fn(p, "done")
-                self._log(f"OK AFM: {p.name} -> {run.run_id} (count={res['summary']['count_bacteria']})")
+                self._log(f"OK AFM: {p.name} -> {run.run_id} (rods={n_rods}, total_labels={int(labels.max())})")
 
             except Exception as e:
                 dataset_set_status_fn(p, "failed")
@@ -1321,119 +1753,79 @@ class BatchController:
         self._log("Run Batch done ✅")
 
     def compute_afm_preview(self, file_path: str, roi_rect, afm_params: dict):
+        """Compute AFM preview overlay (yellow ellipse outlines).
+
+        Returns:
+          dict with keys: overlay (RGB uint8), n_rods (int)
+        """
         import imageio.v2 as iio
         import numpy as np
-        import matplotlib.pyplot as plt
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from skimage import measure
 
-        from barakuda.devices.afm.core.bacteria_segmentation import (
-            AfmBacteriaSegParams,
-            segment_bacteria_afm,
-        )
+        from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
+        from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
 
-        img_orig = iio.imread(file_path)
+        loader_meta = None
+        if file_path.lower().endswith(".spm"):
+            from barakuda.devices.afm.io.afmreader_loader import load_spm_height
+            img, loader_meta = load_spm_height(file_path)
+            img_orig = img
+        else:
+            img_orig = iio.imread(file_path)
+
+        self._last_afm_loader_meta = loader_meta
         img = img_orig
-        
-        # ensure 2D grayscale for segmentation (PNG can be RGB)
+
         # ensure 2D grayscale for segmentation (PNG can be RGB)
         if img.ndim == 3:
             if img.shape[-1] >= 3:
-                # simple luminance-ish conversion without extra deps
-                img = img[..., 0].astype(np.float32) * 0.299 + img[..., 1].astype(np.float32) * 0.587 + img[..., 2].astype(np.float32) * 0.114
+                img = (img[..., 0].astype(np.float32) * 0.299 +
+                       img[..., 1].astype(np.float32) * 0.587 +
+                       img[..., 2].astype(np.float32) * 0.114)
             else:
                 img = img[..., 0]
-            img = img.astype(np.float32)
+        img = np.asarray(img, dtype=np.float32)
 
-        # crop ROI (x, y, w, h)
+        # crop ROI (x, y, w, h) — clamped to image bounds
         x, y, w, h = roi_rect
-        roi_img = img[y:y+h, x:x+w]
-        roi_img_orig = img_orig[y:y+h, x:x+w]
+        H, W = img.shape[:2]
+        x = max(0, min(x, W - 1))
+        y = max(0, min(y, H - 1))
+        w = max(1, min(w, W - x))
+        h = max(1, min(h, H - y))
+        roi_img = img[y:y + h, x:x + w]
 
-        pp = self._build_afm_seg_params(afm_params)
+        # Build V2 params
+        def _f(key, default): return float(afm_params.get(key, default))
+        def _i(key, default): return int(afm_params.get(key, default))
+        def _b(key, default): return bool(afm_params.get(key, default))
+        def _s(key, default): return str(afm_params.get(key, default))
 
-        res = segment_bacteria_afm(roi_img, pp)
-        mask = res["mask"]
-        labels = res["labels"]
-
-        # render overlay with red contours
-        fig = plt.figure(figsize=(6, 6))
-        ax = fig.add_subplot(1, 1, 1)
-        
-        if roi_img_orig.ndim == 2:
-            ax.imshow(roi_img_orig, cmap="gray")
-        else:
-            ax.imshow(roi_img_orig)
-        ax.set_axis_off()
-        
-        # Instance boundaries
-        from skimage.segmentation import find_boundaries
-        if labels.max() > 0:
-            bnd = find_boundaries(labels, mode='outer')
-            overlay_layer = np.zeros(roi_img.shape + (4,), dtype=np.float32)
-            overlay_layer[bnd] = [1.0, 0.0, 0.0, 1.0]
-            ax.imshow(overlay_layer)
-            
-        fig.tight_layout(pad=0)
-        
-        # render to numpy array
-        canvas = FigureCanvasAgg(fig)
-        canvas.draw()
-        buf = canvas.buffer_rgba()
-        w, h = fig.canvas.get_width_height()
-        overlay_rgba = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 4))
-        plt.close(fig)
-        
-        # return RGB
-        return overlay_rgba[:, :, :3]
-
-    def _build_afm_seg_params(self, afm_params: dict):
-        from barakuda.devices.afm.core.bacteria_segmentation import AfmBacteriaSegParams
-
-        # Helper to safely get float/int
-        def _f(key, default):
-            return float(afm_params.get(key, default))
-        
-        def _i(key, default):
-            return int(afm_params.get(key, default))
-        
-        def _b(key, default):
-            return bool(afm_params.get(key, default))
-
-        return AfmBacteriaSegParams(
-            bg_sigma=_f("bg_sigma", 12.0),
-            smooth_sigma=_f("smooth_sigma", 1.0),
-            min_area_px=_i("min_area_px", 120),
-            closing_radius_px=_i("closing_radius_px", 2),
-            hole_area_px=_i("hole_area_px", 240),
-            separate=_b("separate", True),
+        p_v2 = AfmV2Params(
             invert=_b("invert", False),
-            area_bins=_i("area_bins", 20),
-            height_aware=_b("height_aware", True),
-            save_overlay=_b("save_overlay", True),
-            # Marker-based watershed params (LoG seeds)
-            log_sigma=_f("log_sigma", 2.0),
-            peak_min_distance_px=_i("peak_min_distance_px", 6),
-            low_mask_factor=_f("low_mask_factor", 0.65),
-            max_markers=_i("max_markers", 5000),
-            # Contour-first params
-            use_contours=_b("use_contours", True),
-            edge_sigma=_f("edge_sigma", 1.2),
-            canny_low=_f("canny_low", 0.05),
-            canny_high=_f("canny_high", 0.20),
-            edge_dilate_px=_i("edge_dilate_px", 1),
-            close_radius_px=_i("close_radius_px", 2),
-            fill_holes_area_px=_i("fill_holes_area_px", 300),
-            min_perimeter_px=_i("min_perimeter_px", 60),
-            min_eccentricity=_f("min_eccentricity", 0.70),
-            min_solidity=_f("min_solidity", 0.50),
-            # Watershed detect-all
-            dist_sigma=_f("dist_sigma", 1.0),
-            seed_percentile=_f("seed_percentile", 75.0),
-            # Fallback logic for peak_min_distance
-            # If "peak_min_distance" is present, use it. 
-            # If not, check "peak_min_distance_px". 
-            # If neither, default to 6.
-            peak_min_distance=_i("peak_min_distance", afm_params.get("peak_min_distance_px", 6)),
-            watershed_compactness=_f("watershed_compactness", 0.0),
+            clip_p_low=_f("clip_p_low", 1.0),
+            clip_p_high=_f("clip_p_high", 99.0),
+            cp_model=_s("cp_model", "cyto3"),
+            cp_diameter=_f("cp_diameter", 0.0),
+            cp_flow_threshold=_f("cp_flow_threshold", 0.4),
+            cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
+            rods_only=_b("rods_only", True),
+            rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
+            rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
+            rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
+            rods_min_area_px=_i("rods_min_area_px", 8),
+            ellipse_thickness_px=_i("ellipse_thickness_px", 2),
+            ellipse_alpha=_f("ellipse_alpha", 0.6),
         )
+
+        res = run_afm_v2(roi_img, p_v2)
+
+        rod_table = res["rod_table"]
+        n_rods = len(rod_table.get("label", []))
+
+        # Overlay: single call to render_ellipse_overlay (no inline drawing)
+        overlay = render_ellipse_overlay(roi_img, rod_table, thickness_px=int(p_v2.ellipse_thickness_px), ellipse_alpha=float(p_v2.ellipse_alpha))
+
+        return {"overlay": overlay, "n_rods": n_rods}
+
+    # NOTE: _build_afm_seg_params removed — legacy pipeline no longer used
+

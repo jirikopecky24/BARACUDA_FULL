@@ -1,0 +1,16 @@
+{
+  "defaults": {
+    "postprocess": {
+      "temperature_c": 25.0,
+      "viscosity_pa_s": 0.001
+    },
+    "tracking": {
+      "blur_sigma": 1.2,
+      "radial_grad_threshold": 2.0
+    }
+  },
+  "device_id": "optical_tweezers",
+  "per_file": {},
+  "profile_name": "water",
+  "version": 1
+}

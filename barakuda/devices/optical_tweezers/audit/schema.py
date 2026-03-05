@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+def build_ot_summary(
+    camera_meta: dict[str, Any],
+    drift_audit: dict[str, Any],
+    qc_audit: dict[str, Any],
+    strategy_name: str,
+    strategy_params: dict[str, Any],
+    result_dict: dict[str, Any],
+    artifacts: dict[str, str],
+    um_audit_note: str,
+    header_cols: list[str]
+) -> dict[str, Any]:
+    """
+    Build the final ot_summary.json structure per Bible v2.1.
+    """
+    
+    return {
+        "pipeline_version": "OT_v2.1",
+        "camera_meta": camera_meta,
+        "preprocess": drift_audit,
+        "qc": qc_audit,
+        "strategy": {
+            "name": strategy_name,
+            "calibration_mode": strategy_params.get("calibration_mode", "Brownian"),
+            "parameters": strategy_params,
+            "results": result_dict
+        },
+        "rheology": {
+            "status": "NOT_IMPLEMENTED",
+            "planned": ["G'(ω)", "G''(ω)"],
+            "method_candidates": ["Active oscillation", "Passive GSER"]
+        },
+        "artifacts": artifacts,
+        "trajectory": {
+            "columns": header_cols,
+            "um_columns": um_audit_note
+        }
+    }

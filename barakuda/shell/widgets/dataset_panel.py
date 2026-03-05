@@ -28,11 +28,12 @@ class DatasetPanel(QWidget):
 
         self._items: List[DatasetItem] = []
         self._path_to_item: Dict[str, QListWidgetItem] = {}
+        self._item_params: Dict[str, dict] = {}
 
         title = QLabel("Dataset")
         title.setStyleSheet("font-weight: 600;")
 
-        # TLAČÍTKA (pořadí: Import -> Select All -> Remove -> Clear)
+        # Buttons (order: Import -> Select All -> Remove -> Clear)
         self._btn_import = QPushButton("Import Files…")
         self._btn_import.clicked.connect(self._on_import)
 
@@ -40,11 +41,11 @@ class DatasetPanel(QWidget):
         self._btn_select_all.clicked.connect(self.select_all)
 
         self._btn_remove_selected = QPushButton("Remove Selected")
-        self._btn_remove_selected.setToolTip("Odstraní označené položky ze seznamu (nesahá na disk)")
+        self._btn_remove_selected.setToolTip("Remove selected items from list (does not delete files from disk)")
         self._btn_remove_selected.clicked.connect(self.remove_selected)
 
         self._btn_clear_list = QPushButton("Clear List")
-        self._btn_clear_list.setToolTip("Vymaže celý seznam importovaných položek (nesahá na disk)")
+        self._btn_clear_list.setToolTip("Clear the entire imported file list (does not delete files from disk)")
         self._btn_clear_list.clicked.connect(self.clear_list)
 
         header = QHBoxLayout()
@@ -69,7 +70,7 @@ class DatasetPanel(QWidget):
             self,
             "Select data files",
             "",
-            "Data files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.csv *.txt *.mp4 *.avi);;All files (*.*)",
+            "Data files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.csv *.txt *.mp4 *.avi *.spm);;All files (*.*)",
         )
         if not files:
             return
@@ -85,6 +86,8 @@ class DatasetPanel(QWidget):
             self._items.append(DatasetItem(path=p))
 
             item = QListWidgetItem(self._format_label(p.name, "idle"))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, key)
             self._list.addItem(item)
             self._path_to_item[key] = item
@@ -103,15 +106,53 @@ class DatasetPanel(QWidget):
         selected = self._list.selectedItems()
         return [Path(it.data(Qt.ItemDataRole.UserRole)) for it in selected]
 
-    # --- NOVÉ: mazání z listu (bez smazání souborů na disku) ---
+    def get_checked_paths(self) -> List[Path]:
+        paths = []
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            if it.checkState() == Qt.CheckState.Checked:
+                paths.append(Path(it.data(Qt.ItemDataRole.UserRole)))
+        return paths
+
+    def set_checked(self, path: Path, checked: bool) -> None:
+        it = self._find_item_by_path(path)
+        if it:
+            it.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+
+    def get_all_items(self) -> List[Dict]:
+        res = []
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            res.append({
+                "path": str(it.data(Qt.ItemDataRole.UserRole)),
+                "checked": (it.checkState() == Qt.CheckState.Checked),
+                "text": it.text()
+            })
+        return res
+
+    # --- PER-ITEM PARAMS API ---
+
+    def get_item_params(self, path: Path | str) -> dict | None:
+        key = str(Path(path))
+        return self._item_params.get(key)
+
+    def set_item_params(self, path: Path | str, params: dict) -> None:
+        key = str(Path(path))
+        self._item_params[key] = params
+
+    def has_item(self, path: Path | str) -> bool:
+        key = str(Path(path))
+        return key in self._path_to_item
+
+    # --- List item removal (files on disk are not affected) ---
 
     def remove_selected(self) -> None:
-        """Odstraní vybrané položky ze seznamu (nesahá na disk)."""
+        """Remove selected items from the list (does not delete files from disk)."""
         selected = self._list.selectedItems()
         if not selected:
             return
 
-        # postup od konce kvůli indexům
+        # iterate from end to keep indices stable
         for it in selected:
             key = it.data(Qt.ItemDataRole.UserRole)
 
@@ -119,17 +160,19 @@ class DatasetPanel(QWidget):
             self._list.takeItem(row)
 
             self._path_to_item.pop(key, None)
+            self._item_params.pop(key, None)
 
-            # smaž i z _items
+            # also remove from _items
             self._items = [d for d in self._items if str(d.path) != key]
 
     def clear_list(self) -> None:
-        """Vymaže celý seznam importovaných položek (nesahá na disk)."""
+        """Clear the entire imported file list (does not delete files from disk)."""
         self._list.clear()
         self._items.clear()
         self._path_to_item.clear()
+        self._item_params.clear()
 
-    # --- STATUS API (volá MainWindow) ---
+    # --- STATUS API (called by MainWindow) ---
 
     def set_status(self, path: Path, status: str) -> None:
         """
@@ -153,7 +196,7 @@ class DatasetPanel(QWidget):
         }.get(status, "•")
         return f"{icon} {name}"
 
-    # --- GATE RESULT API (volá MainWindow) ---
+    # --- GATE RESULT API (called by MainWindow) ---
 
     def _find_item_by_path(self, path: Path):
         p = str(Path(path))

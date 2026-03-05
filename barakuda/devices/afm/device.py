@@ -1,342 +1,642 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton
+from PyQt6.QtCore import pyqtSignal, QObject, QEvent, QLocale, QTimer
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QFormLayout, QHBoxLayout,
+    QDoubleSpinBox, QSpinBox, QCheckBox, QPushButton, QComboBox,
+    QScrollArea, QFrame, QSizePolicy, QAbstractSpinBox
+)
 from barakuda.devices.base import DeviceSpec
+from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE
+from barakuda.devices.afm.core.compute import resolve_device
+
+
+class NoWheelValueChangeFilter(QObject):
+    """Event filter that blocks mouse wheel from changing values in scrollable panels."""
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel:
+            event.ignore()
+            return True
+        return False
 
 
 class AfmPanel(QWidget):
     run_batch_clicked = pyqtSignal()
+    auto_preview_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        title = QLabel("AFM — Bacteria Segmentation")
-        title.setStyleSheet("font-weight: 600;")
-        layout.addWidget(title)
+        # Use Czech locale for all spinboxes to ensure ',' is used for decimals
+        self._loc = QLocale(QLocale.Language.Czech, QLocale.Country.CzechRepublic)
+
+        # ══════════════════════════════════════════════════════════
+        # FIXED TOP: title + warning
+        # ══════════════════════════════════════════════════════════
+        top_bar = QVBoxLayout()
+        top_bar.setContentsMargins(8, 6, 8, 2)
+
+        title = QLabel("AFM Analysis Pipeline")
+        title.setStyleSheet("font-weight: 600; font-size: 13px;")
+        top_bar.addWidget(title)
+
+        if not _HAS_CELLPOSE:
+            warn = QLabel(
+                "⚠ Cellpose is NOT installed. Segmentation will fail.\n"
+                "Install via: pip install cellpose"
+            )
+            warn.setStyleSheet("color: #d32f2f; font-weight: 600; padding: 6px;")
+            warn.setWordWrap(True)
+            top_bar.addWidget(warn)
+
+        # Method selector
+        from PyQt6.QtWidgets import QFormLayout as _QFL
+        method_row = _QFL()
+        self.cb_method = QComboBox()
+        self.cb_method.addItem("Rod Bacteria (Cellpose + Rod Fit)", "rod_bacteria")
+        self.cb_method.addItem("Hydrogel Porosity (coming soon)", "hydrogel_porosity")
+        # Disable hydrogel (index 1) — not yet implemented
+        model = self.cb_method.model()
+        if model is not None:
+            item = model.item(1)
+            if item is not None:
+                item.setEnabled(False)
+        self.cb_method.setCurrentIndex(0)
+        method_row.addRow("Method:", self.cb_method)
+        top_bar.addLayout(method_row)
+
+        layout.addLayout(top_bar)
+
+        # ══════════════════════════════════════════════════════════
+        # SCROLLABLE: all parameter sections
+        # ══════════════════════════════════════════════════════════
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(8, 4, 8, 4)
+
+        # ── Data ──────────────────────────────────────────────────
+        form_data = QFormLayout()
+        lbl_data = QLabel("— Data —")
+        lbl_data.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_data.addRow(lbl_data)
+
+        self.lbl_channel = QLabel("Channel: unknown")
+        self.lbl_channel.setStyleSheet("color: #555;")
+
+        self.lbl_scale = QLabel("Scale: unknown")
+        self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
+
+        self.lbl_status = QLabel("Status: idle")
+        self.lbl_status.setStyleSheet("color: #0277bd; font-weight: 600; font-size: 11px;")
         
-        
-        self.btn_preview = QPushButton("Preview AFM")
-        layout.addWidget(self.btn_preview)
+        from PyQt6.QtWidgets import QProgressBar
+        self.pb_preview = QProgressBar()
+        self.pb_preview.setRange(0, 100)
+        self.pb_preview.setValue(0)
+        self.pb_preview.setVisible(False)
 
-        form = QFormLayout()
+        form_data.addRow(self.lbl_channel)
+        form_data.addRow(self.lbl_scale)
+        form_data.addRow(self.lbl_status)
+        form_data.addRow(self.pb_preview)
 
-        self.cb_height_aware = QCheckBox("AFM height normalization (recommended)")
-        self.cb_height_aware.setChecked(True)
-        form.addRow(self.cb_height_aware)
+        scroll_layout.addLayout(form_data)
 
-        self.cb_separate = QCheckBox("Separate touching objects (watershed)")
-        self.cb_separate.setChecked(True)
-        form.addRow(self.cb_separate)
+        # ── Compute ───────────────────────────────────────────────
+        form_comp = QFormLayout()
+        lbl_comp = QLabel("— Compute —")
+        lbl_comp.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_comp.addRow(lbl_comp)
 
-        self.cb_save_overlay = QCheckBox("Save overlay (segmentation on RGB)")
-        self.cb_save_overlay.setChecked(True)
-        form.addRow(self.cb_save_overlay)
+        self.cb_profile = QComboBox()
+        self.cb_profile.addItems(["Auto", "GPU (force)", "CPU (force)"])
+        self.cb_profile.setCurrentText("Auto")
+        self.cb_profile.currentTextChanged.connect(self._on_profile_changed)
+        form_comp.addRow("Compute Profile", self.cb_profile)
 
-        # Hidden but kept for compatibility if needed
-        self.cb_use_contours = QCheckBox("Contour-first mode (closed outlines)")
-        self.cb_use_contours.setChecked(False) 
-        self.cb_use_contours.hide() # Hidden
-        # layout.addWidget(self.cb_use_contours) # Removed from layout, kept as member
+        self.lbl_dev_info = QLabel("Device: ?\nTorch: ?\nCellpose: ?")
+        self.lbl_dev_info.setStyleSheet("color: #666; font-size: 11px;")
+        self.lbl_dev_info.setWordWrap(True)
+        form_comp.addRow(self.lbl_dev_info)
+
+        self.chk_fast_preview = QCheckBox("Fast Preview (CPU recommended)")
+        self.chk_fast_preview.setChecked(True)
+        self.chk_fast_preview.stateChanged.connect(self._on_fast_preview_changed)
+        form_comp.addRow(self.chk_fast_preview)
+
+        self.cb_downscale = QComboBox()
+        self.cb_downscale.addItems(["1.0", "0.75", "0.5", "0.33"])
+        self.cb_downscale.setCurrentText("0.5")
+        form_comp.addRow("Preview downscale", self.cb_downscale)
+
+        scroll_layout.addLayout(form_comp)
+
+        # ── Preprocessing ─────────────────────────────────────────
+        form_pre = QFormLayout()
+        lbl_pre = QLabel("— Preprocessing —")
+        lbl_pre.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_pre.addRow(lbl_pre)
 
         self.cb_invert = QCheckBox("Invert (bacteria are dark)")
         self.cb_invert.setChecked(False)
-        form.addRow(self.cb_invert)
+        form_pre.addRow(self.cb_invert)
 
-        self.sp_bg = QDoubleSpinBox()
-        self.sp_bg.setRange(0.1, 1000.0)
-        self.sp_bg.setDecimals(2)
-        self.sp_bg.setValue(12.0)
-        form.addRow("Background sigma", self.sp_bg)
+        self.sp_clip_low = QDoubleSpinBox()
+        self.sp_clip_low.setLocale(self._loc)
+        self.sp_clip_low.setRange(0.0, 50.0)
+        self.sp_clip_low.setDecimals(1)
+        self.sp_clip_low.setSingleStep(0.5)
+        self.sp_clip_low.setValue(1.0)
+        form_pre.addRow("Clip percentile low", self.sp_clip_low)
 
-        self.sp_smooth = QDoubleSpinBox()
-        self.sp_smooth.setRange(0.0, 50.0)
-        self.sp_smooth.setDecimals(2)
-        self.sp_smooth.setValue(1.0)
-        form.addRow("Smooth sigma", self.sp_smooth)
+        self.sp_clip_high = QDoubleSpinBox()
+        self.sp_clip_high.setLocale(self._loc)
+        self.sp_clip_high.setRange(50.0, 100.0)
+        self.sp_clip_high.setDecimals(1)
+        self.sp_clip_high.setSingleStep(0.5)
+        self.sp_clip_high.setValue(99.0)
+        form_pre.addRow("Clip percentile high", self.sp_clip_high)
 
-        # Renamed/Used as general edge sigma
-        self.sp_edge_sigma = QDoubleSpinBox()
-        self.sp_edge_sigma.setRange(0.2, 10.0)
-        self.sp_edge_sigma.setDecimals(2)
-        self.sp_edge_sigma.setValue(1.2)
-        form.addRow("Edge sigma", self.sp_edge_sigma)
+        scroll_layout.addLayout(form_pre)
 
-        # Hidden params (Canny)
-        self.sp_canny_low = QDoubleSpinBox()
-        self.sp_canny_low.setRange(0.0, 1.0)
-        self.sp_canny_low.setDecimals(3)
-        self.sp_canny_low.setValue(0.05)
-        self.sp_canny_low.hide()
-        # form.addRow("Canny low (0..1)", self.sp_canny_low)
+        # ── Cellpose Segmentation ─────────────────────────────────
+        form_cp = QFormLayout()
+        lbl_cp = QLabel("— Cellpose Segmentation —")
+        lbl_cp.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_cp.addRow(lbl_cp)
 
-        self.sp_canny_high = QDoubleSpinBox()
-        self.sp_canny_high.setRange(0.0, 1.0)
-        self.sp_canny_high.setDecimals(3)
-        self.sp_canny_high.setValue(0.20)
-        self.sp_canny_high.hide()
-        # form.addRow("Canny high (0..1)", self.sp_canny_high)
+        self.cb_cp_model = QComboBox()
+        self.cb_cp_model.addItems(["cyto3", "cyto2", "cyto", "nuclei"])
+        self.cb_cp_model.setCurrentText("cyto3")
+        form_cp.addRow("Model", self.cb_cp_model)
 
-        # Hidden params
-        self.sp_edge_dilate = QSpinBox()
-        self.sp_edge_dilate.setRange(0, 10)
-        self.sp_edge_dilate.setValue(1)
-        self.sp_edge_dilate.hide()
-        # form.addRow("Edge dilate (px)", self.sp_edge_dilate)
+        self.sp_cp_diam = QDoubleSpinBox()
+        self.sp_cp_diam.setLocale(self._loc)
+        self.sp_cp_diam.setRange(0.0, 200.0)
+        self.sp_cp_diam.setDecimals(1)
+        self.sp_cp_diam.setSingleStep(1.0)
+        self.sp_cp_diam.setValue(0.0)
+        self.sp_cp_diam.setSpecialValueText("Auto")
+        form_cp.addRow("Diameter (px)", self.sp_cp_diam)
 
-        # Hidden - duplicate?
-        self.sp_close_radius = QSpinBox()
-        self.sp_close_radius.setRange(0, 20)
-        self.sp_close_radius.setValue(2)
-        self.sp_close_radius.hide()
-        # form.addRow("Close radius (px)", self.sp_close_radius)
+        self.sp_cp_flow = QDoubleSpinBox()
+        self.sp_cp_flow.setLocale(self._loc)
+        self.sp_cp_flow.setRange(0.0, 1.0)
+        self.sp_cp_flow.setSingleStep(0.05)
+        self.sp_cp_flow.setDecimals(2)
+        self.sp_cp_flow.setValue(0.4)
+        form_cp.addRow("Flow threshold", self.sp_cp_flow)
 
-        self.sp_min_perim = QSpinBox()
-        self.sp_min_perim.setRange(0, 10000)
-        self.sp_min_perim.setValue(60)
-        form.addRow("Min perimeter (px)", self.sp_min_perim)
+        self.sp_cp_prob = QDoubleSpinBox()
+        self.sp_cp_prob.setLocale(self._loc)
+        self.sp_cp_prob.setRange(-6.0, 6.0)
+        self.sp_cp_prob.setSingleStep(0.10)
+        self.sp_cp_prob.setDecimals(2)
+        self.sp_cp_prob.setValue(-0.5)
+        form_cp.addRow("Cellprob threshold", self.sp_cp_prob)
 
-        self.sp_min_ecc = QDoubleSpinBox()
-        self.sp_min_ecc.setRange(0.0, 0.999)
-        self.sp_min_ecc.setDecimals(2)
-        self.sp_min_ecc.setValue(0.70)
-        form.addRow("Min eccentricity", self.sp_min_ecc)
+        scroll_layout.addLayout(form_cp)
 
-        self.sp_min_sol = QDoubleSpinBox()
-        self.sp_min_sol.setRange(0.0, 1.0)
-        self.sp_min_sol.setDecimals(2)
-        self.sp_min_sol.setValue(0.50)
-        form.addRow("Min solidity", self.sp_min_sol)
+        # ── Rod Geometry Filter ───────────────────────────────────
+        form_rod = QFormLayout()
+        lbl_rod = QLabel("— Rod Geometry Filter —")
+        lbl_rod.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_rod.addRow(lbl_rod)
 
-        # Duplicate - hidden
-        self.sp_fill_holes = QSpinBox()
-        self.sp_fill_holes.setRange(0, 50000)
-        self.sp_fill_holes.setValue(300)
-        self.sp_fill_holes.hide()
-        # form.addRow("Fill holes area (px)", self.sp_fill_holes)
+        self.cb_rods_only = QCheckBox("Rods only")
+        self.cb_rods_only.setChecked(True)
+        form_rod.addRow(self.cb_rods_only)
 
-        self.sp_log_sigma = QDoubleSpinBox()
-        self.sp_log_sigma.setRange(0.5, 10.0)
-        self.sp_log_sigma.setDecimals(2)
-        self.sp_log_sigma.setValue(2.0)
-        form.addRow("LoG sigma", self.sp_log_sigma)
+        self.sp_rods_min_major = QDoubleSpinBox()
+        self.sp_rods_min_major.setLocale(self._loc)
+        self.sp_rods_min_major.setRange(1.0, 500.0)
+        self.sp_rods_min_major.setDecimals(0)
+        self.sp_rods_min_major.setSingleStep(1.0)
+        self.sp_rods_min_major.setValue(12.0)
+        form_rod.addRow("Min major axis (px)", self.sp_rods_min_major)
 
-        self.sp_peak_dist = QSpinBox()
-        self.sp_peak_dist.setRange(1, 50)
-        self.sp_peak_dist.setValue(6)
-        form.addRow("Peak min distance (px)", self.sp_peak_dist)
+        self.sp_rods_min_ar = QDoubleSpinBox()
+        self.sp_rods_min_ar.setLocale(self._loc)
+        self.sp_rods_min_ar.setRange(1.0, 20.0)
+        self.sp_rods_min_ar.setDecimals(2)
+        self.sp_rods_min_ar.setSingleStep(0.10)
+        self.sp_rods_min_ar.setValue(1.8)
+        form_rod.addRow("Min aspect ratio", self.sp_rods_min_ar)
 
-        # Hidden global threshold factor
-        self.sp_low_factor = QDoubleSpinBox()
-        self.sp_low_factor.setRange(0.0, 1.00) # Allow 0.0
-        self.sp_low_factor.setDecimals(2)
-        self.sp_low_factor.setSingleStep(0.05)
-        self.sp_low_factor.setValue(0.45)
-        self.sp_low_factor.hide()
-        # form.addRow("Low mask factor (k * std)", self.sp_low_factor)
+        self.sp_rods_min_ecc = QDoubleSpinBox()
+        self.sp_rods_min_ecc.setLocale(self._loc)
+        self.sp_rods_min_ecc.setRange(0.0, 0.99)
+        self.sp_rods_min_ecc.setDecimals(2)
+        self.sp_rods_min_ecc.setSingleStep(0.05)
+        self.sp_rods_min_ecc.setValue(0.65)
+        form_rod.addRow("Min eccentricity", self.sp_rods_min_ecc)
 
         self.sp_min_area = QSpinBox()
-        self.sp_min_area.setRange(1, 10_000_000)
-        self.sp_min_area.setValue(120)
-        form.addRow("Min area (px)", self.sp_min_area)
+        self.sp_min_area.setLocale(self._loc)
+        self.sp_min_area.setRange(1, 100_000)
+        self.sp_min_area.setSingleStep(1)
+        self.sp_min_area.setValue(8)
+        form_rod.addRow("Min area (px)", self.sp_min_area)
 
-        self.sp_close = QSpinBox()
-        self.sp_close.setRange(0, 50)
-        self.sp_close.setValue(2)
-        form.addRow("Closing radius (px)", self.sp_close)
+        preset_row = QHBoxLayout()
+        self.btn_preset_recall = QPushButton("High Recall")
+        self.btn_preset_recall.setToolTip("min_major=10, min_ar=1.6, min_ecc=0.60, min_area=6")
+        self.btn_preset_recall.clicked.connect(self._apply_preset_high_recall)
+        preset_row.addWidget(self.btn_preset_recall)
 
-        self.sp_holes = QSpinBox()
-        self.sp_holes.setRange(0, 10_000_000)
-        self.sp_holes.setValue(240)
-        form.addRow("Fill holes area (px)", self.sp_holes)
+        self.btn_preset_nature = QPushButton("Nature Overlay")
+        self.btn_preset_nature.setToolTip("min_major=12, min_ar=1.8, min_ecc=0.65, min_area=8")
+        self.btn_preset_nature.clicked.connect(self._apply_preset_nature)
+        preset_row.addWidget(self.btn_preset_nature)
+        form_rod.addRow(preset_row)
 
-        self.sp_bins = QSpinBox()
-        self.sp_bins.setRange(5, 200)
-        self.sp_bins.setValue(20)
-        # form.addRow("Area bins (freq)", self.sp_bins) # User didn't ask to remove this, but didn't list in "Keep". 
-        # But listed in Defaults: "Area bins = 20". So keep it, but maybe hide if not important?
-        # User says "Smazat z UI ... Canny ... Edge dilate ... druhy fill/close".
-        # It doesn't say remove Bins. I'll keep it visible or hide if "UI čisté a přehledné" is priority?
-        # "smazat z UI" implies removing from view. 
-        # "Area bins" is for histogram. Useful. I'll keep it.
-        form.addRow("Area bins (freq)", self.sp_bins)
+        scroll_layout.addLayout(form_rod)
 
+        # ── Overlay ───────────────────────────────────────────────
+        form_ov = QFormLayout()
+        lbl_ov = QLabel("— Overlay —")
+        lbl_ov.setStyleSheet("font-weight: 600; margin-top: 4px;")
+        form_ov.addRow(lbl_ov)
 
+        self.sp_ellipse_thick = QSpinBox()
+        self.sp_ellipse_thick.setLocale(self._loc)
+        self.sp_ellipse_thick.setRange(1, 10)
+        self.sp_ellipse_thick.setSingleStep(1)
+        self.sp_ellipse_thick.setValue(2)
+        form_ov.addRow("Ellipse thickness (px)", self.sp_ellipse_thick)
 
-        layout.addLayout(form)
-        layout.addWidget(QLabel("ROI z Preview se použije jako výpočetní oblast."))
-        
+        self.sp_ellipse_alpha = QDoubleSpinBox()
+        self.sp_ellipse_alpha.setLocale(self._loc)
+        self.sp_ellipse_alpha.setRange(0.20, 1.00)
+        self.sp_ellipse_alpha.setDecimals(2)
+        self.sp_ellipse_alpha.setSingleStep(0.05)
+        self.sp_ellipse_alpha.setValue(0.60)
+        form_ov.addRow("Ellipse alpha", self.sp_ellipse_alpha)
+
+        ov_info = QLabel("Overlay renders ellipse fit from rod_table (no boundaries).")
+        ov_info.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
+        ov_info.setWordWrap(True)
+        form_ov.addRow(ov_info)
+
+        scroll_layout.addLayout(form_ov)
+        scroll_layout.addStretch(1)
+
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, stretch=1)   # scroll eats all vertical space
+
+        # ══════════════════════════════════════════════════════════
+        # FIXED BOTTOM: action buttons (never scroll away)
+        # ══════════════════════════════════════════════════════════
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #ccc;")
+        layout.addWidget(sep)
+
+        actions = QVBoxLayout()
+        actions.setContentsMargins(8, 4, 8, 6)
+
+        roi_hint = QLabel("Preview ROI defines the computation region.")
+        roi_hint.setStyleSheet("color: #888; font-size: 11px;")
+        roi_hint.setWordWrap(True)
+        actions.addWidget(roi_hint)
+
+        self.chk_auto_preview = QCheckBox("Auto Preview")
+        self.chk_auto_preview.setChecked(True)
+        self.chk_auto_preview.setToolTip(
+            "Automatically run preview after any AFM parameter change.\n"
+            "Uses 500 ms debounce to avoid redundant runs."
+        )
+        actions.addWidget(self.chk_auto_preview)
+
+        self.btn_preview = QPushButton("Preview AFM")
+        actions.addWidget(self.btn_preview)
+
+        self.btn_cancel = QPushButton("Cancel Preview")
+        self.btn_cancel.setEnabled(False)
+        actions.addWidget(self.btn_cancel)
+
         self.btn_reset = QPushButton("Reset AFM defaults")
         self.btn_reset.clicked.connect(self.apply_afm_defaults)
-        layout.addWidget(self.btn_reset)
-        
-        self.btn_run = QPushButton("Spustit AFM Batch")
+        actions.addWidget(self.btn_reset)
+
+        self.btn_run = QPushButton("Run AFM Batch")
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
-        layout.addWidget(self.btn_run)
-        
-        layout.addStretch(1)
-        
-        # Apple Defaults immediately
+        actions.addWidget(self.btn_run)
+
+        layout.addLayout(actions)
+
+        self._applying_defaults = True
+        self._auto_preview_armed = False  # armed after 1st manual Preview
         self.apply_afm_defaults()
         self.apply_afm_tooltips()
+        self._on_profile_changed() # Trigger initial hardware check
+        self._applying_defaults = False
 
+        # ── Debounce timer for auto-preview ───────────────────────
+        self._auto_preview_timer = QTimer(self)
+        self._auto_preview_timer.setSingleShot(True)
+        self._auto_preview_timer.setInterval(500)
+        self._auto_preview_timer.timeout.connect(self._fire_auto_preview)
+
+        # Connect all AFM parameter widgets to debounce trigger
+        for sb in (self.sp_clip_low, self.sp_clip_high,
+                   self.sp_cp_diam, self.sp_cp_flow, self.sp_cp_prob,
+                   self.sp_rods_min_major, self.sp_rods_min_ar,
+                   self.sp_rods_min_ecc,
+                   self.sp_ellipse_alpha):
+            sb.valueChanged.connect(self._schedule_auto_preview)
+        for sb_int in (self.sp_min_area, self.sp_ellipse_thick):
+            sb_int.valueChanged.connect(self._schedule_auto_preview)
+        for cb in (self.cb_invert, self.cb_rods_only):
+            cb.stateChanged.connect(self._schedule_auto_preview)
+        self.cb_cp_model.currentIndexChanged.connect(self._schedule_auto_preview)
+
+        # ── Wheel Blocker ─────────────────────────────────────────
+        self._wheel_blocker = NoWheelValueChangeFilter(self)
+        for w in self.findChildren(QAbstractSpinBox):
+            w.installEventFilter(self._wheel_blocker)
+        for w in self.findChildren(QComboBox):
+            w.installEventFilter(self._wheel_blocker)
+
+    # ── Update Data section from loader metadata ──────────────────
+    def update_loader_info(self, meta: dict | None) -> None:
+        """Update the read-only Data section from loader metadata.
+
+        Called by preview/batch after loading an .spm file.
+        """
+        if meta is None:
+            self.lbl_channel.setText("–")
+            self.lbl_scale.setText("unknown")
+            self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
+            return
+
+        ch = meta.get("selected_channel", "–")
+        self.lbl_channel.setText(str(ch))
+
+        um_per_px = float(meta.get("afm_um_per_px", 0.0))
+        um_source = meta.get("afm_um_per_px_source", "unknown")
+        px_to_nm = float(meta.get("pixel_to_nm", 0.0))
+        px_source = meta.get("pixel_to_nm_source", "unknown")
+
+        if um_per_px > 0 and px_to_nm > 0:
+            self.lbl_scale.setText(f"{um_per_px:.6f} µm/px ({px_to_nm:.4f} nm/px, src={um_source})")
+            self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
+        elif um_per_px > 0:
+            self.lbl_scale.setText(f"{um_per_px:.6f} µm/px (src={um_source})")
+            self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
+        elif px_to_nm > 0:
+            self.lbl_scale.setText(f"{px_to_nm:.4f} nm/px (src={px_source})")
+            self.lbl_scale.setStyleSheet("color: #2e7d32; font-weight: 600;")
+        else:
+            self.lbl_scale.setText("unknown")
+            self.lbl_scale.setStyleSheet("color: #b71c1c; font-weight: 600;")
+
+    # ── UI State Helpers ──────────────────────────────────────────
+    def set_preview_progress(self, pct: int, text: str | None = None) -> None:
+        pct = max(0, min(100, pct))
+        self.pb_preview.setVisible(True)
+        self.pb_preview.setValue(pct)
+        if text:
+            self.lbl_status.setText(f"Status: {text}")
+
+    def reset_preview_progress(self) -> None:
+        self.pb_preview.setValue(0)
+        self.pb_preview.setVisible(False)
+        self.lbl_status.setText("Status: idle")
+
+    def set_preview_state(self, is_running: bool) -> None:
+        """Called by MainWindow to toggle running state UI (disables Preview button)."""
+        self.btn_preview.setEnabled(not is_running)
+        self.btn_cancel.setEnabled(is_running)
+        if is_running:
+            self.btn_preview.setText("Preview AFM (running...)")
+            self.btn_run.setEnabled(False)
+            self.lbl_status.setText("Preview running... (Cellpose)")
+            self.lbl_status.setStyleSheet("color: #e65100; font-weight: 600; font-size: 11px;")
+        else:
+            self.btn_preview.setEnabled(True)
+            self.btn_preview.setText("Preview AFM")
+            self.btn_cancel.setEnabled(False)
+            self.btn_run.setEnabled(True)
+
+    def set_status_message(self, text: str, is_error: bool = False):
+        self.lbl_status.setText(text)
+        if is_error:
+            self.lbl_status.setStyleSheet("color: #d32f2f; font-weight: 600; font-size: 11px;")
+        else:
+            self.lbl_status.setStyleSheet("color: #2e7d32; font-weight: 600; font-size: 11px;")
+
+    def _on_fast_preview_changed(self, state: int):
+        self.cb_downscale.setEnabled(self.chk_fast_preview.isChecked())
+
+    def _on_profile_changed(self, text: str = ""):
+        txt = self.cb_profile.currentText()
+        if "GPU" in txt:
+            prof = "gpu"
+        elif "CPU" in txt:
+            prof = "cpu"
+        else:
+            prof = "auto"
+
+        try:
+            info = resolve_device(prof)
+            dev = info.get("device", "unknown")
+            t_ver = info.get("torch_version", "?")
+            c_ver = info.get("cellpose_version", "?")
+            gpu_n = info.get("gpu_name", "")
+            
+            if dev == "cuda" and gpu_n and gpu_n != "unknown":
+                dev_str = f"cuda ({gpu_n})"
+            else:
+                dev_str = dev
+                
+            self.lbl_dev_info.setText(f"Device: {dev_str}\nTorch: {t_ver}\nCellpose: {c_ver}")
+            
+            # auto-apply sensible view defaults if the user switches compute engines
+            if prof == "cpu" or dev == "cpu":
+                self.chk_fast_preview.setChecked(True)
+                self.cb_downscale.setCurrentText("0.5")
+            else:
+                self.chk_fast_preview.setChecked(False)
+                self.cb_downscale.setCurrentText("1.0")
+
+        except Exception as e:
+            self.lbl_dev_info.setText(f"Device: Error\n{e}")
+            self.lbl_dev_info.setStyleSheet("color: #d32f2f; font-size: 11px;")
+
+    # ── Defaults (from kanalek-novy reference run) ──────────────────
     def apply_afm_defaults(self):
-        # ===============================
-        # AFM DEFAULT PROFILE (Stable Manual Tuned Version)
-        # ===============================
-
-        # Core toggles
-        self.cb_height_aware.setChecked(False)
-        self.cb_separate.setChecked(True)
-        self.cb_save_overlay.setChecked(True)
+        # Compute default
+        self.cb_profile.setCurrentText("Auto")
+        self.chk_fast_preview.setChecked(False)
+        self.cb_downscale.setCurrentText("1.0")
+        # Preprocessing
         self.cb_invert.setChecked(False)
-        self.cb_use_contours.setChecked(False)
+        self.sp_clip_low.setValue(1.0)
+        self.sp_clip_high.setValue(99.0)
 
-        # Background & smoothing
-        self.sp_bg.setValue(4.0)
-        self.sp_smooth.setValue(0.2)
-        self.sp_edge_sigma.setValue(0.5)
+        # Cellpose
+        self.cb_cp_model.setCurrentText("cyto3")
+        self.sp_cp_diam.setValue(18.0)      # fixed 18 px
+        self.sp_cp_flow.setValue(0.4)
+        self.sp_cp_prob.setValue(0.3)
 
-        # Canny (hidden but keep consistent)
-        self.sp_canny_low.setValue(0.05)
-        self.sp_canny_high.setValue(0.20)
+        # Rod filter
+        self.cb_rods_only.setChecked(False)
+        self.sp_rods_min_major.setValue(12.0)
+        self.sp_rods_min_ar.setValue(1.8)
+        self.sp_rods_min_ecc.setValue(0.65)
+        self.sp_min_area.setValue(8)
 
-        # Hidden internal closing/fill (leave stable)
-        self.sp_close_radius.setValue(2)
-        self.sp_fill_holes.setValue(300)
+        # Overlay
+        self.sp_ellipse_thick.setValue(1)
+        self.sp_ellipse_alpha.setValue(0.60)
 
-        # Shape filters
-        self.sp_min_perim.setValue(20)
-        self.sp_min_ecc.setValue(0.05)
-        self.sp_min_sol.setValue(0.35)
-
-        # Watershed parameters
-        self.sp_log_sigma.setValue(1.8)
-        self.sp_peak_dist.setValue(12)
-        self.sp_low_factor.setValue(0.45)  # keep internal threshold stable
-
-        # Object filtering
-        self.sp_min_area.setValue(40)
-        self.sp_close.setValue(1)
-        self.sp_holes.setValue(50)
-        self.sp_bins.setValue(20)
-
+    # ── Tooltips ──────────────────────────────────────────────────
     def apply_afm_tooltips(self):
-        # ==============================
-        # AFM PARAMETER TOOLTIPS (hover)
-        # ==============================
-
-        # Checkboxes
-        self.cb_height_aware.setToolTip(
-            "AFM height normalization: row leveling + background subtraction + percentile clipping.\n"
-            "Use ON for more stable, comparable segmentation across datasets."
-        )
-        self.cb_separate.setToolTip(
-            "Separate touching objects (watershed).\n"
-            "ON = tries to split touching bacteria into instances.\n"
-            "OFF = returns a single connected mask (no instance separation)."
-        )
-        self.cb_save_overlay.setToolTip(
-            "Save overlay image with red contours drawn on the preview (RGB) image."
-        )
         self.cb_invert.setToolTip(
-            "Invert intensity assumption.\n"
-            "Use only if bacteria appear DARK relative to background in the processed image."
+            "Invert intensity.\n"
+            "Use if bacteria appear DARK relative to background."
+        )
+        self.sp_clip_low.setToolTip(
+            "Clip percentile low.\n"
+            "Pixels below this percentile are clipped.\nDefault 1.0."
+        )
+        self.sp_clip_high.setToolTip(
+            "Clip percentile high.\n"
+            "Pixels above this percentile are clipped.\nDefault 99.0."
+        )
+        self.cb_cp_model.setToolTip(
+            "Cellpose model.\n"
+            "cyto3 = general cells/bacteria (recommended).\n"
+            "cyto2 / cyto = older models.\n"
+            "nuclei = for nuclei detection."
+        )
+        self.sp_cp_diam.setToolTip(
+            "Cellpose Diameter [px].\n"
+            "0 = Auto (slower but adaptive).\n"
+            "Set manually if you know the cell size."
+        )
+        self.sp_cp_flow.setToolTip(
+            "Flow threshold.\n"
+            "Controls mask boundary strictness.\n"
+            "Lower = stricter, Higher = more generous.\nDefault 0.4."
+        )
+        self.sp_cp_prob.setToolTip(
+            "Cellprob threshold.\n"
+            "Lower = more sensitive (larger masks).\n"
+            "Default -0.5 (high recall)."
+        )
+        self.cb_rods_only.setToolTip(
+            "Rods only.\n"
+            "Filters output to keep only elongated rod-like shapes.\n"
+            "Required for ellipse overlay and rod export."
+        )
+        self.sp_rods_min_major.setToolTip("Min major axis [px].\nRemoves short objects.")
+        self.sp_rods_min_ar.setToolTip("Min aspect ratio (Major/Minor).\nRods typically > 1.8.")
+        self.sp_rods_min_ecc.setToolTip("Min eccentricity [0–1].\nRods ecc ~ 0.85+.")
+        self.sp_min_area.setToolTip("Min area [px²].\nRemoves tiny noise.")
+        self.sp_ellipse_thick.setToolTip(
+            "Ellipse thickness [px].\n1 = thin, 2 = recommended, 3 = thick."
+        )
+        self.sp_ellipse_alpha.setToolTip(
+            "Ellipse alpha [0.2–1.0].\n"
+            "0.6 = semi-transparent (Nature-grade).\n"
+            "1.0 = fully opaque (legacy)."
         )
 
-        # Sigma parameters
-        self.sp_bg.setToolTip(
-            "Background sigma [px].\n"
-            "Controls how aggressively large-scale surface trends are removed.\n"
-            "Higher = more background removal (flattening), lower = keeps more long-scale structure."
-        )
-        self.sp_smooth.setToolTip(
-            "Smooth sigma [px].\n"
-            "Gaussian smoothing before segmentation.\n"
-            "Higher = less noise but can merge nearby objects; lower = sharper details but more false detections."
-        )
-        self.sp_edge_sigma.setToolTip(
-            "Edge sigma [px].\n"
-            "Scale used for edge/gradient emphasis.\n"
-            "Lower = more sensitive to fine edges (may pick texture), higher = smoother edges."
-        )
-
-        # Shape filters
-        self.sp_min_perim.setToolTip(
-            "Min perimeter [px].\n"
-            "Rejects objects with small boundary length (removes fragments / tiny detections)."
-        )
-        self.sp_min_ecc.setToolTip(
-            "Min eccentricity [0–1].\n"
-            "0 = circle-like, 1 = very elongated.\n"
-            "Higher values keep elongated shapes and reject round/irregular noise."
-        )
-        self.sp_min_sol.setToolTip(
-            "Min solidity [0–1].\n"
-            "Solidity = area / convex hull area.\n"
-            "Higher rejects concave/fragmented shapes; lower keeps more irregular shapes."
-        )
-
-        # Watershed / marker control
-        self.sp_log_sigma.setToolTip(
-            "LoG sigma [px].\n"
-            "Scale for Laplacian-of-Gaussian used to find marker candidates.\n"
-            "Higher = fewer markers (less over-segmentation), lower = more markers (risk of over-segmentation)."
-        )
-        self.sp_peak_dist.setToolTip(
-            "Peak min distance [px].\n"
-            "Minimum distance between detected local maxima (watershed markers).\n"
-            "Higher = fewer seeds (less splitting), lower = more seeds (more splitting / possible map-like result)."
-        )
-
-        # Post-processing / cleanup
-        self.sp_min_area.setToolTip(
-            "Min area [px²].\n"
-            "Rejects small objects (noise). Increase if you see many tiny detections."
-        )
-        self.sp_close.setToolTip(
-            "Closing radius [px].\n"
-            "Morphological closing to connect small gaps and smooth boundaries.\n"
-            "Higher can merge neighbors; use small values (0–2) for bacteria."
-        )
-        self.sp_holes.setToolTip(
-            "Fill holes area [px²].\n"
-            "Fills small holes inside objects up to this area.\n"
-            "Increase if bacteria have unwanted internal holes."
-        )
-        self.sp_bins.setToolTip(
-            "Area bins [count].\n"
-            "Number of bins used for area histogram in exported statistics."
-        )
-
+    # ── Parameter collection ──────────────────────────────────────
     def get_afm_params(self) -> dict:
+        diam_val = float(self.sp_cp_diam.value())
+        if diam_val == 0.0:
+            cp_diam_mode = "auto"
+            cp_diam_px = None
+        else:
+            cp_diam_mode = "fixed"
+            cp_diam_px = int(diam_val)
+            
+        prof_txt = self.cb_profile.currentText()
+        if "GPU" in prof_txt:
+            prof = "gpu"
+        elif "CPU" in prof_txt:
+            prof = "cpu"
+        else:
+            prof = "auto"
+
         return {
-            "height_aware": bool(self.cb_height_aware.isChecked()),
-            "save_overlay": bool(self.cb_save_overlay.isChecked()),
-            "use_contours": bool(self.cb_use_contours.isChecked()),
-            "separate": bool(self.cb_separate.isChecked()),
+            "afm_method": str(self.cb_method.currentData() or "rod_bacteria"),
+            "compute_profile": prof,
+            "preview_fast_mode": bool(self.chk_fast_preview.isChecked()),
+            "preview_downscale": float(self.cb_downscale.currentText()),
             "invert": bool(self.cb_invert.isChecked()),
-            "bg_sigma": float(self.sp_bg.value()),
-            "smooth_sigma": float(self.sp_smooth.value()),
-            "edge_sigma": float(self.sp_edge_sigma.value()),
-            "canny_low": float(self.sp_canny_low.value()),
-            "canny_high": float(self.sp_canny_high.value()),
-            "edge_dilate_px": int(self.sp_edge_dilate.value()),
-            "close_radius_px": int(self.sp_close_radius.value()),
-            "fill_holes_area_px": int(self.sp_fill_holes.value()),
-            "min_perimeter_px": int(self.sp_min_perim.value()),
-            "min_eccentricity": float(self.sp_min_ecc.value()),
-            "min_solidity": float(self.sp_min_sol.value()),
-            "log_sigma": float(self.sp_log_sigma.value()),
-            "peak_min_distance_px": int(self.sp_peak_dist.value()),
-            "peak_min_distance": int(self.sp_peak_dist.value()),
-            "low_mask_factor": float(self.sp_low_factor.value()),
-            "min_area_px": int(self.sp_min_area.value()),
-            "closing_radius_px": int(self.sp_close.value()),
-            "hole_area_px": int(self.sp_holes.value()),
-            "area_bins": int(self.sp_bins.value()),
+            "clip_p_low": float(self.sp_clip_low.value()),
+            "clip_p_high": float(self.sp_clip_high.value()),
+            "cp_model": str(self.cb_cp_model.currentText()),
+            "cp_diameter_mode": cp_diam_mode,
+            "cp_diameter_px": cp_diam_px,
+            "cp_flow_threshold": float(self.sp_cp_flow.value()),
+            "cp_cellprob_threshold": float(self.sp_cp_prob.value()),
+            "rods_only": bool(self.cb_rods_only.isChecked()),
+            "rods_min_major_axis_px": float(self.sp_rods_min_major.value()),
+            "rods_min_aspect_ratio": float(self.sp_rods_min_ar.value()),
+            "rods_min_eccentricity": float(self.sp_rods_min_ecc.value()),
+            "rods_min_area_px": int(self.sp_min_area.value()),
+            "ellipse_thickness_px": int(self.sp_ellipse_thick.value()),
+            "ellipse_alpha": float(self.sp_ellipse_alpha.value()),
         }
+
+    # ── Preset helpers ─────────────────────────────────────────────
+    def _apply_preset_high_recall(self):
+        self._applying_defaults = True
+        self.sp_rods_min_major.setValue(10.0)
+        self.sp_rods_min_ar.setValue(1.60)
+        self.sp_rods_min_ecc.setValue(0.60)
+        self.sp_min_area.setValue(6)
+        self._applying_defaults = False
+        self._schedule_auto_preview()
+
+    def _apply_preset_nature(self):
+        self._applying_defaults = True
+        self.sp_rods_min_major.setValue(12.0)
+        self.sp_rods_min_ar.setValue(1.80)
+        self.sp_rods_min_ecc.setValue(0.65)
+        self.sp_min_area.setValue(8)
+        self._applying_defaults = False
+        self._schedule_auto_preview()
+
+    # ── Auto-preview debounce ─────────────────────────────────────
+    def _schedule_auto_preview(self, *_args) -> None:
+        """Restart debounce timer; will fire auto_preview_requested after 500 ms idle."""
+        if getattr(self, "_applying_defaults", False):
+            return
+        if not self.chk_auto_preview.isChecked():
+            return
+        if not getattr(self, "_auto_preview_armed", False):
+            return
+        self._auto_preview_timer.stop()
+        self._auto_preview_timer.start()
+
+    def _fire_auto_preview(self) -> None:
+        """Called when debounce timer expires — emit the signal."""
+        if self.chk_auto_preview.isChecked() and self._auto_preview_armed:
+            self.auto_preview_requested.emit()
+
+    def arm_auto_preview(self) -> None:
+        """Call after first manual Preview to enable auto-preview."""
+        self._auto_preview_armed = True
+
+    def disarm_auto_preview(self) -> None:
+        """Call on dataset change to reset auto-preview armed state."""
+        self._auto_preview_armed = False
+        self._auto_preview_timer.stop()
+
 
 def get_device_spec() -> DeviceSpec:
     return DeviceSpec(
