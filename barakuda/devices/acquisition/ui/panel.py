@@ -38,6 +38,21 @@ from barakuda.devices.acquisition.camera_factory import enumerate_all, create as
 
 
 # ------------------------------------------------------------------ #
+#  Scroll-safe spinboxes (wheel events ignored so scrolling the panel
+#  doesn't accidentally change parameter values)
+# ------------------------------------------------------------------ #
+
+class _NoScrollDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class _NoScrollSpinBox(QSpinBox):
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+# ------------------------------------------------------------------ #
 #  Camera selection dialog
 # ------------------------------------------------------------------ #
 
@@ -314,7 +329,7 @@ class AcquisitionPanel(QWidget):
         grp_set = QGroupBox("Settings")
         form = QFormLayout(grp_set)
 
-        self._spin_exposure = QDoubleSpinBox()
+        self._spin_exposure = _NoScrollDoubleSpinBox()
         self._spin_exposure.setRange(1, 1_000_000)
         self._spin_exposure.setValue(450.0)
         self._spin_exposure.setSuffix(" µs")
@@ -323,7 +338,7 @@ class AcquisitionPanel(QWidget):
         self._spin_exposure.editingFinished.connect(self._on_exposure_changed)
         form.addRow("Exposure:", self._spin_exposure)
 
-        self._spin_gain = QDoubleSpinBox()
+        self._spin_gain = _NoScrollDoubleSpinBox()
         self._spin_gain.setRange(0, 48)
         self._spin_gain.setValue(0.0)
         self._spin_gain.setSuffix(" dB")
@@ -332,7 +347,7 @@ class AcquisitionPanel(QWidget):
         self._spin_gain.editingFinished.connect(self._on_gain_changed)
         form.addRow("Gain:", self._spin_gain)
 
-        self._spin_fps_hint = QDoubleSpinBox()
+        self._spin_fps_hint = _NoScrollDoubleSpinBox()
         self._spin_fps_hint.setRange(1, 100_000)
         self._spin_fps_hint.setValue(2000.0)
         self._spin_fps_hint.setDecimals(0)
@@ -387,7 +402,7 @@ class AcquisitionPanel(QWidget):
             lbl = QLabel(f"{label}:")
             roi_grid.addWidget(lbl, row_idx, 0)
 
-            spin = QSpinBox()
+            spin = _NoScrollSpinBox()
             spin.setRange(mn, max(mn, mx))
             spin.setValue(default)
             spin.setMinimumWidth(70)
@@ -419,7 +434,7 @@ class AcquisitionPanel(QWidget):
         grp_rec = QGroupBox("Recording")
         rec_form = QFormLayout(grp_rec)
 
-        self._spin_duration = QDoubleSpinBox()
+        self._spin_duration = _NoScrollDoubleSpinBox()
         self._spin_duration.setRange(0, 3600)
         self._spin_duration.setValue(30.0)
         self._spin_duration.setSuffix(" s")
