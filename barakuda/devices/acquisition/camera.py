@@ -106,6 +106,16 @@ class BaslerCamera:
         except Exception:
             pass
 
+        # Disable auto exposure/gain so manual values take effect immediately
+        try:
+            self._cam.ExposureAuto.SetValue("Off")
+        except Exception:
+            pass
+        try:
+            self._cam.GainAuto.SetValue("Off")
+        except Exception:
+            pass
+
     def disconnect(self) -> None:
         """Stop all activity and close the camera."""
         self.stop_preview()
