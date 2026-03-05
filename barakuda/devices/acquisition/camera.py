@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -719,13 +720,28 @@ class BaslerCamera(AbstractCamera):
 
         frame_bytes = w * h  # Mono8
 
+        _QUEUE_MAXSIZE = 1024
         frames = 0
         dropped = 0
         timestamps: list[float] = []
         self._record_stop.clear()
 
+        write_q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+
+        def _writer() -> None:
+            with open(raw_path, "wb") as raw_f:
+                while True:
+                    item = write_q.get()
+                    if item is None:  # sentinel
+                        break
+                    data, ts = item
+                    raw_f.write(data)
+                    timestamps.append(ts)
+
+        writer_thread = threading.Thread(target=_writer, daemon=True)
+        writer_thread.start()
+
         try:
-            raw_f = open(raw_path, "wb")
             self._cam.StartGrabbing(
                 pylon.GrabStrategy_OneByOne,
                 pylon.GrabLoop_ProvidedByInstantCamera,
@@ -747,20 +763,22 @@ class BaslerCamera(AbstractCamera):
                     grab.Release()
                     continue
 
-                img = grab.Array
+                data = grab.Array.tobytes()
+                ts = time.perf_counter()
                 grab.Release()
-                raw_f.write(img.tobytes())
-                frames += 1
-                timestamps.append(time.perf_counter())
+
+                try:
+                    write_q.put_nowait((data, ts))
+                    frames += 1
+                except queue.Full:
+                    dropped += 1
 
                 if progress_callback is not None and frames % 100 == 0:
                     progress_callback(frames, time.perf_counter() - t0)
 
         finally:
-            try:
-                raw_f.close()
-            except Exception:
-                pass
+            write_q.put(None)  # sentinel — stop writer
+            writer_thread.join()
             try:
                 if self._cam is not None and self._cam.IsGrabbing():
                     self._cam.StopGrabbing()
