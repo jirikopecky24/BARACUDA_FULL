@@ -23,7 +23,7 @@ class VideoMeta:
 
 def is_video_file(path: Path) -> bool:
     ext = path.suffix.lower()
-    return ext in {".mp4", ".avi", ".mov", ".mkv", ".m4v"}
+    return ext in {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".raw"}
 
 
 def read_first_frame(path: Path) -> Tuple[np.ndarray, VideoMeta]:
