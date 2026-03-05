@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QFileDialog, QGroupBox, QScrollArea, QFrame,
     QSlider, QGridLayout, QPlainTextEdit, QComboBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
+    QTabWidget,
 )
 from PyQt6.QtGui import QFont
 
@@ -308,8 +309,7 @@ class AcquisitionPanel(QWidget):
         self._btn_stop_preview.setEnabled(False)
         btn_row.addWidget(self._btn_stop_preview)
         grp_conn_l.addLayout(btn_row)
-        right_layout.addWidget(grp_conn)
-
+        # Settings, ROI, Recording, Status are added to tabs below.
         # -- Settings --
         grp_set = QGroupBox("Settings")
         form = QFormLayout(grp_set)
@@ -360,8 +360,6 @@ class AcquisitionPanel(QWidget):
 
         self._lbl_test_fps_result = QLabel("")
         form.addRow("", self._lbl_test_fps_result)
-
-        right_layout.addWidget(grp_set)
 
         # -- ROI (numeric controls + sliders) --
         grp_roi = QGroupBox("Record ROI")
@@ -416,8 +414,6 @@ class AcquisitionPanel(QWidget):
         for k, tip in _roi_tips.items():
             self._roi_spins[k].setToolTip(tip)
             self._roi_sliders[k].setToolTip(tip)
-
-        right_layout.addWidget(grp_roi)
 
         # -- Recording --
         grp_rec = QGroupBox("Recording")
@@ -477,8 +473,6 @@ class AcquisitionPanel(QWidget):
         rec_btn_row.addWidget(self._btn_sim_raw)
         rec_form.addRow("", rec_btn_row)
 
-        right_layout.addWidget(grp_rec)
-
         # -- Status --
         grp_status = QGroupBox("Status")
         status_l = QVBoxLayout(grp_status)
@@ -489,9 +483,43 @@ class AcquisitionPanel(QWidget):
         )
         status_l.addWidget(self._status)
         self._status.setToolTip("Connection state, preview FPS, recording progress.")
-        right_layout.addWidget(grp_status)
+        # -- Assemble tabs --
+        tabs = QTabWidget()
 
-        right_layout.addStretch(1)
+        # Tab 0: Camera (connection + settings)
+        tab_camera = QWidget()
+        tab_camera_layout = QVBoxLayout(tab_camera)
+        tab_camera_layout.setContentsMargins(4, 4, 4, 4)
+        tab_camera_layout.addWidget(grp_conn)
+        tab_camera_layout.addWidget(grp_set)
+        tab_camera_layout.addStretch(1)
+        tabs.addTab(tab_camera, "Camera")
+
+        # Tab 1: ROI
+        tab_roi = QWidget()
+        tab_roi_layout = QVBoxLayout(tab_roi)
+        tab_roi_layout.setContentsMargins(4, 4, 4, 4)
+        tab_roi_layout.addWidget(grp_roi)
+        tab_roi_layout.addStretch(1)
+        tabs.addTab(tab_roi, "ROI")
+
+        # Tab 2: Recording
+        tab_rec = QWidget()
+        tab_rec_layout = QVBoxLayout(tab_rec)
+        tab_rec_layout.setContentsMargins(4, 4, 4, 4)
+        tab_rec_layout.addWidget(grp_rec)
+        tab_rec_layout.addStretch(1)
+        tabs.addTab(tab_rec, "Recording")
+
+        # Tab 3: Status
+        tab_status = QWidget()
+        tab_status_layout = QVBoxLayout(tab_status)
+        tab_status_layout.setContentsMargins(4, 4, 4, 4)
+        tab_status_layout.addWidget(grp_status)
+        tab_status_layout.addStretch(1)
+        tabs.addTab(tab_status, "Status")
+
+        right_layout.addWidget(tabs)
 
         right_scroll.setWidget(right)
         self._splitter.addWidget(right_scroll)
