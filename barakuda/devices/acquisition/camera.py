@@ -62,6 +62,12 @@ class BaslerCamera:
         self._latest_preview_frame: Optional[np.ndarray] = None
         self._latest_preview_ts: float = 0.0
         self._preview_lock = threading.Lock()
+        # Live-settings: pending values queued for grab-thread application
+        self._pending_exposure_us: Optional[float] = None
+        self._pending_gain_db: Optional[float] = None
+        self._readback_exposure_us: Optional[float] = None
+        self._readback_gain_db: Optional[float] = None
+        self._settings_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     #  Connection
@@ -215,6 +221,7 @@ class BaslerCamera:
             mean_raw = 0.0
             roi_valid = False
             _last_display_time = 0.0
+            _settings_last = 0.0
 
             try:
                 self._cam.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
@@ -253,6 +260,38 @@ class BaslerCamera:
                             w, h, ox, oy = fw, fh, 0, 0
                             disp_mn, disp_mx = 0, 255
                             roi_valid = False
+
+                    # -- Apply pending exposure/gain (5 Hz, from grab thread) --
+                    if now - _settings_last >= 0.2:
+                        _settings_last = now
+                        with self._settings_lock:
+                            _pexp = self._pending_exposure_us
+                            _pgain = self._pending_gain_db
+                            self._pending_exposure_us = None
+                            self._pending_gain_db = None
+                        if _pexp is not None:
+                            try:
+                                self._cam.ExposureTime.SetValue(_pexp)
+                                with self._settings_lock:
+                                    self._readback_exposure_us = float(self._cam.ExposureTime.Value)
+                            except Exception:
+                                pass
+                        if _pgain is not None:
+                            _gain_applied = False
+                            try:
+                                self._cam.Gain.SetValue(_pgain)
+                                with self._settings_lock:
+                                    self._readback_gain_db = float(self._cam.Gain.Value)
+                                _gain_applied = True
+                            except Exception:
+                                pass
+                            if not _gain_applied:
+                                try:
+                                    self._cam.GainRaw.SetValue(int(round(_pgain)))
+                                    with self._settings_lock:
+                                        self._readback_gain_db = float(self._cam.GainRaw.Value)
+                                except Exception:
+                                    pass
 
                     # -- 1.0s Status Print --
                     _stats_counter += 1
@@ -951,24 +990,58 @@ class BaslerCamera:
             pass
 
     def set_exposure_live(self, us: float) -> Optional[float]:
-        """Apply exposure (µs) to camera immediately; returns confirmed node value or None."""
+        """Apply exposure (µs) to camera; tries immediate set, queues for grab thread on failure."""
         if not self.is_connected:
             return None
+        us = float(us)
         try:
-            self._cam.ExposureTime.SetValue(float(us))
-            return float(self._cam.ExposureTime.Value)
+            self._cam.ExposureTime.SetValue(us)
+            val = float(self._cam.ExposureTime.Value)
+            with self._settings_lock:
+                self._readback_exposure_us = val
+            return val
         except Exception:
-            return None
+            pass
+        # Node locked while grabbing — queue for grab-thread application
+        with self._settings_lock:
+            self._pending_exposure_us = us
+        return us
 
     def set_gain_live(self, db: float) -> Optional[float]:
-        """Apply gain (dB) to camera immediately; returns confirmed node value or None."""
+        """Apply gain (dB) to camera; tries Gain node then GainRaw fallback, queues on failure."""
         if not self.is_connected:
             return None
+        db = float(db)
+        # Try Gain (dB, modern cameras)
         try:
-            self._cam.Gain.SetValue(float(db))
-            return float(self._cam.Gain.Value)
+            self._cam.Gain.SetValue(db)
+            val = float(self._cam.Gain.Value)
+            with self._settings_lock:
+                self._readback_gain_db = val
+            return val
         except Exception:
-            return None
+            pass
+        # Try GainRaw (integer steps, older cameras)
+        try:
+            self._cam.GainRaw.SetValue(int(round(db)))
+            val = float(self._cam.GainRaw.Value)
+            with self._settings_lock:
+                self._readback_gain_db = val
+            return val
+        except Exception:
+            pass
+        # Queue for grab-thread application
+        with self._settings_lock:
+            self._pending_gain_db = db
+        return db
+
+    def get_camera_settings(self) -> dict:
+        """Return last confirmed camera exposure/gain values (from read-back after set)."""
+        with self._settings_lock:
+            return {
+                "exposure_us": self._readback_exposure_us,
+                "gain_db": self._readback_gain_db,
+            }
 
     def _set_pixel_format(self, fmt: str) -> None:
         try:
