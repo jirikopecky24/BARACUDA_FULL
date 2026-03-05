@@ -199,6 +199,9 @@ class BaslerCamera:
         self._preview_stop.clear()
 
         def _grab_loop() -> None:
+            _stats_counter = 0
+            _stats_start = time.perf_counter()
+            _stats_last = _stats_start
             try:
                 self._cam.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
                 while not self._preview_stop.is_set() and self._cam.IsGrabbing():
@@ -212,6 +215,32 @@ class BaslerCamera:
                         continue
                     img = grab.Array.copy()  # snapshot
                     grab.Release()
+
+                    # -- Safe uint8 scaling --
+                    if img.dtype != np.uint8:
+                        mx = img.max()
+                        if mx <= 0:
+                            img = np.zeros(img.shape, dtype=np.uint8)
+                        elif mx <= 4095:
+                            # 12-bit sensor
+                            img = (img >> 4).astype(np.uint8)
+                        elif mx <= 65535:
+                            # 16-bit sensor
+                            img = (img >> 8).astype(np.uint8)
+                        else:
+                            img = ((img / (mx or 1)) * 255).astype(np.uint8)
+
+                    # Periodic stats (~once per second)
+                    _stats_counter += 1
+                    now = time.perf_counter()
+                    if now - _stats_last >= 1.0:
+                        _stats_last = now
+                        print(
+                            f"Preview stats: mn={img.min()} mx={img.max()} "
+                            f"mean={img.mean():.1f} dtype={img.dtype} "
+                            f"shape={img.shape} fps~={_stats_counter / (now - _stats_start):.1f}"
+                        )
+
                     try:
                         callback(img)
                     except Exception:
