@@ -78,16 +78,24 @@ class BaslerCamera:
         # Cache full sensor size (with ROI reset to max)
         nm = self._cam.GetNodeMap()
         # Reset offsets first so Width/Height.Max reflect full sensor
-        if "OffsetX" in nm:
+        try:
             self._cam.OffsetX.SetValue(0)
-        if "OffsetY" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.OffsetY.SetValue(0)
-        if "Width" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Width.SetValue(self._cam.Width.Max)
             self._sensor_w = int(self._cam.Width.Max)
-        if "Height" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Height.SetValue(self._cam.Height.Max)
             self._sensor_h = int(self._cam.Height.Max)
+        except Exception:
+            pass
 
     def disconnect(self) -> None:
         """Stop all activity and close the camera."""
@@ -132,14 +140,22 @@ class BaslerCamera:
             return val - ((val - mn) % inc) if inc > 0 else val
 
         # Reset offsets to 0 so Width/Height max reflect full sensor
-        if "OffsetX" in nm:
+        try:
             self._cam.OffsetX.SetValue(0)
-        if "OffsetY" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.OffsetY.SetValue(0)
-        if "Width" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Width.SetValue(self._cam.Width.Max)
-        if "Height" in nm:
+        except Exception:
+            pass
+        try:
             self._cam.Height.SetValue(self._cam.Height.Max)
+        except Exception:
+            pass
 
         w_inc = int(getattr(self._cam.Width, "Inc", 1) or 1)
         h_inc = int(getattr(self._cam.Height, "Inc", 1) or 1)
