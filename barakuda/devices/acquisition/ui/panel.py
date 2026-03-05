@@ -513,15 +513,13 @@ class AcquisitionPanel(QWidget):
     def _update_roi_ranges_from_camera(self) -> None:
         """After connect, query camera increments and update ROI spin/slider ranges."""
         try:
-            cam = self._camera._cam
-            nm = cam.GetNodeMap()
-
-            self._w_inc = int(getattr(cam.Width, "Inc", 1) or 1)
-            self._h_inc = int(getattr(cam.Height, "Inc", 1) or 1)
-            self._ox_inc = int(getattr(cam.OffsetX, "Inc", 1) or 1)
-            self._oy_inc = int(getattr(cam.OffsetY, "Inc", 1) or 1)
-            self._w_min = int(cam.Width.Min)
-            self._h_min = int(cam.Height.Min)
+            cfg = self._camera.get_roi_config()
+            self._w_inc = cfg.get("w_inc", 1)
+            self._h_inc = cfg.get("h_inc", 1)
+            self._ox_inc = cfg.get("ox_inc", 1)
+            self._oy_inc = cfg.get("oy_inc", 1)
+            self._w_min = cfg.get("w_min", 1)
+            self._h_min = cfg.get("h_min", 1)
         except Exception:
             pass
 
