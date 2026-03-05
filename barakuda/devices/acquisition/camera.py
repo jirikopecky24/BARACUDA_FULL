@@ -213,32 +213,47 @@ class BaslerCamera:
                     if not grab.GrabSucceeded():
                         grab.Release()
                         continue
-                    img = grab.Array.copy()  # snapshot
+                    img_raw = grab.Array.copy()  # snapshot
                     grab.Release()
 
+                    # Capture raw stats before conversion
+                    mn_raw = int(img_raw.min())
+                    mx_raw = int(img_raw.max())
+                    mean_raw = float(img_raw.mean())
+                    raw_dtype = str(img_raw.dtype)
+                    raw_shape = img_raw.shape
+
                     # -- Safe uint8 scaling --
-                    if img.dtype != np.uint8:
-                        mx = img.max()
-                        if mx <= 0:
-                            img = np.zeros(img.shape, dtype=np.uint8)
-                        elif mx <= 4095:
+                    if img_raw.dtype != np.uint8:
+                        if mx_raw <= 0:
+                            img = np.zeros(img_raw.shape, dtype=np.uint8)
+                        elif mx_raw <= 4095:
                             # 12-bit sensor
-                            img = (img >> 4).astype(np.uint8)
-                        elif mx <= 65535:
+                            img = (img_raw >> 4).astype(np.uint8)
+                        elif mx_raw <= 65535:
                             # 16-bit sensor
-                            img = (img >> 8).astype(np.uint8)
+                            img = (img_raw >> 8).astype(np.uint8)
                         else:
-                            img = ((img / (mx or 1)) * 255).astype(np.uint8)
+                            img = ((img_raw / (mx_raw or 1)) * 255).astype(np.uint8)
+                    else:
+                        img = img_raw
 
                     # Periodic stats (~once per second)
                     _stats_counter += 1
                     now = time.perf_counter()
                     if now - _stats_last >= 1.0:
                         _stats_last = now
+                        # Read pixel format from camera
+                        try:
+                            _pf = str(self._cam.PixelFormat.GetValue())
+                        except Exception:
+                            _pf = "unknown"
                         print(
-                            f"Preview stats: mn={img.min()} mx={img.max()} "
-                            f"mean={img.mean():.1f} dtype={img.dtype} "
-                            f"shape={img.shape} fps~={_stats_counter / (now - _stats_start):.1f}"
+                            f"PreviewStats pf={_pf} raw={raw_dtype} "
+                            f"mn={mn_raw} mx={mx_raw} mean={mean_raw:.1f} "
+                            f"shape={raw_shape} | "
+                            f"u8 mn={img.min()} mx={img.max()} mean={img.mean():.1f} "
+                            f"fps~={_stats_counter / (now - _stats_start):.1f}"
                         )
 
                     try:
