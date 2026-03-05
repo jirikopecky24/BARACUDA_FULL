@@ -6,7 +6,11 @@ from typing import Any, Dict, Optional, Callable
 
 import csv
 import json
+import re
+import shutil
 import time
+from datetime import datetime
+
 import numpy as np
 
 from PyQt6.QtWidgets import QApplication
@@ -562,6 +566,18 @@ class BatchController:
 
         ok_paths = [Path(p) for p in ok_paths]
         ok_paths = self._reorder_for_pairing(ok_paths)
+
+        _ot_mirror_root: Path | None = None
+        _ot_items_root: Path | None = None
+        _ot_batch_id: str | None = None
+        _ot_batch_created_at: str | None = None
+        _ot_batch_items: list[dict] = []
+        if device_id == "optical_tweezers":
+            _ot_batch_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            _ot_mirror_root = self.run_manager.runs_folder / "ot" / _ot_batch_id
+            _ot_items_root = _ot_mirror_root / "items"
+            _ot_items_root.mkdir(parents=True, exist_ok=True)
+            _ot_batch_created_at = datetime.now().isoformat()
 
         baseline_by_key: dict[str, dict[str, Any]] = {}
 
@@ -1224,6 +1240,109 @@ class BatchController:
 
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
+
+                # --- OT archive mirror ---
+                try:
+                    if _ot_items_root is not None and _ot_batch_id is not None:
+                        _base = Path(file_path).stem
+                        _safe = re.sub(r"[^A-Za-z0-9._\-]", "_", _base)
+                        _item_id = _safe
+                        _n = 1
+                        while (_ot_items_root / _item_id).exists():
+                            _item_id = f"{_safe}_{_n:02d}"
+                            _n += 1
+
+                        _item_root = _ot_items_root / _item_id
+                        for _sd in ("raw", "module/ot", "results", "qc", "artifacts"):
+                            (_item_root / _sd).mkdir(parents=True, exist_ok=True)
+
+                        # C) copy raw video
+                        _src_video = Path(file_path)
+                        _dst_video = _item_root / "raw" / _src_video.name
+                        if not _dst_video.exists() or _dst_video.stat().st_size != _src_video.stat().st_size:
+                            shutil.copy2(_src_video, _dst_video)
+
+                        # D) copy acquisition meta if present
+                        _meta_src: Path | None = None
+                        for _mc in (
+                            _src_video.parent / f"{_src_video.stem}_meta.json",
+                            _src_video.parent / f"{_src_video.name}_meta.json",
+                        ):
+                            if _mc.exists():
+                                _meta_src = _mc
+                                break
+                        _archived_meta: str | None = None
+                        if _meta_src is not None:
+                            shutil.copy2(_meta_src, _item_root / "raw" / "video_meta.json")
+                            _archived_meta = "raw/video_meta.json"
+
+                        # E) mirror run_dir content into module/ot
+                        _mod_ot = _item_root / "module" / "ot"
+                        for _entry in run_dir.iterdir():
+                            _dst_e = _mod_ot / _entry.name
+                            if _entry.is_dir():
+                                shutil.copytree(_entry, _dst_e, dirs_exist_ok=True)
+                            else:
+                                shutil.copy2(_entry, _dst_e)
+
+                        # F) artifacts inventory
+                        _inv: list[str] = []
+                        for _ap in _item_root.rglob("*"):
+                            if _ap.is_file():
+                                try:
+                                    _inv.append(str(_ap.relative_to(_item_root)).replace("\\", "/"))
+                                except Exception:
+                                    pass
+
+                        _fps_source = "acquisition_meta" if _archived_meta else "unknown"
+                        (_item_root / "item.json").write_text(
+                            json.dumps({
+                                "schema_version": 1,
+                                "module": "ot",
+                                "batch_id": _ot_batch_id,
+                                "item_id": _item_id,
+                                "source_input_path": str(file_path),
+                                "archived_raw_video": f"raw/{_src_video.name}",
+                                "archived_meta": _archived_meta,
+                                "mirrored_from_run_dir": str(run_dir),
+                                "created_at": datetime.now().isoformat(),
+                                "artifacts_inventory": _inv,
+                                "fps_source": _fps_source,
+                            }, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+
+                        # G) write/update batch.json
+                        _batch_json_path = _ot_mirror_root / "batch.json"
+                        _batch_items_entry = {
+                            "item_id": _item_id,
+                            "source_file_name": _src_video.name,
+                            "item_path": f"items/{_item_id}/",
+                        }
+                        _ot_batch_items.append(_batch_items_entry)
+                        _batch_payload: dict = {
+                            "schema_version": 1,
+                            "module": "ot",
+                            "batch_id": _ot_batch_id,
+                            "created_at": _ot_batch_created_at,
+                            "items": _ot_batch_items,
+                        }
+                        if _batch_json_path.exists():
+                            try:
+                                _existing = json.loads(_batch_json_path.read_text(encoding="utf-8"))
+                                _existing_ids = {i["item_id"] for i in _existing.get("items", [])}
+                                for _bi in _ot_batch_items:
+                                    if _bi["item_id"] not in _existing_ids:
+                                        _existing.setdefault("items", []).append(_bi)
+                                _batch_payload = _existing
+                            except Exception:
+                                pass
+                        _batch_json_path.write_text(
+                            json.dumps(_batch_payload, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                except Exception as _mirror_err:
+                    self._log(f"WARN: OT mirror failed ({file_path.name}): {_mirror_err!r}")
 
                 dataset_set_status_fn(file_path, "done")
                 self._log(f"OK: {file_path.name} -> {result.run_id}")
