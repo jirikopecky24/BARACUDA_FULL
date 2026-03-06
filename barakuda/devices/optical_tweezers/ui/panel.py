@@ -335,6 +335,7 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
         params_box_layout.addRow("ROI margin", self._roi_margin)
         params_box_layout.addRow("", self._adaptive_roi)
+        params_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
         
         # Advanced Tracking rows
         params_box_layout.addRow("Blur sigma", self._blur_sigma)
@@ -418,7 +419,6 @@ class PipelinePanel(QWidget):
         self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         self.post_box_layout.addRow("Drag axis", self._drag_axis)
         self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
-        self.post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
         
         self._calibration_mode = "Brownian"
 
