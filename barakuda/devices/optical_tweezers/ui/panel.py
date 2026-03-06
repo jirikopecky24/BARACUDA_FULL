@@ -119,7 +119,7 @@ class PipelinePanel(QWidget):
         self.btn_auto_roi.setToolTip("Automatically find and center the ROI on the most prominent particle.")
         self.auto_roi_on_load_cb = QCheckBox("Auto ROI on load")
         self.auto_roi_on_load_cb.setToolTip("If checked, automatically run Auto-detect when a new video is selected.")
-        self.auto_roi_on_load_cb.setChecked(False)
+        self.auto_roi_on_load_cb.setChecked(True)
         self.btn_auto_roi.clicked.connect(self.auto_roi_clicked.emit)
 
         self._roi_margin = QDoubleSpinBox()
@@ -550,7 +550,7 @@ class PipelinePanel(QWidget):
         self._normalize_strength.setValue(1.0)
         
         # Tracking Defaults
-        self.auto_roi_on_load_cb.setChecked(False)
+        self.auto_roi_on_load_cb.setChecked(True)
         self._roi_margin.setValue(1.8)
         self._adaptive_roi.setChecked(True)
         self._invert.setChecked(True)

@@ -59,6 +59,8 @@ class DatasetPanel(QWidget):
         self._list = QListWidget()
         self._list.itemSelectionChanged.connect(self._on_selection_changed)
         self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)

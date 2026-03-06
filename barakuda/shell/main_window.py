@@ -66,6 +66,8 @@ class ShellMainWindow(QMainWindow):
         self._preview_stack.addWidget(self._ot_preview)
         self._preview_stack.setCurrentWidget(self._afm_preview)
 
+        self._device_container.setMinimumWidth(280)
+
         self._center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._center_splitter.addWidget(self._preview_stack)
         self._center_splitter.addWidget(self._device_container)
@@ -159,7 +161,7 @@ class ShellMainWindow(QMainWindow):
 
             # Reasonable default proportions (can be adjusted by user)
             try:
-                self.resizeDocks([self.dataset_dock], [300], Qt.Orientation.Horizontal)
+                self.resizeDocks([self.dataset_dock], [200], Qt.Orientation.Horizontal)
                 self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
             except Exception:
                 pass
@@ -728,9 +730,9 @@ class ShellMainWindow(QMainWindow):
             # Collect all per-video params from the dataset panel
             dataset_params = {}
             for p in self.dataset.get_all_items():
-                pms = self.dataset.get_item_params(p)
+                pms = self.dataset.get_item_params(p["path"])
                 if pms is not None:
-                    dataset_params[str(p)] = pms
+                    dataset_params[p["path"]] = pms
 
             self._ot_run_thread = QThread()
             self._ot_run_worker = OTRunWorker(
