@@ -519,6 +519,12 @@ class PipelinePanel(QWidget):
             
         self.apply_ot_defaults()
 
+        # One-time profile signal wiring (must NOT be inside apply_ot_defaults
+        # to avoid duplicate connections on every "Reset OT Defaults" press)
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
+        self.btn_save_profile.clicked.connect(self._on_save_profile_clicked)
+        self.btn_save_profile_as.clicked.connect(self._on_save_profile_as_clicked)
+
     def apply_ot_defaults(self) -> None:
         """Apply requested sensible defaults to the OT user parameters."""
         self._preview_gate_policy = "STRICT"
@@ -569,11 +575,6 @@ class PipelinePanel(QWidget):
         self._bead_diameter_um.setValue(1.0)
         
         self._wire_value_changed_signals()
-        
-        # Profile signals
-        self._profile_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
-        self.btn_save_profile.clicked.connect(self._on_save_profile_clicked)
-        self.btn_save_profile_as.clicked.connect(self._on_save_profile_as_clicked)
 
     # -------------------- Profile UI wiring --------------------
 
