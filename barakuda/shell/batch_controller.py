@@ -26,8 +26,6 @@ from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
 from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
 
-# Feature flag for the new OT pipeline (Bible v2.1)
-_USE_OT_PIPELINE = False
 
 
 @dataclass(frozen=True)
@@ -741,8 +739,7 @@ class BatchController:
                 stem = Path(file_path).stem
                 
                 # --- OT Pipeline v2.1 Shadow Run ---
-                _USE_OT_PIPELINE = True  # TEMPORARY
-                if _USE_OT_PIPELINE:
+                if True:
                     def _trace(msg: str) -> None:
                         try:
                             with open("ot_shadow_trace.log", "a", encoding="utf-8") as f:
