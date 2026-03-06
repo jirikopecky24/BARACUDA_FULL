@@ -36,6 +36,9 @@ class PipelinePanel(QWidget):
     # Emitted when a user asks to save the current settings into a profile (str: profile_name)
     save_profile_requested = pyqtSignal(str)
 
+    # Emitted whenever any user-editable parameter changes value
+    value_changed = pyqtSignal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
@@ -319,7 +322,8 @@ class PipelinePanel(QWidget):
 
         # ── Tracking tab ──
         params_box = QWidget()
-        params_box_layout = QFormLayout(params_box)
+        self.params_box_layout = QFormLayout(params_box)
+        params_box_layout = self.params_box_layout  # local alias for readability
 
         self._trk_advanced = QCheckBox("Advanced options")
         self._trk_advanced.setToolTip("Show experimental / advanced tracking options.")
@@ -365,8 +369,9 @@ class PipelinePanel(QWidget):
             self._set_row_visible(self._gate_q_min, checked)
             self._set_row_visible(self._gate_jump_max, checked)
 
-        self._trk_advanced.toggled.connect(_on_trk_advanced_toggled)
-        _on_trk_advanced_toggled(False)
+        # Connection moved to end of __init__ (after apply_ot_defaults) to survive
+        # the blanket toggled.disconnect() inside _wire_value_changed_signals
+        _on_trk_advanced_toggled(False)  # set initial hidden state immediately
 
         params_box_layout.addRow("Start frame", self._start_frame)
         params_box_layout.addRow("End frame", self._end_frame)
@@ -402,8 +407,9 @@ class PipelinePanel(QWidget):
             self._set_row_visible(self._qc_jump_max, checked)
             self._set_row_visible(self._drift_window_s, checked)
             
-        self._pp_advanced.toggled.connect(_on_advanced_toggled)
-        _on_advanced_toggled(False)
+        # Connection moved to end of __init__ (after apply_ot_defaults) to survive
+        # the blanket toggled.disconnect() inside _wire_value_changed_signals
+        _on_advanced_toggled(False)  # set initial hidden state immediately
 
         self.post_box_layout.addRow("Drift mode", self._drift_mode)
         self.post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
@@ -516,6 +522,17 @@ class PipelinePanel(QWidget):
             
         self.apply_ot_defaults()
 
+        # One-time profile signal wiring (must NOT be inside apply_ot_defaults
+        # to avoid duplicate connections on every "Reset OT Defaults" press)
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
+        self.btn_save_profile.clicked.connect(self._on_save_profile_clicked)
+        self.btn_save_profile_as.clicked.connect(self._on_save_profile_as_clicked)
+
+        # One-time advanced-toggle wiring: placed here (AFTER apply_ot_defaults)
+        # so _wire_value_changed_signals cannot destroy them.
+        self._trk_advanced.toggled.connect(_on_trk_advanced_toggled)
+        self._pp_advanced.toggled.connect(_on_advanced_toggled)
+
     def apply_ot_defaults(self) -> None:
         """Apply requested sensible defaults to the OT user parameters."""
         self._preview_gate_policy = "STRICT"
@@ -566,11 +583,6 @@ class PipelinePanel(QWidget):
         self._bead_diameter_um.setValue(1.0)
         
         self._wire_value_changed_signals()
-        
-        # Profile signals
-        self._profile_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
-        self.btn_save_profile.clicked.connect(self._on_save_profile_clicked)
-        self.btn_save_profile_as.clicked.connect(self._on_save_profile_as_clicked)
 
     # -------------------- Profile UI wiring --------------------
 

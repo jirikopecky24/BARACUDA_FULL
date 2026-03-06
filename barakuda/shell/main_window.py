@@ -473,7 +473,51 @@ class ShellMainWindow(QMainWindow):
         except Exception as e:
             self.log_panel.log(f"Auto ROI ERROR: {e!r}")
 
+    # ---------------- OT profile management ----------------
 
+    def _update_ot_profile_list(self) -> None:
+        """Populate the profile combo in the OT panel from disk."""
+        if self._device_panel is None:
+            return
+        try:
+            from barakuda.devices.optical_tweezers.profile.profile_store import list_profiles
+            profiles = list_profiles()
+            if hasattr(self._device_panel, "update_profile_list"):
+                self._device_panel.update_profile_list(profiles)  # type: ignore[attr-defined]
+        except Exception as e:
+            self.log_panel.log(f"WARN: OT profile list refresh failed: {e!r}")
+
+    def _on_ot_load_profile(self, name: str) -> None:
+        """Load a named OT profile from disk and apply it to the panel."""
+        if self._device_panel is None:
+            return
+        try:
+            from barakuda.devices.optical_tweezers.profile.profile_store import load_profile
+            data = load_profile(name)
+            if not data:
+                self.log_panel.log(f"OT profile '{name}': not found or empty.")
+                return
+            params = data.get("defaults", data)
+            if hasattr(self._device_panel, "load_ot_params"):
+                self._device_panel.load_ot_params(params)  # type: ignore[attr-defined]
+            self.log_panel.log(f"OT profile loaded: {name}")
+        except Exception as e:
+            self.log_panel.log(f"OT profile load ERROR: {e!r}")
+
+    def _on_ot_save_profile(self, name: str) -> None:
+        """Save current OT panel params to a named profile on disk."""
+        if self._device_panel is None:
+            return
+        try:
+            from barakuda.devices.optical_tweezers.profile.profile_store import save_profile
+            if not hasattr(self._device_panel, "dump_ot_params"):
+                return
+            params = self._device_panel.dump_ot_params()  # type: ignore[attr-defined]
+            save_profile(name, {"defaults": params})
+            self.log_panel.log(f"OT profile saved: {name}")
+            self._update_ot_profile_list()
+        except Exception as e:
+            self.log_panel.log(f"OT profile save ERROR: {e!r}")
 
     # ---------------- preview gate ----------------
 
