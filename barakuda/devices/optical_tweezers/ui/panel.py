@@ -36,6 +36,9 @@ class PipelinePanel(QWidget):
     # Emitted when a user asks to save the current settings into a profile (str: profile_name)
     save_profile_requested = pyqtSignal(str)
 
+    # Emitted whenever any user-editable parameter changes value
+    value_changed = pyqtSignal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
