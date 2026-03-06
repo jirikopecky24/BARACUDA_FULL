@@ -322,7 +322,8 @@ class PipelinePanel(QWidget):
 
         # ── Tracking tab ──
         params_box = QWidget()
-        params_box_layout = QFormLayout(params_box)
+        self.params_box_layout = QFormLayout(params_box)
+        params_box_layout = self.params_box_layout  # local alias for readability
 
         self._trk_advanced = QCheckBox("Advanced options")
         self._trk_advanced.setToolTip("Show experimental / advanced tracking options.")
