@@ -730,9 +730,9 @@ class ShellMainWindow(QMainWindow):
             # Collect all per-video params from the dataset panel
             dataset_params = {}
             for p in self.dataset.get_all_items():
-                pms = self.dataset.get_item_params(p)
+                pms = self.dataset.get_item_params(p["path"])
                 if pms is not None:
-                    dataset_params[str(p)] = pms
+                    dataset_params[p["path"]] = pms
 
             self._ot_run_thread = QThread()
             self._ot_run_worker = OTRunWorker(
