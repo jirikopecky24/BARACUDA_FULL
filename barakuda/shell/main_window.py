@@ -66,6 +66,8 @@ class ShellMainWindow(QMainWindow):
         self._preview_stack.addWidget(self._ot_preview)
         self._preview_stack.setCurrentWidget(self._afm_preview)
 
+        self._device_container.setMinimumWidth(280)
+
         self._center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._center_splitter.addWidget(self._preview_stack)
         self._center_splitter.addWidget(self._device_container)
@@ -159,7 +161,7 @@ class ShellMainWindow(QMainWindow):
 
             # Reasonable default proportions (can be adjusted by user)
             try:
-                self.resizeDocks([self.dataset_dock], [300], Qt.Orientation.Horizontal)
+                self.resizeDocks([self.dataset_dock], [200], Qt.Orientation.Horizontal)
                 self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
             except Exception:
                 pass
