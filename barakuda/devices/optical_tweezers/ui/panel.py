@@ -119,7 +119,7 @@ class PipelinePanel(QWidget):
         self.btn_auto_roi.setToolTip("Automatically find and center the ROI on the most prominent particle.")
         self.auto_roi_on_load_cb = QCheckBox("Auto ROI on load")
         self.auto_roi_on_load_cb.setToolTip("If checked, automatically run Auto-detect when a new video is selected.")
-        self.auto_roi_on_load_cb.setChecked(False)
+        self.auto_roi_on_load_cb.setChecked(True)
         self.btn_auto_roi.clicked.connect(self.auto_roi_clicked.emit)
 
         self._roi_margin = QDoubleSpinBox()
@@ -335,6 +335,7 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("", self.auto_roi_on_load_cb)
         params_box_layout.addRow("ROI margin", self._roi_margin)
         params_box_layout.addRow("", self._adaptive_roi)
+        params_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
         
         # Advanced Tracking rows
         params_box_layout.addRow("Blur sigma", self._blur_sigma)
@@ -372,9 +373,6 @@ class PipelinePanel(QWidget):
         # Connection moved to end of __init__ (after apply_ot_defaults) to survive
         # the blanket toggled.disconnect() inside _wire_value_changed_signals
         _on_trk_advanced_toggled(False)  # set initial hidden state immediately
-
-        params_box_layout.addRow("Start frame", self._start_frame)
-        params_box_layout.addRow("End frame", self._end_frame)
 
         params_box_layout.addRow("", self._use_dataset_scale)
         params_box_layout.addRow("Scale (µm/px)", self._um_per_px)
@@ -418,7 +416,6 @@ class PipelinePanel(QWidget):
         self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         self.post_box_layout.addRow("Drag axis", self._drag_axis)
         self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
-        self.post_box_layout.addRow("Bead diameter (µm)", self._bead_diameter_um)
         
         self._calibration_mode = "Brownian"
 
@@ -462,13 +459,19 @@ class PipelinePanel(QWidget):
         prof_layout.addLayout(row1)
         prof_layout.addLayout(row2)
         
-        tab_run_layout.addWidget(prof_box)
-        
-        sep_prof = QFrame()
-        sep_prof.setFrameShape(QFrame.Shape.HLine)
-        sep_prof.setStyleSheet("color: #ddd;")
-        tab_run_layout.addWidget(sep_prof)
-        
+        # ── Frame range ──
+        range_form = QWidget()
+        range_layout = QFormLayout(range_form)
+        range_layout.setContentsMargins(0, 0, 0, 4)
+        range_layout.addRow("Start frame", self._start_frame)
+        range_layout.addRow("End frame", self._end_frame)
+        tab_run_layout.addWidget(range_form)
+
+        sep_range = QFrame()
+        sep_range.setFrameShape(QFrame.Shape.HLine)
+        sep_range.setStyleSheet("color: #ddd;")
+        tab_run_layout.addWidget(sep_range)
+
         # ── Action buttons ──
         tab_run_layout.addWidget(self.btn_preview_gate)
         tab_run_layout.addWidget(self.btn_gate_report)
@@ -506,10 +509,17 @@ class PipelinePanel(QWidget):
         scroll_exp.setWidget(export_box)
         tab_export_layout.addWidget(scroll_exp)
 
+        tab_settings = QWidget()
+        tab_settings_layout = QVBoxLayout(tab_settings)
+        tab_settings_layout.setContentsMargins(8, 8, 8, 8)
+        tab_settings_layout.addWidget(prof_box)
+        tab_settings_layout.addStretch(1)
+
         self.tabs.addTab(tab_run, "Run")
         self.tabs.addTab(tab_tracking, "Tracking")
         self.tabs.addTab(tab_postprocess, "Postprocess")
         self.tabs.addTab(tab_export, "Export")
+        self.tabs.addTab(tab_settings, "Settings")
 
         layout.addWidget(self.tabs, stretch=1)
         
@@ -540,7 +550,7 @@ class PipelinePanel(QWidget):
         self._normalize_strength.setValue(1.0)
         
         # Tracking Defaults
-        self.auto_roi_on_load_cb.setChecked(False)
+        self.auto_roi_on_load_cb.setChecked(True)
         self._roi_margin.setValue(1.8)
         self._adaptive_roi.setChecked(True)
         self._invert.setChecked(True)
