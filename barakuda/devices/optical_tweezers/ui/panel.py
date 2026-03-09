@@ -285,9 +285,9 @@ class PipelinePanel(QWidget):
         self._export_artifacts_layout.setContentsMargins(0, 4, 0, 4)
         _exp_layout.addWidget(self._export_artifacts_container)
 
-        self._btn_export_all = QPushButton("Export all available files →")
+        self._btn_export_all = QPushButton("EXPORT")
         self._btn_export_all.setToolTip(
-            "Copy all analysis outputs from the dataset to a destination folder."
+            "Export selected artifacts to this dataset's exports/ folder."
         )
         self._btn_export_all.setEnabled(False)
         self._btn_export_all.clicked.connect(self._on_export_all_clicked)
@@ -1144,21 +1144,12 @@ class PipelinePanel(QWidget):
     def _on_export_all_clicked(self) -> None:
         from pathlib import Path as _Path
         import shutil as _shutil
-        from PyQt6.QtWidgets import QFileDialog
 
         p = self._export_dataset_path
         if not p:
             return
 
-        out_dir_str = QFileDialog.getExistingDirectory(
-            self, "Select export destination folder"
-        )
-        if not out_dir_str:
-            return
-
-        out_dir = _Path(out_dir_str)
         path = _Path(p)
-
         item_json: _Path | None = None
         if path.name == "item.json":
             item_json = path
@@ -1175,25 +1166,28 @@ class PipelinePanel(QWidget):
             self._export_status_lbl.setText("Export failed: item.json not found.")
             return
 
-        try:
-            from barakuda.devices.optical_tweezers.manifest import load_item_manifest
-            m = load_item_manifest(item_json)
+        item_root = item_json.parent
+        exports_dir = item_root / "exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
 
-            copied = 0
-            if m.analysis_dir is not None and m.analysis_dir.is_dir():
-                for f in m.analysis_dir.rglob("*"):
-                    if f.is_file():
-                        try:
-                            rel = f.relative_to(m.analysis_dir)
-                            dst = out_dir / rel
-                            dst.parent.mkdir(parents=True, exist_ok=True)
-                            _shutil.copy2(f, dst)
-                            copied += 1
-                        except Exception:
-                            pass
+        art_by_id = {a["id"]: a for a in self._export_artifacts}
+        copied = 0
+        try:
+            for aid, cb in self._export_artifact_checkboxes.items():
+                if not cb.isChecked():
+                    continue
+                art = art_by_id.get(aid)
+                if not art:
+                    continue
+                src = item_root / art["path"]
+                if not src.is_file():
+                    continue
+                dst = exports_dir / _Path(art["path"]).name
+                _shutil.copy2(src, dst)
+                copied += 1
 
             self._export_status_lbl.setText(
-                f"Exported {copied} file(s) to:\n{out_dir}"
+                f"Exported {copied} file(s) to:\n{exports_dir}"
             )
         except Exception as _e:
             self._export_status_lbl.setText(f"Export error:\n{_e!r}")
