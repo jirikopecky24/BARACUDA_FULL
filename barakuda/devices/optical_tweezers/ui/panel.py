@@ -277,6 +277,14 @@ class PipelinePanel(QWidget):
         self._export_files_lbl.setStyleSheet("color: #444; font-size: 10px;")
         _exp_layout.addWidget(self._export_files_lbl)
 
+        # Dynamic checkboxes for discovered artifacts (id -> QCheckBox)
+        self._export_artifact_checkboxes: dict[str, QCheckBox] = {}
+        self._export_artifacts: list[dict] = []  # last discovery result for Export button
+        self._export_artifacts_container = QWidget()
+        self._export_artifacts_layout = QVBoxLayout(self._export_artifacts_container)
+        self._export_artifacts_layout.setContentsMargins(0, 4, 0, 4)
+        _exp_layout.addWidget(self._export_artifacts_container)
+
         self._btn_export_all = QPushButton("Export all available files →")
         self._btn_export_all.setToolTip(
             "Copy all analysis outputs from the dataset to a destination folder."
@@ -1046,6 +1054,7 @@ class PipelinePanel(QWidget):
             self._export_status_lbl.setText("No dataset loaded.")
             self._export_files_lbl.setText("")
             self._btn_export_all.setEnabled(False)
+            self._refresh_export_artifact_checkboxes([])
             return
 
         path = _Path(p)
@@ -1067,10 +1076,13 @@ class PipelinePanel(QWidget):
             self._export_status_lbl.setText(f"No item.json found near:\n{p}")
             self._export_files_lbl.setText("")
             self._btn_export_all.setEnabled(False)
+            self._refresh_export_artifact_checkboxes([])
             return
 
         try:
             from barakuda.devices.optical_tweezers.manifest import load_item_manifest
+            from barakuda.devices.optical_tweezers.export import discover_analysis_artifacts
+
             m = load_item_manifest(item_json)
 
             lines: list[str] = [f"Item: {item_json.parent.name}"]
@@ -1102,12 +1114,32 @@ class PipelinePanel(QWidget):
             self._export_files_lbl.setText(
                 "\n".join(file_lines) if file_lines else "  (no files yet)"
             )
-            self._btn_export_all.setEnabled(bool(file_lines))
+
+            artifacts = discover_analysis_artifacts(m.item_root)
+            self._export_artifacts = artifacts
+            self._refresh_export_artifact_checkboxes(artifacts)
+            self._btn_export_all.setEnabled(len(artifacts) > 0)
 
         except Exception as _e:
             self._export_status_lbl.setText(f"Error loading manifest:\n{_e!r}")
             self._export_files_lbl.setText("")
             self._btn_export_all.setEnabled(False)
+            self._refresh_export_artifact_checkboxes([])
+
+    def _refresh_export_artifact_checkboxes(self, artifacts: list[dict]) -> None:
+        """Rebuild artifact checkboxes from discovery result. Checkbox enabled only if artifact exists."""
+        while self._export_artifacts_layout.count():
+            child = self._export_artifacts_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self._export_artifact_checkboxes.clear()
+
+        for art in artifacts:
+            cb = QCheckBox(art["label"])
+            cb.setEnabled(True)
+            cb.setChecked(True)
+            self._export_artifacts_layout.addWidget(cb)
+            self._export_artifact_checkboxes[art["id"]] = cb
 
     def _on_export_all_clicked(self) -> None:
         from pathlib import Path as _Path
