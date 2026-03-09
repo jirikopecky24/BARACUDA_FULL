@@ -325,6 +325,62 @@ def compare_datasets(dataset_paths: list[Path]) -> dict[str, Any]:
         datasets.append(entry)
     return {"datasets": datasets}
 
+
+def export_experiment(
+    experiment_path: Path,
+    output_dir: Path | None = None,
+    *,
+    include_artifacts: bool = True,
+) -> Path:
+    """
+    Export entire experiment: summary, dataset list, and selected artifacts.
+
+    Writes to output_dir (default: experiment_path/exports/<timestamp>):
+    - experiment_summary.json (from get_experiment_summary)
+    - dataset_list.json (paths and names)
+    - datasets/<name>/ with analysis/ and exports/ contents when include_artifacts is True.
+
+    Returns the path to the export directory.
+    """
+    path = Path(experiment_path).resolve()
+    if not (path / EXPERIMENT_JSON).is_file():
+        raise FileNotFoundError(f"Not an experiment folder: {path}")
+
+    if output_dir is None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = path / "exports" / f"export_{ts}"
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = get_experiment_summary(path)
+    (output_dir / "experiment_summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    dataset_paths = list_datasets(path)
+    dataset_list = [{"name": p.name, "path": str(p)} for p in dataset_paths]
+    (output_dir / "dataset_list.json").write_text(
+        json.dumps({"datasets": dataset_list}, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    if include_artifacts and dataset_paths:
+        out_datasets = output_dir / "datasets"
+        out_datasets.mkdir(parents=True, exist_ok=True)
+        for ds_path in dataset_paths:
+            dest = out_datasets / ds_path.name
+            dest.mkdir(parents=True, exist_ok=True)
+            for sub in ("analysis", "exports"):
+                src = ds_path / sub
+                if src.is_dir():
+                    dest_sub = dest / sub
+                    if dest_sub.exists():
+                        shutil.rmtree(dest_sub)
+                    shutil.copytree(src, dest_sub)
+
+    return output_dir
+
+
+def register_dataset_to_experiment(
     runs_folder: Path,
     dataset_path: Path,
     experiment_id: str,
