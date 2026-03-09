@@ -87,26 +87,32 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
         ad = m.analysis_dir
         m.run_json_path = _first_existing(ad, ["run.json"])
 
-        # qc: prefer manifest field, then scan
+        # qc: prefer manifest field, then pipeline/, then ot_v2_shadow/, then root
         _an = raw.get("analysis", {})
+        _qc_fallback = (
+            _glob_first(ad / "pipeline", "*_qc.json")
+            or _glob_first(ad / "ot_v2_shadow", "*_qc.json")
+            or _first_existing(ad, ["qc.json"])
+            or _glob_first(ad, "*_qc.json")
+        )
         if _an.get("qc"):
             _p = (item_root / _an["qc"])
-            m.qc_json_path = _p if _p.exists() else _first_existing(ad, ["qc.json"]) or _glob_first(ad, "*_qc.json")
+            m.qc_json_path = _p if _p.exists() else _qc_fallback
         else:
-            m.qc_json_path = _first_existing(ad, ["qc.json"]) or _glob_first(ad, "*_qc.json")
+            m.qc_json_path = _qc_fallback
 
-        # trajectory: prefer manifest field, then scan
+        # trajectory: prefer manifest field, then pipeline/, then ot_v2_shadow/, then tracking, then root
+        _traj_fallback = (
+            _glob_first(ad / "pipeline", "*_trajectory.csv")
+            or _glob_first(ad / "ot_v2_shadow", "*_trajectory.csv")
+            or _first_existing(ad, ["trajectory.csv", "tracking/trajectory.csv"])
+            or _glob_first(ad, "*_trajectory.csv")
+        )
         if _an.get("trajectory"):
             _p = (item_root / _an["trajectory"])
-            m.trajectory_path = _p if _p.exists() else (
-                _first_existing(ad, ["trajectory.csv", "tracking/trajectory.csv"])
-                or _glob_first(ad, "*_trajectory.csv")
-            )
+            m.trajectory_path = _p if _p.exists() else _traj_fallback
         else:
-            m.trajectory_path = (
-                _first_existing(ad, ["trajectory.csv", "tracking/trajectory.csv"])
-                or _glob_first(ad, "*_trajectory.csv")
-            )
+            m.trajectory_path = _traj_fallback
 
         m.preview_report_path = _first_existing(ad, ["preview_report.json", "preview/preview_report.json"])
 
