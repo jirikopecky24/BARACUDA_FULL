@@ -1041,6 +1041,12 @@ class AcquisitionPanel(QWidget):
             f"ROI={roi[0]}×{roi[1]}+{roi[2]}+{roi[3]}  fps_hint={fps_h:.0f}  "
             f"out={out_path}\\{bn}"
         )
+        if rec_fmt == "AVI" and fps_h > self._AVI_FPS_WARN_THRESHOLD:
+            self._log(
+                f"AVI selected above recommended FPS (>{self._AVI_FPS_WARN_THRESHOLD:.0f}). "
+                "AVI timestamps may be unreliable. "
+                "RAW format is recommended for scientific acquisition."
+            )
 
         # Stop the Qt render timer so no more frames are painted.
         # The actual camera stop_preview() + join happens inside the worker
