@@ -90,6 +90,34 @@ def list_experiments(runs_folder: Path) -> list[dict[str, Any]]:
     return result
 
 
+def discover_experiments(runs_folder: Path) -> list[dict[str, Any]]:
+    """
+    Discover available experiments under runs/experiments/ for UI or listing.
+
+    Scans runs/experiments/, loads each experiment.json, and returns a list of
+    entries: experiment.json payload plus "experiment_path" (absolute Path) for
+    each valid experiment. Skips invalid or missing experiment.json.
+    """
+    root = _experiments_root(runs_folder)
+    if not root.is_dir():
+        return []
+    result: list[dict[str, Any]] = []
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        json_path = d / EXPERIMENT_JSON
+        if not json_path.is_file():
+            continue
+        try:
+            payload = load_experiment(d)
+            payload = dict(payload)
+            payload["experiment_path"] = d.resolve()
+            result.append(payload)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return result
+
+
 def list_datasets(experiment_path: Path) -> list[Path]:
     """
     List dataset roots under experiment_path/datasets/.
