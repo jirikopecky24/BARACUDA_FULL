@@ -813,6 +813,8 @@ class BatchController:
                     run_dir.mkdir(parents=True, exist_ok=True)
                     for _sd in ("raw",):
                         (_item_root_for_run / _sd).mkdir(parents=True, exist_ok=True)
+                    for _d in ("audit", "tracking", "physics"):
+                        (run_dir / _d).mkdir(parents=True, exist_ok=True)
                     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
                     (run_dir / "run.json").write_text(
                         json.dumps({
@@ -830,6 +832,8 @@ class BatchController:
                     _item_id_for_run = None
                     _item_root_for_run = None
                     _dataset_item_root = None
+                    for _d in ("audit", "tracking", "physics"):
+                        (run_dir / _d).mkdir(parents=True, exist_ok=True)
                 
                 # --- OT Pipeline v2.1 Shadow Run ---
                 if True:
@@ -898,7 +902,7 @@ class BatchController:
                         self._log(traceback.format_exc())
                 # -----------------------------------
 
-                traj_path = run_dir / f"{stem}_trajectory.csv"
+                traj_path = run_dir / "tracking" / f"{stem}_trajectory.csv"
 
 
                 # Tracking loop bookkeeping for overlays:
@@ -1019,19 +1023,19 @@ class BatchController:
 
                 try:
                     if last_frame is not None and last_xy is not None:
+                        dir_tracking = run_dir / "tracking"
                         # Raw frame for audit (optional)
-                        # Raw frame for audit (optional)
-                        self.run_manager.save_after_png(run_dir, last_frame, name=f"{stem}_after_raw.png")
+                        self.run_manager.save_after_png(dir_tracking, last_frame, name=f"{stem}_after_raw.png")
                         # Overlay as 'after.png' (what user expects)
                         self.run_manager.save_overlay_png(
-                            run_dir=run_dir,
+                            run_dir=dir_tracking,
                             frame_rgb=last_frame,
                             x=last_xy[0],
                             y=last_xy[1],
                             roi=(last_roi if last_roi is not None else roi_rect),
                             name=f"{stem}_after.png",
                         )
-                        self.last_after_overlay_path = str(run_dir / f"{stem}_after.png")
+                        self.last_after_overlay_path = str(dir_tracking / f"{stem}_after.png")
                 except Exception as e:
                     self._log(f"WARN: after overlay failed ({file_path.name}): {e!r}")
 
@@ -1045,7 +1049,7 @@ class BatchController:
                             start_frame=int(s),
                             end_frame=int(e),
                         )
-                        (run_dir / f"{stem}_postprocess.json").write_text(
+                        (run_dir / "audit" / f"{stem}_postprocess.json").write_text(
                             json.dumps({
                                 "enabled": True,
                                 "params": {
@@ -1068,12 +1072,13 @@ class BatchController:
                     tok = self._parse_capture_tokens(file_path)
                     if tok.get("ok") and float(tok["speed"]) == 0.0:
                         # Store Brownian baseline info for later comparison
+                        # Store paths after organize: psd_fit in audit/, trajectory in tracking/
                         baseline_by_key[tok["key"]] = {
                             "path": str(file_path),
                             "run_dir": str(run_dir),
                             "base_name": str(file_path.stem),
-                            "psd_fit_json": str(run_dir / f"{file_path.stem}_psd_fit.json"),
-                            "trajectory_csv": str(run_dir / f"{file_path.stem}_trajectory.csv"),
+                            "psd_fit_json": str(run_dir / "audit" / f"{file_path.stem}_psd_fit.json"),
+                            "trajectory_csv": str(run_dir / "tracking" / f"{file_path.stem}_trajectory.csv"),
                         }
                     
                     elif tok.get("ok") and float(tok["speed"]) > 0.0:
@@ -1100,7 +1105,7 @@ class BatchController:
                                 )
                                 # steady mean from drag: last 50%
                                 steady_mean_um = self._mean_axis_um(
-                                    Path(run_dir / f"{file_path.stem}_trajectory.csv"), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=True
+                                    Path(run_dir / "tracking" / f"{file_path.stem}_trajectory.csv"), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=True
                                 )
 
                                 offset_um = float(steady_mean_um - baseline_mean_um)
@@ -1131,10 +1136,10 @@ class BatchController:
                                 else:
                                     fc, kappa_b, kappa_b_pn_um = 0.0, 0.0, 0.0
 
-                                # Write compare artifacts into DRAG run dir
-                                compare_csv = Path(run_dir) / f"{file_path.stem}_compare.csv"
-                                compare_json = Path(run_dir) / f"{file_path.stem}_compare.json"
-                                drag_json = Path(run_dir) / f"{file_path.stem}_drag.json"
+                                # Write compare artifacts into DRAG run dir (physics subdir)
+                                compare_csv = Path(run_dir) / "physics" / f"{file_path.stem}_compare.csv"
+                                compare_json = Path(run_dir) / "physics" / f"{file_path.stem}_compare.json"
+                                drag_json = Path(run_dir) / "physics" / f"{file_path.stem}_drag.json"
 
                                 import json as _json
                                 drag_json.write_text(_json.dumps({
@@ -1210,15 +1215,17 @@ class BatchController:
                     self._log(f"WARN: drag comparison failed ({file_path.name}): {e!r}")
 
                 try:
-                    _msd = run_dir / f"{stem}_msd.csv"
-                    _psd_x = run_dir / f"{stem}_psd_x.csv"
-                    _psd_y = run_dir / f"{stem}_psd_y.csv"
-                    _cal_csv = run_dir / f"{stem}_calibration.csv"
-                    _cal_json = run_dir / f"{stem}_calibration.json"
-                    _hist_x = run_dir / f"{stem}_hist_x.csv"
-                    _hist_y = run_dir / f"{stem}_hist_y.csv"
-                    _hist_r = run_dir / f"{stem}_hist_r.csv"
-                    _derived = run_dir / f"{stem}_derived.csv"
+                    # postprocess_ot writes to trajectory dir (run_dir/tracking/)
+                    _tracking = run_dir / "tracking"
+                    _msd = _tracking / f"{stem}_msd.csv"
+                    _psd_x = _tracking / f"{stem}_psd_x.csv"
+                    _psd_y = _tracking / f"{stem}_psd_y.csv"
+                    _cal_csv = _tracking / f"{stem}_calibration.csv"
+                    _cal_json = _tracking / f"{stem}_calibration.json"
+                    _hist_x = _tracking / f"{stem}_hist_x.csv"
+                    _hist_y = _tracking / f"{stem}_hist_y.csv"
+                    _hist_r = _tracking / f"{stem}_hist_r.csv"
+                    _derived = _tracking / f"{stem}_derived.csv"
 
                     # --- metadata.csv (audit-first, key/value) ---
                     def _flatten(prefix: str, obj: Any, out: list[tuple[str, str]]) -> None:
@@ -1248,7 +1255,7 @@ class BatchController:
 
                     # postprocess + calibration json (if present)
                     for tag, pth in [
-                        ("postprocess", run_dir / f"{stem}_postprocess.json"),
+                        ("postprocess", run_dir / "audit" / f"{stem}_postprocess.json"),
                         ("calibration", _cal_json),
                     ]:
                         if pth.exists():
@@ -1298,12 +1305,10 @@ class BatchController:
                                 out.write("\n")
 
                     # --- Organize Outputs (Audit/Tracking/Physics) ---
-                    # Create subfolders
+                    # Subfolders already exist; move postprocess_ot outputs from tracking/ to audit/ and physics/
                     dir_audit = run_dir / "audit"
                     dir_tracking = run_dir / "tracking"
                     dir_physics = run_dir / "physics"
-                    for d in (dir_audit, dir_tracking, dir_physics):
-                        d.mkdir(parents=True, exist_ok=True)
 
                     # Helper to move file if exists
                     def _move_to(src_path: Path, dest_dir: Path) -> None:
@@ -1313,18 +1318,13 @@ class BatchController:
                             except Exception as e:
                                 self._log(f"WARN: failed to move {src_path.name} -> {dest_dir.name}: {e}")
 
-                    # 1. Audit
-                    _move_to(run_dir / f"{stem}_postprocess.json", dir_audit)
-                    _move_to(run_dir / f"{stem}_psd_fit.json", dir_audit)
-                    _move_to(run_dir / f"{stem}_calibration.json", dir_audit)
+                    # 1. Audit: psd_fit and calibration written by postprocess_ot to tracking/ -> move to audit
+                    _move_to(_tracking / f"{stem}_psd_fit.json", dir_audit)
+                    _move_to(_tracking / f"{stem}_calibration.json", dir_audit)
 
-                    # 2. Tracking
-                    _move_to(traj_path, dir_tracking)
-                    # preview_tracking.png lives in run_dir/preview/ (unified preview output)
-                    _move_to(run_dir / f"{stem}_after.png", dir_tracking)
-                    _move_to(run_dir / f"{stem}_after_raw.png", dir_tracking)
+                    # 2. Tracking: trajectory, after.png, after_raw.png already written to tracking/; no move needed
 
-                    # 3. Physics
+                    # 3. Physics: move postprocess_ot outputs from tracking/ to physics; compare/drag already in physics/
                     _move_to(_msd, dir_physics)
                     _move_to(_psd_x, dir_physics)
                     _move_to(_psd_y, dir_physics)
@@ -1333,11 +1333,10 @@ class BatchController:
                     _move_to(_hist_y, dir_physics)
                     _move_to(_hist_r, dir_physics)
                     _move_to(_derived, dir_physics)
-                    
-                    # Optional: Move 2-video compare artifacts to physics
-                    _move_to(run_dir / f"{stem}_compare.csv", dir_physics)
-                    _move_to(run_dir / f"{stem}_drag.json", dir_physics)
-                    
+
+                    # QC plot stays in root (postprocess_ot wrote it to tracking/)
+                    _move_to(_tracking / f"{stem}_qc.png", run_dir)
+
                     # IMPORTANT: run.json, _results.csv, _results.xlsx, _qc.png stay in ROOT.
 
                 except Exception as e:
