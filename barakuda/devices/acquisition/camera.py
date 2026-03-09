@@ -504,6 +504,11 @@ class BaslerCamera(AbstractCamera):
 
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
         is_color = pixel_format not in ("Mono8", "Mono12", "Mono16")
+        # NOTE: AVI/MJPG with fps_hint > ~120 produces cosmetic FFmpeg warnings
+        # ("non monotonically increasing dts") from the mux layer due to AVI's
+        # integer-only timebase arithmetic.  The warning is harmless — frames are
+        # written and timed correctly; fps_effective in meta.json is the ground truth.
+        # For high-speed science use RAW format which has no container overhead.
         writer = cv2.VideoWriter(
             video_path, fourcc, fps_hint, (w, h), isColor=is_color
         )
