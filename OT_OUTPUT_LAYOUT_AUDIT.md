@@ -1,178 +1,163 @@
-# OT Output Layout Audit
+# OT Output Layout — Diagnostic Audit Report
+
+**Branch:** `integration/ot-output-layout-simplification`  
+**Date:** 2026-03-09  
+**Scope:** Focused diagnostic only. No runtime code modified in this step.
+
+---
 
 ## 1. PURPOSE
 
-This audit documents how Optical Tweezers (OT) outputs are currently written to disk so that a later simplification of the OT output layout can be done safely. The goal is to prepare changes that do not break the deterministic workflow: same inputs and config must continue to produce the same outputs and pipeline behavior. No runtime code is modified in this step; this document is diagnostic only.
+This audit maps exactly how OT (Optical Tweezers) preview, tracking, physics, QC, summary, audit, and legacy export-style outputs are currently written to disk. The goal is to prepare safe OT output layout simplification without breaking the deterministic workflow. The audit identifies split preview storage, root-level legacy output clutter, `ot_v2_shadow` duplication, empty placeholder directories, and classifies current outputs for subsequent minimal, safe patches.
 
 ---
 
 ## 2. CURRENT OT OUTPUT ROOTS
 
-Output roots depend on run mode:
-
-| Mode | Output root | Code path |
-|------|-------------|-----------|
-| **Dataset mode** (item selected via item.json) | `item_root/analysis/` | `batch_controller.py`: `run_dir = _item_root_for_run / "analysis"` (line ~787). Subdirs created: `audit`, `tracking`, `physics`. |
-| **Legacy batch mode** (OT batch, no dataset) | `item_root/module/ot/` | `batch_controller.py`: `run_dir = _item_root_for_run / "module" / "ot"` (line ~812). Item root is under `runs_folder/ot/<batch_id>/<item_id>/`. |
-| **Ad-hoc run** (single file, no experiment) | `runs_folder/<run_id>/` | `RunManager.create_run()`: `run_dir = self.runs_folder / run_id` (e.g. `runs/20260309-120000-video_stem/`). |
-
-Additional roots:
-
-- **Preview Gate** (pre-run quality check): `runs_folder/PREVIEW-<timestamp>/` — single directory per gate run; not per-item. (`batch_controller.py` line ~236.)
-- **OT pipeline shadow** (non-dataset only): `run_dir/ot_v2_shadow/` when `_dataset_item_root is None`. Used as `OTExporter` output_dir. (`batch_controller.py` lines ~864–869.)
-- **Manifest resolution**: `manifest.py` resolves analysis dir as (in order) `analysis.dir` field, `item_root/analysis/`, `item_root/module/ot/`, or absolute `run_dir` from manifest.
+| Output root | Mode | Path | Created by |
+|-------------|------|------|------------|
+| **run_dir (dataset)** | Dataset | `item_root/analysis/` | `batch_controller.py` ~787–790: `run_dir = _item_root_for_run / "analysis"`; creates `audit/`, `tracking/`, `physics/` |
+| **run_dir (new batch)** | Non-dataset | `item_root/module/ot/` | `batch_controller.py` ~812–817: `run_dir = _item_root_for_run / "module" / "ot"`; creates `audit/`, `tracking/`, `physics/` |
+| **run_dir (standalone)** | Non-dataset | `runs_folder/<run_id>/` | `run_manager.create_run()`; `batch_controller` creates `audit/`, `tracking/`, `physics/` |
+| **ot_v2_shadow** | Non-dataset only | `run_dir/ot_v2_shadow/` | `batch_controller.py` ~868–873: `shadow_dir = run_dir / "ot_v2_shadow"` when `_dataset_item_root is None` |
+| **preview** | All OT runs | `run_dir/preview/` | `batch_controller.py` ~1006–1007: `dir_preview = run_dir / "preview"`; created when first overlay saved |
+| **gate preview** | Gate run | `runs_folder/PREVIEW-<ts>/` | `batch_controller.py` ~236–237: `self._preview_dir = self.run_manager.runs_folder / f"PREVIEW-{ts}"` |
+| **raw** | New batch only | `item_root/raw/` | `batch_controller.py` ~815: `(_item_root_for_run / "raw").mkdir(...)` |
 
 ---
 
 ## 3. PREVIEW STORAGE
 
-### 3.1 Where preview metadata is written
+### 3.1 Preview metadata
 
-- **Path**: `runs_folder/PREVIEW-<timestamp>/preview_report.json`
-- **Code**: `batch_controller.py` line ~520: `(self._preview_dir / "preview_report.json").write_text(...)`
-- **Content**: JSON with `results` (per-file pass/fail, details), `config` (gate params, preview_roi_rect, preview_frame_index), `ok_all`.
+| Location | Path | Written by | Code path |
+|----------|------|------------|-----------|
+| **Gate run (temporary)** | `runs_folder/PREVIEW-<ts>/preview_report.json` | `run_preview_gate` | `batch_controller.py` ~520–522: `(self._preview_dir / "preview_report.json").write_text(...)` |
+| **Per-run (copy)** | `run_dir/preview/preview_report.json` | Copy from gate | `batch_controller.py` ~1008–1012: `shutil.copy2(self._preview_dir / "preview_report.json", dir_preview / "preview_report.json")` |
 
-### 3.2 Where preview image outputs are written
+### 3.2 Preview image outputs
 
-- **Path**: Per-run directory, not under PREVIEW. For each run, the first-frame overlay is written to **run_dir** as `{stem}_preview_tracking.png`, then (when “Organize Outputs” runs) moved to **run_dir/tracking/**.
-- **Code**: `batch_controller.py`: `save_overlay_png(..., name=f"{stem}_preview_tracking.png")` (line ~1007); later `_move_to(run_dir / f"{stem}_preview_tracking.png", dir_tracking)` (line ~1316).
+| Location | Path | Written by | Code path |
+|----------|------|------------|-----------|
+| **Per-run** | `run_dir/preview/{stem}_preview_tracking.png` | `run_manager.save_overlay_png` | `batch_controller.py` ~1013–1020: `run_manager.save_overlay_png(run_dir=dir_preview, ..., name=f"{stem}_preview_tracking.png")` |
 
 ### 3.3 Split preview storage
 
-Yes. Preview artifacts are split:
+**Yes.** Preview artifacts are split across two locations:
 
-1. **Preview Gate report** (metadata only): `runs_folder/PREVIEW-<timestamp>/preview_report.json` — transient; not under any item or run dir.
-2. **Preview overlay image**: written under the **run** output root (`run_dir`), then moved to `run_dir/tracking/`. So it lives under `item_root/analysis/tracking/` (dataset) or `item_root/module/ot/tracking/` (legacy) or `runs_folder/<run_id>/tracking/` (ad-hoc).
+1. **Gate run (`PREVIEW-<ts>/`)**: The Preview Gate writes `preview_report.json` into a timestamped folder under `runs_folder/`. This folder is **outside** any item or run directory. It holds the gate report for all gate-checked files.
+2. **Per-run (`run_dir/preview/`)**: When processing each run, the batch controller copies `preview_report.json` from the gate folder into `run_dir/preview/` and writes `{stem}_preview_tracking.png` there. So each run has its own copy of the gate report plus the overlay image.
 
-The manifest looks for `preview_report.json` only under the analysis dir (`manifest.py` line ~111: `_first_existing(ad, ["preview_report.json"])`). So for dataset items, the report is not under the item; it is under `runs/PREVIEW-*`, and thus not discoverable via `analysis_dir`.
-
-### 3.4 Relevant code paths
-
-- `batch_controller.run_preview_gate`: sets `_preview_dir = runs_folder / f"PREVIEW-{ts}"`, writes `preview_report.json` there.
-- `batch_controller` run loop: `save_overlay_png(..., name=f"{stem}_preview_tracking.png")` into `run_dir`; later move to `run_dir/tracking/`.
-- `manifest.load_item_manifest`: `m.preview_report_path = _first_existing(ad, ["preview_report.json"])` — only finds it if it were under analysis dir (currently it is not).
+**Manifest resolution gap**: `manifest.py` line 111 uses `_first_existing(ad, ["preview_report.json"])`, which looks only for `preview_report.json` directly under `analysis_dir`. It does **not** check `preview/preview_report.json`. When the report is stored at `run_dir/preview/preview_report.json` (e.g. `module/ot/preview/preview_report.json` or `analysis/preview/preview_report.json`), the manifest does **not** find it.
 
 ---
 
 ## 4. LEGACY ROOT-LEVEL OUTPUTS
 
-When the run directory is `module/ot/` (legacy batch mode) or after “Organize Outputs” in any mode, the following are written or remain at **run_dir root** (i.e. directly in `module/ot/` or `analysis/`):
+Root-level files written directly into `run_dir` (i.e. `module/ot/` or `analysis/`):
 
-| File(s) | Written by | Classification |
-|---------|------------|----------------|
-| `run.json` | `batch_controller` (STEP A + run_id/config) | Structured (run metadata). |
-| `{stem}_trajectory.csv` | `batch_controller` (then moved to `tracking/`) | Structured. |
-| `{stem}_postprocess.json` | `batch_controller` (then moved to `audit/`) | Structured. |
-| `{stem}_psd_fit.json` | `postprocess_ot` (then moved to `audit/`) | Structured. |
-| `{stem}_calibration.json` | `postprocess_ot` (then moved to `audit/`) | Structured. |
-| `{stem}_preview_tracking.png` | `batch_controller` (then moved to `tracking/`) | Structured. |
-| `{stem}_after.png`, `{stem}_after_raw.png` | `batch_controller` (then moved to `tracking/`) | Structured. |
-| `{stem}_msd.csv`, `{stem}_psd_*.csv`, `{stem}_calibration.csv`, `{stem}_hist_*.csv`, `{stem}_derived.csv` | `postprocess_ot` (then moved to `physics/`) | Structured. |
-| `{stem}_compare.csv`, `{stem}_drag.json` | `batch_controller` (then moved to `physics/`) | Structured. |
-| **Remain in root after organize** | | |
-| `run.json` | (unchanged) | Canonical run metadata. |
-| `{stem}_results.csv` | `batch_controller` (single-file bundle) | Legacy export-style bundle. |
-| `{stem}_results.xlsx` | `export_ot_results_xlsx` | Legacy export-style (human bundle). |
-| `{stem}_qc.png` | `postprocess_ot` (QC plot) | Structured QC artifact; left in root by design (comment line ~1334). |
+| File | Writer | Purpose |
+|------|--------|---------|
+| `run.json` | `batch_controller` | Run metadata (run_id, created_at, input_path, config) |
+| `{stem}_qc.png` | Moved from `tracking/` | QC plot (PSD + MSD); postprocess_ot writes to tracking/, organize moves to root |
+| `{stem}_results.csv` | Batch bundle write | Combined trajectory/postprocess sections |
+| `{stem}_results.xlsx` | Batch bundle write | XLSX export of results |
+| **OTExporter (ot_v2_shadow / dataset run_dir)** | | |
+| `{stem}_camera_meta.json` | OTExporter | Camera metadata |
+| `{stem}_qc.json` | OTExporter | QC audit dict |
+| `{stem}_trajectory.csv` | OTExporter | Drift-corrected trajectory |
+| `{stem}_derived.csv` | OTExporter | Derived physics per axis |
+| `results.csv` | OTExporter | Canonical Bible V3 results |
+| `{stem}_ot_summary.json` | OTExporter | Full audit summary |
+| `run_manifest.json` | OTExporter | Index of pipeline outputs |
+| `{export_prefix}psd_*.png`, `welch_psd_*.png` | OTExporter | Strategy PSD plots |
 
-So the root-level legacy export-style outputs that stay in the run root are: `*_results.csv`, `*_results.xlsx`, and `*_qc.png`. The rest are moved into `audit/`, `tracking/`, or `physics/`.
+**Classification**: `run.json` is canonical. `{stem}_qc.png`, `_results.csv`, `_results.xlsx` are batch-path outputs kept at root by design. OTExporter outputs in root (or `ot_v2_shadow`) are **legacy export-style** when they duplicate structured outputs in `tracking/`, `physics/`, `audit/`.
 
 ---
 
 ## 5. DUPLICATES / PARALLEL TRUTH
 
-### 5.1 `tracking` vs root vs `ot_v2_shadow`
+| Logical artifact | Batch path | ot_v2_shadow (or run_dir in dataset mode) | Same content? |
+|------------------|------------|-------------------------------------------|---------------|
+| **Trajectory** | `tracking/{stem}_trajectory.csv` (frame, t_s, x_px, y_px, quality, peak, roi…) | `{stem}_trajectory.csv` (t_s, x_px, y_px, confidence, x_um, y_um, x_corr_px, y_corr_px, lost, lost_reason) | No — different schema |
+| **QC** | Root `{stem}_qc.png`; audit has postprocess/psd_fit/calibration | `{stem}_qc.json` | No — PNG vs JSON |
+| **Derived physics** | `physics/{stem}_derived.csv` | `{stem}_derived.csv` | Similar — same logical data |
+| **Calibration** | `audit/{stem}_calibration.json`, `physics/{stem}_calibration.csv` | Embedded in `{stem}_ot_summary.json` | Overlap |
+| **MSD/PSD CSVs** | `physics/{stem}_msd.csv`, `{stem}_psd_x.csv`, `{stem}_psd_y.csv` | Not in ot_v2_shadow | — |
+| **Strategy plots** | None | `welch_psd_*.png`, etc. | OTPipeline-only |
+| **Run index** | Root `run.json` | `run_manifest.json` | Different format |
 
-- **Trajectory**: Written once as `run_dir/{stem}_trajectory.csv`, then moved to `run_dir/tracking/`. So there is a single trajectory file per run (no duplicate).
-- **In non-dataset mode**, `OTExporter` (OTPipeline) also writes a trajectory to **ot_v2_shadow**: `ot_v2_shadow/{stem}_trajectory.csv` (different schema: t_s, x_px, y_px, confidence, x_um, y_um, x_corr_px, y_corr_px, lost, lost_reason). So for the same run we have:
-  - **Batch path**: `run_dir/tracking/{stem}_trajectory.csv` (batch_controller + postprocess_ot format).
-  - **Shadow path**: `run_dir/ot_v2_shadow/{stem}_trajectory.csv` (OT pipeline format).
-  Same logical result (positions), two formats and two locations.
-
-### 5.2 `physics` vs root vs `ot_v2_shadow`
-
-- MSD, PSD, calibration, derived, etc. are written by `postprocess_ot` to `run_dir`, then moved to `run_dir/physics/`. No second copy in root after organize.
-- **ot_v2_shadow** contains: `*_derived.csv`, `results.csv` (canonical), strategy plots, and (via `ot_summary.json`) references to the same logical results. So derived/physics-style results exist in both `physics/` (batch) and `ot_v2_shadow/` (pipeline).
-
-### 5.3 `audit` vs root vs `ot_v2_shadow`
-
-- Postprocess and calibration JSONs are written to root, then moved to `run_dir/audit/`. Single copy after organize.
-- **ot_v2_shadow** has: `*_camera_meta.json`, `*_qc.json`, `*_ot_summary.json`, `run_manifest.json`. So audit-style metadata exists in both `audit/` (batch: postprocess, psd_fit, calibration) and `ot_v2_shadow/` (pipeline: camera_meta, qc, ot_summary, run_manifest).
-
-### 5.4 Summary of parallel truth
-
-| Logical artifact | Batch location (after organize) | ot_v2_shadow (non-dataset only) |
-|------------------|---------------------------------|----------------------------------|
-| Trajectory | `tracking/{stem}_trajectory.csv` | `{stem}_trajectory.csv` (different columns) |
-| QC | root `{stem}_qc.png`; postprocess in audit | `{stem}_qc.json` |
-| Calibration / fit | `audit/{stem}_postprocess.json`, `_psd_fit.json`, `_calibration.json` | `*_ot_summary.json`, strategy results in summary |
-| Derived physics | `physics/{stem}_derived.csv`, etc. | `{stem}_derived.csv`, `results.csv` |
-| Run index | `run.json` (root) | `run_manifest.json` |
-
-The same run therefore has two parallel representations in non-dataset mode: batch_controller + postprocess_ot (root + audit/tracking/physics) and OTPipeline + OTExporter (ot_v2_shadow).
+**Parallel pipelines**: The same run is processed by (1) **OTPipeline + OTExporter** (runs first, writes to `shadow_dir` or `run_dir`), and (2) **batch path** (tracking loop + postprocess_ot + organize). Both produce trajectory, QC, and physics artifacts; OTPipeline uses different modules and schema.
 
 ---
 
 ## 6. EMPTY PLACEHOLDER DIRECTORIES
 
-### 6.1 Under item root (legacy batch mode only)
+| Directory | Created | Populated | Source |
+|-----------|---------|-----------|--------|
+| `audit/` | Always | Yes — postprocess JSONs, psd_fit, calibration | `batch_controller` ~790, 817, 836 |
+| `tracking/` | Always | Yes — trajectory, after.png, after_raw.png, hist PNGs | `batch_controller` |
+| `physics/` | Always | Yes — msd, psd, calibration CSV, hist CSVs, derived, compare | `batch_controller` organize |
+| `preview/` | On first overlay save | Yes — preview_report.json, {stem}_preview_tracking.png | `batch_controller` ~1006–1020 |
+| `raw/` | New-batch mode only | Yes — archived video | `batch_controller` ~815 |
+| `ot_v2_shadow/` | Non-dataset mode only | Yes — OTExporter outputs | `batch_controller` ~871–873 |
 
-When `run_dir = _item_root_for_run / "module" / "ot"`, the code creates subdirs under **item root** (not under `module/ot`):
-
-- `item_root/raw/` — used; video (and optional meta) is copied here (batch_controller step E).
-- `item_root/results/` — created, **never populated** by current code. Placeholder.
-- `item_root/qc/` — created, **never populated**. Placeholder.
-- `item_root/artifacts/` — created, **never populated**. Placeholder.
-
-Code: `batch_controller.py` lines ~814–815: `for _sd in ("raw", "results", "qc", "artifacts"): (_item_root_for_run / _sd).mkdir(parents=True, exist_ok=True)`.
-
-### 6.2 Under run_dir (dataset and legacy)
-
-- `run_dir/audit/`, `run_dir/tracking/`, `run_dir/physics/` — created and then populated by moves; not empty after a full run.
-- Dataset mode: only `audit`, `tracking`, `physics` are created under `analysis/` (line ~789). No `raw`, `results`, `qc`, `artifacts` at item root in dataset mode.
+**No empty placeholder directories** are created in the current OT flow. All created subdirs are populated by the same run. The merge review (OT_OUTPUT_LAYOUT_MERGE_REVIEW) mentions that an earlier change stopped creating `results/`, `qc/`, and `artifacts/` under item root in legacy batch mode; the current code creates only `raw/` at item level in new-batch mode.
 
 ---
 
 ## 7. CLASSIFICATION
 
-| Artifact / location | Classification | Notes |
-|---------------------|----------------|--------|
-| `run_dir/run.json` | **CANONICAL CANDIDATE** | Single source of run identity and config. |
-| `run_dir/tracking/{stem}_trajectory.csv` | **CANONICAL CANDIDATE** | Primary trajectory after organize. |
-| `run_dir/audit/` (postprocess, psd_fit, calibration JSONs) | **CANONICAL CANDIDATE** | Structured audit trail. |
-| `run_dir/physics/` (MSD, PSD, calibration CSV, derived, etc.) | **CANONICAL CANDIDATE** | Primary physics outputs. |
-| `run_dir/{stem}_qc.png` | **CANONICAL CANDIDATE** | Single QC plot; currently left in root by design. |
-| `run_dir/{stem}_results.csv`, `run_dir/{stem}_results.xlsx` | **LEGACY CANDIDATE** | Export-style bundles; could be moved or phased out. |
-| `runs_folder/PREVIEW-{ts}/preview_report.json` | **LEGACY CANDIDATE** | Preview metadata not under item; split from item. |
-| `run_dir/ot_v2_shadow/` (entire tree) | **DUPLICATE / TRANSITIONAL** | Parallel pipeline output; overlaps with audit/tracking/physics and root. |
-| `item_root/results/`, `item_root/qc/`, `item_root/artifacts/` | **NEEDS DECISION** | Empty placeholders; either remove creation or start using. |
-| `run_dir/{stem}_preview_tracking.png` → `tracking/` | **CANONICAL CANDIDATE** | Preview image per run; already under tracking. |
-| Manifest `preview_report_path` | **NEEDS DECISION** | Currently looks under analysis dir; report is under PREVIEW-* so not found. |
+| Output | Classification | Notes |
+|--------|----------------|-------|
+| `run.json` | **CANONICAL CANDIDATE** | Run metadata; required |
+| `tracking/{stem}_trajectory.csv` | **CANONICAL CANDIDATE** | Batch trajectory; canonical for batch path |
+| `tracking/{stem}_after.png`, `_after_raw.png` | **CANONICAL CANDIDATE** | Overlay images |
+| `audit/{stem}_postprocess.json`, `_psd_fit.json`, `_calibration.json` | **CANONICAL CANDIDATE** | Audit trail |
+| `physics/{stem}_msd.csv`, `_psd_*.csv`, `_calibration.csv`, `_hist_*.csv`, `_derived.csv` | **CANONICAL CANDIDATE** | Physics outputs |
+| `preview/preview_report.json`, `preview/{stem}_preview_tracking.png` | **CANONICAL CANDIDATE** | Preview outputs; manifest should resolve `preview/preview_report.json` |
+| `{stem}_qc.png` at root | **LEGACY CANDIDATE** | Moved from tracking/; could live in audit/ or tracking/ |
+| `{stem}_results.csv`, `{stem}_results.xlsx` | **LEGACY CANDIDATE** | Bundle outputs; could move to structured subdir |
+| **ot_v2_shadow contents** | **DUPLICATE / TRANSITIONAL** | Parallel to batch path; trajectory, derived, QC overlap |
+| `{stem}_camera_meta.json`, `{stem}_ot_summary.json`, `run_manifest.json` | **TRANSITIONAL** | OTPipeline-only; useful for pipeline consumers |
+| `welch_psd_*.png` (strategy plots) | **CANONICAL CANDIDATE** | Only from OTPipeline; no batch equivalent |
+| `{stem}_trajectory.csv`, `{stem}_qc.json`, `{stem}_derived.csv` in ot_v2_shadow | **DUPLICATE / TRANSITIONAL** | Overlap with batch path |
+| Manifest `preview_report_path` resolution | **NEEDS DECISION** | Add `preview/preview_report.json` to manifest candidates |
 
 ---
 
 ## 8. EXACT NEXT SAFE PATCH
 
-**Goal**: One smallest safe runtime change after this audit.
+**File:** `barakuda/devices/optical_tweezers/manifest.py`
 
-- **Suggested step**: Stop creating the unused placeholder directories under item root in legacy batch mode, so that `results/`, `qc/`, and `artifacts/` are no longer created. Keep creating `raw/` (still used for video copy).
-- **Exact file(s)**: `barakuda/shell/batch_controller.py`
-- **Exact behavior**: In the block where `run_dir = _item_root_for_run / "module" / "ot"` (around lines 812–816), change the loop that creates subdirs from `("raw", "results", "qc", "artifacts")` to `("raw",)` only. So: create only `item_root/raw/`; do not create `item_root/results/`, `item_root/qc/`, `item_root/artifacts/`.
-- **Why smallest safe step**: (1) No reader code in the codebase currently reads from `item_root/results/`, `qc/`, or `artifacts/`. (2) Deterministic behavior is unchanged: same inputs still produce the same files under `run_dir` and `run_dir/audit`, `run_dir/tracking`, `run_dir/physics`. (3) Reduces clutter and makes it clear that the canonical outputs live under `module/ot/` (and its subdirs), not in those item-level folders.
+**Change:** Add `preview/preview_report.json` to the list of candidates when resolving `preview_report_path`. Currently line 111 uses:
+
+```python
+m.preview_report_path = _first_existing(ad, ["preview_report.json"])
+```
+
+Change to:
+
+```python
+m.preview_report_path = _first_existing(ad, ["preview_report.json", "preview/preview_report.json"])
+```
+
+**Why smallest safe step:** (1) Preview metadata and image are already written to `run_dir/preview/`; the manifest simply does not look there. (2) One-line change; no schema or layout change. (3) Enables manifest-based consumers (e.g. Export tab, discovery) to find the preview report when it lives in `preview/`. (4) No change to write paths, OTPipeline, batch controller, or experiment registry.
 
 ---
 
 ## 9. VERIFY PLAN
 
-Use these steps to verify the next runtime patch (stop creating `results/`, `qc/`, `artifacts/` under item root):
+After applying the manifest fix:
 
-1. **Branch**: Checkout `integration/ot-output-layout-simplification` and apply the patch.
-2. **Clean run**: Remove or rename an existing OT batch item dir (e.g. under `runs/ot/<batch_id>/`) so the next run creates a new item.
-3. **Run OT batch**: Run the OT pipeline on one or more files in non-dataset (legacy batch) mode so that a new item dir is created under `runs/ot/<batch_id>/<item_id>/`.
-4. **Check item root**: Under `runs/ot/<batch_id>/<item_id>/` confirm:
-   - `raw/` exists (and contains the copied video if applicable).
-   - `results/`, `qc/`, and `artifacts/` do **not** exist.
-5. **Check run_dir**: Under `runs/ot/<batch_id>/<item_id>/module/ot/` confirm:
-   - `run.json`, `*_results.csv`, `*_results.xlsx`, `*_qc.png` exist at root;
-   - `audit/`, `tracking/`, `physics/` exist and contain the expected moved files.
-6. **Determinism**: Run the same batch again (same input list and config) and confirm the same set of files and directory layout (no new placeholder dirs, same outputs under `module/ot/`).
+1. **Branch:** Confirm `integration/ot-output-layout-simplification`.
+2. **Run OT** on a dataset or batch item that produces preview outputs (gate run + normal run).
+3. **Check layout:** Confirm `run_dir/preview/preview_report.json` and `run_dir/preview/{stem}_preview_tracking.png` exist.
+4. **Manifest:** Load `item.json` via `load_item_manifest`; confirm `m.preview_report_path` resolves to `.../preview/preview_report.json` (not None).
+5. **Regression:** For items without `preview/` (e.g. old runs), confirm manifest still works and `preview_report_path` is None when neither candidate exists.
+6. **No other changes:** Confirm only `manifest.py` was modified; no batch_controller, exporter, or discovery changes.
+
+---
+
+*End of report. No runtime code was modified in this step.*
