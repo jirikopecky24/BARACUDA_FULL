@@ -612,7 +612,7 @@ class BatchController:
             _ot_batch_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
             _ot_mirror_root = self.run_manager.runs_folder / "ot" / _ot_batch_id
             _ot_items_root = _ot_mirror_root / "items"
-            _ot_items_root.mkdir(parents=True, exist_ok=True)
+            # Directory created lazily: only when a non-dataset item actually needs it.
             _ot_batch_created_at = datetime.now().isoformat()
 
         baseline_by_key: dict[str, dict[str, Any]] = {}
@@ -800,6 +800,7 @@ class BatchController:
                     )
                 elif _ot_items_root is not None and _ot_batch_id is not None:
                     # New-batch mode: create a fresh item directory under current batch.
+                    _ot_items_root.mkdir(parents=True, exist_ok=True)  # lazy creation
                     _base = re.sub(r"[^A-Za-z0-9._\-]", "_", stem)
                     _item_id_for_run = _base
                     _n_coll = 1
@@ -858,7 +859,12 @@ class BatchController:
                             from barakuda.devices.optical_tweezers.strategies.psd_welch import PsdWelchStrategy
                             strat = PsdWelchStrategy()
                             
-                        shadow_dir = run_dir / "ot_v2_shadow"
+                        # Dataset mode: write OTPipeline outputs directly into analysis/.
+                        # Non-dataset mode: use legacy ot_v2_shadow subdirectory.
+                        shadow_dir = (
+                            run_dir if _dataset_item_root is not None
+                            else run_dir / "ot_v2_shadow"
+                        )
                         shadow_dir.mkdir(parents=True, exist_ok=True)
                         exporter = OTExporter(shadow_dir)
                         pipeline = OTPipeline(strat, exporter, self._log)
