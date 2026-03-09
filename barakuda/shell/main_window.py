@@ -186,9 +186,25 @@ class ShellMainWindow(QMainWindow):
 
     def _on_item_selected(self, path: Path) -> None:
         self.log_panel.log(f"Selected: {path}")
+
+        # OT dataset manifest: resolve item.json → video path for all downstream use
+        # (scale loading, end-frame, params key).  PreviewPanel handles its own resolution too.
+        _ot_resolved_path = path
+        if self._active_device_id == "optical_tweezers" and path.name == "item.json":
+            try:
+                from barakuda.devices.optical_tweezers.manifest import load_item_manifest
+                _m = load_item_manifest(path)
+                if _m.video_path is not None:
+                    _ot_resolved_path = _m.video_path
+                    self.log_panel.log(
+                        f"Dataset manifest resolved: {_m.video_path.name}"
+                    )
+            except Exception as _e:
+                self.log_panel.log(f"WARN: item.json resolve failed: {_e!r}")
+
         try:
             self.preview.show_file(str(path))
-            self.log_panel.log("Preview: video loaded." if is_video_file(path) else "Preview: file loaded.")
+            self.log_panel.log("Preview: video loaded." if is_video_file(_ot_resolved_path) else "Preview: file loaded.")
         except Exception as e:
             self.log_panel.log(f"Preview ERROR: {e!r}")
 
@@ -213,7 +229,7 @@ class ShellMainWindow(QMainWindow):
         # Keep OT scale visible + deterministic default.
         if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
             try:
-                info = load_dataset_scale(path)
+                info = load_dataset_scale(_ot_resolved_path)
                 if info is not None and info.um_per_px is not None:
                     um = float(info.um_per_px)
                     txt = f"Scale: {um:.6f} µm/px (dataset)"

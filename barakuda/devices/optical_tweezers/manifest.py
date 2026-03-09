@@ -210,6 +210,12 @@ def _first_video_in_dir(directory: Path) -> Optional[Path]:
     return None
 
 
+def is_item_json(path: Path) -> bool:
+    """Return True if path points to an OT dataset item.json manifest."""
+    path = Path(path)
+    return path.name == "item.json" and path.is_file()
+
+
 def _glob_first(directory: Path, pattern: str) -> Optional[Path]:
     try:
         matches = sorted(directory.glob(pattern))

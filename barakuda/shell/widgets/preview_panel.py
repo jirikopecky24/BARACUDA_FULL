@@ -114,6 +114,27 @@ class PreviewPanel(QWidget):
     def show_file(self, path_str: str) -> None:
         path = Path(path_str)
 
+        # --- OT dataset manifest: resolve item.json → acquisition video ---
+        if self._device_kind == "OT" and path.name == "item.json":
+            try:
+                from barakuda.devices.optical_tweezers.manifest import load_item_manifest
+                _m = load_item_manifest(path)
+                if _m.video_path is not None:
+                    path = _m.video_path
+                    path_str = str(path)
+                else:
+                    self._clear_views()
+                    self._video_row.setVisible(False)
+                    self._info.setText(
+                        f"{path}\n\nDataset item.json: no acquisition video found."
+                    )
+                    return
+            except Exception as _e:
+                self._clear_views()
+                self._video_row.setVisible(False)
+                self._info.setText(f"{path}\n\nDataset item.json load error: {_e!r}")
+                return
+
         if self._reader is not None:
             try:
                 self._reader.close()
