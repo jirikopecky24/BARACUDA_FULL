@@ -1143,36 +1143,20 @@ class PipelinePanel(QWidget):
             self._refresh_export_artifact_checkboxes([])
 
     def _refresh_export_artifact_checkboxes(self, artifacts: list[dict]) -> None:
-        """Rebuild artifact checkboxes from discovery result, grouped by DATA / REPORTS / PLOTS."""
+        """Rebuild artifact checkboxes from discovery result: one checkbox per discovered file."""
         while self._export_artifacts_layout.count():
             child = self._export_artifacts_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
         self._export_artifact_checkboxes.clear()
 
-        artifacts_by_id = {a["id"]: a for a in artifacts}
-        group_style = "font-weight: bold; color: #555; font-size: 11px; margin-top: 6px;"
-
-        groups = [
-            ("DATA", ["trajectory_csv", "tracking_csv", "psd_csv"]),
-            ("REPORTS", ["qc_report", "run_json"]),
-            ("PLOTS", []),
-        ]
-
-        for group_label, artifact_ids in groups:
-            group_artifacts = [(aid, artifacts_by_id[aid]) for aid in artifact_ids if aid in artifacts_by_id]
-            if not group_artifacts:
-                continue
-            header = QLabel(group_label)
-            header.setStyleSheet(group_style)
-            self._export_artifacts_layout.addWidget(header)
-            for aid, art in group_artifacts:
-                cb = QCheckBox(art["label"])
-                cb.setEnabled(True)
-                cb.setChecked(True)
-                cb.stateChanged.connect(self._update_export_button_state)
-                self._export_artifacts_layout.addWidget(cb)
-                self._export_artifact_checkboxes[art["id"]] = cb
+        for art in artifacts:
+            cb = QCheckBox(art["label"])
+            cb.setEnabled(True)
+            cb.setChecked(True)
+            cb.stateChanged.connect(self._update_export_button_state)
+            self._export_artifacts_layout.addWidget(cb)
+            self._export_artifact_checkboxes[art["id"]] = cb
 
         self._update_export_button_state()
 
