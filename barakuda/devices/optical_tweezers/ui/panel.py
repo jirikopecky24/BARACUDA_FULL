@@ -246,12 +246,46 @@ class PipelinePanel(QWidget):
         self.btn_save_scale.clicked.connect(self.save_dataset_scale_clicked.emit)
 
         # ── Export ───────────────────────────────────────────────
+        self._export_dataset_path: str | None = None
+
         export_box = QWidget()
-        export_layout = QFormLayout(export_box)
-        # We can put some placeholders here or move Export-related stuff later
-        export_lbl = QLabel("Export Options")
-        export_lbl.setStyleSheet("color: #666; font-weight: bold;")
-        export_layout.addRow("", export_lbl)
+        _exp_layout = QVBoxLayout(export_box)
+        _exp_layout.setContentsMargins(0, 0, 0, 8)
+        _exp_layout.setSpacing(6)
+
+        _exp_header = QLabel("OT Dataset Export")
+        _exp_header.setStyleSheet("font-weight: bold; color: #555;")
+        _exp_layout.addWidget(_exp_header)
+
+        _exp_sel_row = QHBoxLayout()
+        self._btn_open_export_dataset = QPushButton("Open dataset (item.json)…")
+        self._btn_open_export_dataset.setToolTip(
+            "Select an item.json to browse its analysis outputs and export them."
+        )
+        self._btn_open_export_dataset.clicked.connect(self._on_open_export_dataset)
+        _exp_sel_row.addWidget(self._btn_open_export_dataset)
+        _exp_sel_row.addStretch(1)
+        _exp_layout.addLayout(_exp_sel_row)
+
+        self._export_status_lbl = QLabel("No dataset loaded.")
+        self._export_status_lbl.setWordWrap(True)
+        self._export_status_lbl.setStyleSheet("color: #666;")
+        _exp_layout.addWidget(self._export_status_lbl)
+
+        self._export_files_lbl = QLabel("")
+        self._export_files_lbl.setWordWrap(True)
+        self._export_files_lbl.setStyleSheet("color: #444; font-size: 10px;")
+        _exp_layout.addWidget(self._export_files_lbl)
+
+        self._btn_export_all = QPushButton("Export all available files →")
+        self._btn_export_all.setToolTip(
+            "Copy all analysis outputs from the dataset to a destination folder."
+        )
+        self._btn_export_all.setEnabled(False)
+        self._btn_export_all.clicked.connect(self._on_export_all_clicked)
+        _exp_layout.addWidget(self._btn_export_all)
+
+        _exp_layout.addStretch(1)
         
         # ── Postprocess ───────────────────────────────────────────────
         self._pp_enabled = QCheckBox("Enable OT-3.1 postprocess (QC + drift)")
@@ -984,3 +1018,150 @@ class PipelinePanel(QWidget):
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()
+
+    # ── Export tab helpers ────────────────────────────────────────────────────
+
+    def set_dataset_path(self, path_str: str) -> None:
+        """Set the active dataset path (item.json or video). Refreshes export status."""
+        self._export_dataset_path = str(path_str) if path_str else None
+        self._refresh_export_status()
+
+    def _on_open_export_dataset(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open OT dataset manifest",
+            "",
+            "Dataset manifest (item.json);;All files (*)",
+        )
+        if path_str:
+            self._export_dataset_path = path_str
+            self._refresh_export_status()
+
+    def _refresh_export_status(self) -> None:
+        from pathlib import Path as _Path
+
+        p = self._export_dataset_path
+        if not p:
+            self._export_status_lbl.setText("No dataset loaded.")
+            self._export_files_lbl.setText("")
+            self._btn_export_all.setEnabled(False)
+            return
+
+        path = _Path(p)
+
+        # Accept both item.json directly and video paths inside the item folder
+        item_json: _Path | None = None
+        if path.name == "item.json":
+            item_json = path
+        else:
+            for candidate in (
+                path.parent / "item.json",
+                path.parent.parent / "item.json",
+            ):
+                if candidate.is_file():
+                    item_json = candidate
+                    break
+
+        if item_json is None:
+            self._export_status_lbl.setText(f"No item.json found near:\n{p}")
+            self._export_files_lbl.setText("")
+            self._btn_export_all.setEnabled(False)
+            return
+
+        try:
+            from barakuda.devices.optical_tweezers.manifest import load_item_manifest
+            m = load_item_manifest(item_json)
+
+            lines: list[str] = [f"Item: {item_json.parent.name}"]
+            file_lines: list[str] = []
+
+            if m.analysis_dir is not None and m.analysis_dir.is_dir():
+                try:
+                    rel = m.analysis_dir.relative_to(m.item_root)
+                except ValueError:
+                    rel = m.analysis_dir
+                lines.append(f"Analysis: {rel}")
+                for f in sorted(m.analysis_dir.rglob("*")):
+                    if f.is_file():
+                        try:
+                            file_lines.append(f"  {f.relative_to(m.item_root)}")
+                        except Exception:
+                            file_lines.append(f"  {f.name}")
+            else:
+                lines.append("No analysis folder found yet — run the pipeline first.")
+
+            if m.exports_dir is not None and m.exports_dir.is_dir():
+                try:
+                    rel = m.exports_dir.relative_to(m.item_root)
+                except ValueError:
+                    rel = m.exports_dir
+                lines.append(f"Exports: {rel}")
+
+            self._export_status_lbl.setText("\n".join(lines))
+            self._export_files_lbl.setText(
+                "\n".join(file_lines) if file_lines else "  (no files yet)"
+            )
+            self._btn_export_all.setEnabled(bool(file_lines))
+
+        except Exception as _e:
+            self._export_status_lbl.setText(f"Error loading manifest:\n{_e!r}")
+            self._export_files_lbl.setText("")
+            self._btn_export_all.setEnabled(False)
+
+    def _on_export_all_clicked(self) -> None:
+        from pathlib import Path as _Path
+        import shutil as _shutil
+        from PyQt6.QtWidgets import QFileDialog
+
+        p = self._export_dataset_path
+        if not p:
+            return
+
+        out_dir_str = QFileDialog.getExistingDirectory(
+            self, "Select export destination folder"
+        )
+        if not out_dir_str:
+            return
+
+        out_dir = _Path(out_dir_str)
+        path = _Path(p)
+
+        item_json: _Path | None = None
+        if path.name == "item.json":
+            item_json = path
+        else:
+            for candidate in (
+                path.parent / "item.json",
+                path.parent.parent / "item.json",
+            ):
+                if candidate.is_file():
+                    item_json = candidate
+                    break
+
+        if item_json is None:
+            self._export_status_lbl.setText("Export failed: item.json not found.")
+            return
+
+        try:
+            from barakuda.devices.optical_tweezers.manifest import load_item_manifest
+            m = load_item_manifest(item_json)
+
+            copied = 0
+            if m.analysis_dir is not None and m.analysis_dir.is_dir():
+                for f in m.analysis_dir.rglob("*"):
+                    if f.is_file():
+                        try:
+                            rel = f.relative_to(m.analysis_dir)
+                            dst = out_dir / rel
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            _shutil.copy2(f, dst)
+                            copied += 1
+                        except Exception:
+                            pass
+
+            self._export_status_lbl.setText(
+                f"Exported {copied} file(s) to:\n{out_dir}"
+            )
+        except Exception as _e:
+            self._export_status_lbl.setText(f"Export error:\n{_e!r}")
