@@ -235,6 +235,10 @@ class AcquisitionPanel(QWidget):
         self._last_estimated_fps: float | None = None
         self._last_record_result: RecordResult | None = None
 
+        # Countdown timer state
+        self._rec_start_time: float = 0.0
+        self._rec_duration_s: float = 0.0
+
         self._build_ui()
 
         # If pypylon is missing, disable everything and show warning
@@ -514,6 +518,11 @@ class AcquisitionPanel(QWidget):
         rec_btn_row.addWidget(self._btn_sim_raw)
         rec_form.addRow("", rec_btn_row)
 
+        self._lbl_countdown = QLabel("")
+        self._lbl_countdown.setStyleSheet("font-weight: bold; color: #cc4400;")
+        self._lbl_countdown.setVisible(False)
+        rec_form.addRow("", self._lbl_countdown)
+
         # -- Settings --
         grp_settings = QGroupBox("Settings")
         settings_form = QFormLayout(grp_settings)
@@ -598,6 +607,11 @@ class AcquisitionPanel(QWidget):
         # -- Preview render timer (~25 fps): pulls latest frame from camera buffer --
         self._preview_timer = QTimer(self)
         self._preview_timer.timeout.connect(self._on_preview_timer_tick)
+
+        # -- Recording countdown timer (250 ms ticks, UI only) --
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(250)
+        self._countdown_timer.timeout.connect(self._on_countdown_tick)
 
         # Initial info render
         QTimer.singleShot(0, self._render_info_text)
@@ -1048,6 +1062,13 @@ class AcquisitionPanel(QWidget):
                 "RAW format is recommended for scientific acquisition."
             )
 
+        # Start UI countdown
+        self._rec_start_time = time.perf_counter()
+        self._rec_duration_s = dur_s
+        self._lbl_countdown.setVisible(True)
+        self._on_countdown_tick()   # immediate first update
+        self._countdown_timer.start()
+
         # Stop the Qt render timer so no more frames are painted.
         # The actual camera stop_preview() + join happens inside the worker
         # thread (record_raw / record both call it on entry) — calling it here
@@ -1084,6 +1105,15 @@ class AcquisitionPanel(QWidget):
 
     def _on_stop_record(self) -> None:
         self._camera.stop_record()
+
+    def _on_countdown_tick(self) -> None:
+        """Update the countdown label every 250 ms (UI only, no effect on recording)."""
+        if self._rec_duration_s <= 0:
+            self._lbl_countdown.setText("⏺ REC running…")
+            return
+        elapsed = time.perf_counter() - self._rec_start_time
+        remaining = max(0.0, self._rec_duration_s - elapsed)
+        self._lbl_countdown.setText(f"⏺ REC: {remaining:.1f} s remaining")
 
     def _on_sim_raw(self) -> None:
         """Run a simulated RAW recording (no camera needed)."""
@@ -1159,6 +1189,9 @@ class AcquisitionPanel(QWidget):
         t.start()
 
     def _on_record_done(self, result: RecordResult) -> None:
+        self._countdown_timer.stop()
+        self._lbl_countdown.setText("✅ REC complete")
+
         fps_str = (
             f"{result.fps_effective:.1f}" if result.fps_effective else "N/A"
         )
@@ -1213,6 +1246,8 @@ class AcquisitionPanel(QWidget):
         QTimer.singleShot(200, self._on_start_preview)
 
     def _on_record_error(self, err: str) -> None:
+        self._countdown_timer.stop()
+        self._lbl_countdown.setText("❌ REC stopped")
         self._status.setText(f"❌ Record error: {err}")
         self._log(f"Recording FAILED — {err}")
         self._btn_record.setEnabled(True)
