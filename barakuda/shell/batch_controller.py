@@ -244,6 +244,28 @@ class BatchController:
                 results.append(PreviewResult(str(p), False, "FAIL", "File not found", {}))
                 continue
 
+            # OT dataset manifest: resolve item.json → acquisition video path.
+            # The resolved video path is used for all subsequent gate operations.
+            # PreviewResult stores the resolved video path so run_batch receives it.
+            if device_id == "optical_tweezers" and p.name == "item.json":
+                try:
+                    from barakuda.devices.optical_tweezers.manifest import load_item_manifest
+                    _mf = load_item_manifest(p)
+                    if _mf.video_path is not None:
+                        p = _mf.video_path
+                    else:
+                        results.append(PreviewResult(
+                            str(p), False, "FAIL",
+                            "item.json: no acquisition video found", {}
+                        ))
+                        continue
+                except Exception as _mf_err:
+                    results.append(PreviewResult(
+                        str(p), False, "FAIL",
+                        f"item.json load error: {_mf_err!r}", {}
+                    ))
+                    continue
+
             if device_id == "optical_tweezers":
                 if not is_video_file(p):
                     results.append(PreviewResult(str(p), False, "FAIL", "Not a video file", {}))
