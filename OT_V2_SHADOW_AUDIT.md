@@ -1,8 +1,14 @@
-# OT v2 Shadow Audit
+# OT v2 Shadow — Diagnostic Audit Report
+
+**Branch:** `integration/ot-output-layout-simplification`  
+**Date:** 2026-03-09  
+**Scope:** Focused diagnostic only. No runtime code modified in this step.
+
+---
 
 ## 1. PURPOSE
 
-This audit documents the current `ot_v2_shadow` subdirectory in BARAKUDA's OT output layout. The goal is to identify which artifacts in `ot_v2_shadow` are still necessary, which duplicate artifacts elsewhere, and what the smallest safe de-duplication path is. This prepares safe migration steps without breaking the deterministic workflow. No runtime code is modified in this step.
+This audit isolates the remaining OT layout clutter before any cleanup patch is attempted. It identifies exactly which files in `module/ot/ot_v2_shadow` are still required, which duplicate outputs elsewhere in the OT layout, which root-level `module/ot` files are legacy export-style clutter, and what the smallest safe de-duplication / cleanup path is. The goal is to prepare safe migration steps without breaking the deterministic workflow.
 
 ---
 
@@ -12,123 +18,157 @@ This audit documents the current `ot_v2_shadow` subdirectory in BARAKUDA's OT ou
 
 When present, `ot_v2_shadow/` is `run_dir/ot_v2_shadow/` where `run_dir` is `item_root/module/ot/`. Its contents are produced entirely by **OTExporter** (called from **OTPipeline**):
 
-| File(s) | Written by | Content |
-|---------|------------|---------|
-| `{stem}_camera_meta.json` | OTExporter | Camera metadata (fps, exposure_ms, gain, roi_w/h, timestamps, um_per_px). |
-| `{stem}_qc.json` | OTExporter | QC audit dict from pipeline `compute_qc`. |
-| `{stem}_trajectory.csv` | OTExporter | Trajectory with columns: t_s, x_px, y_px, confidence, x_um, y_um, x_corr_px, y_corr_px, lost, lost_reason (+ x_corr_um, y_corr_um if scaled). |
-| `{stem}_derived.csv` | OTExporter | Derived physics per axis (mode, strategy, axis, fc_hz, k_pN_um, etc.). |
-| `results.csv` | OTExporter | Canonical results.csv (Bible V3) — single file for all axes. |
-| `{stem}_ot_summary.json` | OTExporter | Full audit summary: camera_meta, preprocess, qc, strategy, result_dict, artifacts, trajectory metadata. |
-| `run_manifest.json` | OTExporter | Index: video_file, summary_file, trajectory_file, results_file, camera_meta_file, qc_file, artifacts. |
-| `{export_prefix}psd_*.png`, `{export_prefix}drag_*.png` | OTExporter | Strategy plots (e.g. welch_psd_*.png, procfft_psd_*.png). |
-| `{export_prefix}*.json` | OTExporter | Fallback JSON for strategy dicts (if not psd/drag plot). |
+| File(s) | Semantic role | Written by |
+|---------|---------------|------------|
+| `{stem}_camera_meta.json` | Camera metadata (fps, exposure_ms, gain, roi, um_per_px) | OTExporter |
+| `{stem}_qc.json` | QC audit dict from pipeline `compute_qc` | OTExporter |
+| `{stem}_trajectory.csv` | Drift-corrected trajectory (t_s, x_px, y_px, confidence, x_um, y_um, x_corr_px, y_corr_px, lost, lost_reason) | OTExporter |
+| `{stem}_derived.csv` | Derived physics per axis (mode, strategy, axis, fc_hz, k_pN_um, eta_Pa_s, etc.) | OTExporter |
+| `results.csv` | Canonical Bible V3 results — single file for all axes | OTExporter |
+| `{stem}_ot_summary.json` | Full audit summary: camera_meta, preprocess, qc, strategy, result_dict, artifacts | OTExporter |
+| `run_manifest.json` | Index: video_file, summary_file, trajectory_file, results_file, camera_meta_file, qc_file, artifacts | OTExporter |
+| `welch_psd_x.png`, `welch_psd_y.png` (or `{export_prefix}psd_*.png`) | Strategy PSD plots | OTExporter |
+| `{export_prefix}drag_*.png` | Strategy drag plots (when applicable) | OTExporter |
+| `{export_prefix}*.json` | Fallback JSON for strategy dicts (if not psd/drag plot) | OTExporter |
 
 Source: `barakuda/devices/optical_tweezers/export/exporter.py` `write_all()`.
 
 ---
 
-## 3. OVERLAP WITH OTHER OT OUTPUTS
+## 3. ROOT-LEVEL `module/ot` LEGACY OUTPUTS
 
-The same run produces **two parallel pipelines**:
+Files written directly into `module/ot` root (not in subdirs):
 
-1. **Batch path**: `batch_controller` + `postprocess_ot` → `run_dir/audit/`, `run_dir/tracking/`, `run_dir/physics/`, root.
-2. **OTPipeline path**: `OTPipeline` + `OTExporter` → `run_dir/ot_v2_shadow/` (non-dataset) or `run_dir/` (dataset).
+| File | Writer | Legacy export-style? |
+|------|--------|----------------------|
+| `run.json` | batch_controller | No — canonical run metadata |
+| `{stem}_qc.png` | Moved from tracking/ (postprocess_ot) | Yes — QC plot; could live in audit/ or tracking/ |
+| `{stem}_results.csv` | Batch bundle write | Yes — combined trajectory/postprocess; could live in physics/ or results/ |
+| `{stem}_results.xlsx` | Batch XLSX export | Yes — export bundle; could live in structured subdir |
+| `{stem}_hist_r.png`, `_hist_x.png`, `_hist_y.png` | postprocess_ot (if at root) | Yes — histograms; batch path moves hist CSVs to physics/, hist PNGs stay in tracking/ per current code |
 
-Overlap matrix:
-
-| Logical artifact | Batch path (audit/tracking/physics/root) | ot_v2_shadow |
-|------------------|------------------------------------------|--------------|
-| **Trajectory** | `tracking/{stem}_trajectory.csv` (frame, t_s, x_px, y_px, quality, peak, roi, …) | `{stem}_trajectory.csv` (t_s, x_px, y_px, confidence, x_um, y_um, x_corr_px, y_corr_px, lost, lost_reason) |
-| **QC** | Root `{stem}_qc.png` (QC plot); audit has postprocess/psd_fit/calibration | `{stem}_qc.json` (QC audit dict) |
-| **Calibration / fit** | `audit/{stem}_postprocess.json`, `_psd_fit.json`, `_calibration.json` | `*_ot_summary.json` (embeds strategy results, drift, qc) |
-| **Camera meta** | Implicit in run.json, postprocess, calibration | `{stem}_camera_meta.json` |
-| **Derived physics** | `physics/{stem}_derived.csv`, `_msd.csv`, `_psd_*.csv`, `_calibration.csv`, `_hist_*.csv` | `{stem}_derived.csv`, `results.csv` |
-| **Strategy plots** | None (batch path uses postprocess_ot QC plot only) | `{export_prefix}psd_*.png`, `{export_prefix}drag_*.png` |
-| **Run index** | Root `run.json` | `run_manifest.json` |
-
-Same logical data (trajectory, physics, QC) exists in **two formats and two locations** in non-dataset mode. The OTPipeline uses different tracking/preprocess/qc modules than the batch path, so results can differ slightly.
+**Note:** In the current layout, postprocess_ot writes hist PNGs and qc.png to `tracking/`; the organize block moves `{stem}_qc.png` to root but does **not** move hist PNGs, so hist PNGs remain in `tracking/`. Root-level legacy clutter is primarily: `run.json` (canonical), `{stem}_qc.png`, `{stem}_results.csv`, `{stem}_results.xlsx`. In **dataset mode**, OTExporter also writes flat files into `run_dir` (analysis/) root: `{stem}_trajectory.csv`, `{stem}_qc.json`, `{stem}_camera_meta.json`, `{stem}_derived.csv`, `results.csv`, `{stem}_ot_summary.json`, `run_manifest.json`, strategy plots. Those are legacy export-style when they duplicate structured outputs.
 
 ---
 
-## 4. DUPLICATE / TRANSITIONAL / CANONICAL CLASSIFICATION
+## 4. OVERLAP WITH OTHER OT OUTPUTS
+
+| Artifact | ot_v2_shadow | tracking | physics | audit | preview | root module/ot | Overlap type |
+|----------|--------------|----------|---------|-------|---------|----------------|--------------|
+| **Trajectory** | `{stem}_trajectory.csv` | `{stem}_trajectory.csv` | — | — | — | — (dataset) | **RELATED BUT NOT SAME** — different schema (drift-corrected vs raw; QC columns) |
+| **QC** | `{stem}_qc.json` | — | — | — | — | `{stem}_qc.png` | **RELATED BUT NOT SAME** — JSON audit vs PNG plot |
+| **Calibration** | Embedded in `{stem}_ot_summary.json` | — | `{stem}_calibration.csv` | `{stem}_calibration.json`, `_psd_fit.json` | — | — | **SAME LOGICAL ARTIFACT** — calibration data in multiple formats |
+| **Derived physics** | `{stem}_derived.csv`, `results.csv` | — | `{stem}_derived.csv` | — | — | — | **SAME LOGICAL ARTIFACT** — derived physics duplicated |
+| **Camera meta** | `{stem}_camera_meta.json` | — | — | Implicit in postprocess | — | — | **RELATED BUT NOT SAME** — explicit vs implicit in run.json |
+| **Run index** | `run_manifest.json` | — | — | — | — | `run.json` | **RELATED BUT NOT SAME** — different index format |
+| **Strategy plots** | `welch_psd_*.png` | — | — | — | — | — | **No overlap** — OTPipeline-only |
+| **Preview** | — | — | — | — | `preview_report.json`, `{stem}_preview_tracking.png` | — | **No overlap** — preview is separate |
+
+---
+
+## 5. CURRENT CODE PATHS
+
+### Write paths — ot_v2_shadow
+
+| File / function | Location | Behavior |
+|-----------------|----------|----------|
+| `shadow_dir = run_dir / "ot_v2_shadow"` | `batch_controller.py` ~868–871 | When `_dataset_item_root is None`; else `shadow_dir = run_dir` |
+| `shadow_dir.mkdir(parents=True, exist_ok=True)` | `batch_controller.py` ~873 | Creates ot_v2_shadow |
+| `OTExporter(shadow_dir)` | `batch_controller.py` ~874 | Exporter writes into shadow_dir |
+| `pipeline.run(str(file_path), shadow_config)` | `batch_controller.py` ~893 | OTPipeline invokes exporter |
+| `OTExporter.write_all(...)` | `exporter.py` | Writes all artifact types into `self.output_dir` (shadow_dir) |
+| `OTPipeline.run()` | `orchestrator.py` | Orchestrates load → track → preprocess → qc → strategy → export |
+
+### Write paths — root-level module/ot
+
+| File / function | Location | Behavior |
+|-----------------|----------|----------|
+| `(run_dir / "run.json").write_text(...)` | `batch_controller.py` ~793, 819 | Run metadata |
+| `_move_to(_tracking / f"{stem}_qc.png", run_dir)` | `batch_controller.py` ~1338 | Organize moves QC plot from tracking/ to root |
+| Bundle write (results.csv, results.xlsx) | `batch_controller.py` ~1218–1340 | Writes `{stem}_results.csv`, `{stem}_results.xlsx` to run_dir |
+| `OTExporter(run_dir)` (dataset mode) | `batch_controller.py` ~869 | When `_dataset_item_root is not None`; exporter writes flat files to run_dir root |
+
+### Read paths
+
+| Consumer | Location | Reads |
+|----------|----------|-------|
+| `discover_analysis_artifacts()` | `export/discovery.py` | `rglob("*")` over `analysis/` and `module/ot/` — finds all files including ot_v2_shadow |
+| `load_item_manifest()` | `manifest.py` | `qc_json_path` via `_first_existing` / `_glob_first`; `trajectory_path`; `*_ot_summary.json`; `preview_report_path` |
+| `build_item_manifest_payload()` | `manifest.py` | `artifacts_inventory` via `item_root.rglob("*")` |
+| `item.json` analysis field | Written by batch | Points trajectory, qc, summary to ot_v2_shadow paths when present |
+
+---
+
+## 6. CLASSIFICATION
 
 | Artifact | Classification | Notes |
 |----------|----------------|-------|
-| `{stem}_trajectory.csv` | **DUPLICATE** | Same run; batch path has canonical trajectory in `tracking/`. Shadow has alternate schema (drift-corrected, QC columns). |
-| `{stem}_qc.json` | **DUPLICATE** | Batch path has QC in postprocess summary and `{stem}_qc.png`; shadow has JSON QC audit. |
-| `{stem}_camera_meta.json` | **TRANSITIONAL** | Not produced by batch path; useful for pipeline-only consumers. Overlaps with run.json + calibration. |
-| `{stem}_derived.csv` | **DUPLICATE** | Batch path has `physics/{stem}_derived.csv`; same logical content, different format. |
-| `results.csv` | **TRANSITIONAL** | Batch path has `{stem}_results.csv` (bundle) and `{stem}_results.xlsx`; shadow has canonical `results.csv` (Bible V3). |
-| `{stem}_ot_summary.json` | **TRANSITIONAL** | Single-file audit; batch path has postprocess, psd_fit, calibration in audit/. |
-| `run_manifest.json` | **TRANSITIONAL** | Index; batch path has `run.json`. |
-| `{export_prefix}psd_*.png`, `{export_prefix}drag_*.png` | **CANONICAL** | Only produced by OTPipeline; batch path has `{stem}_qc.png` (PSD+MSD) but not strategy-specific plots. |
-| `{export_prefix}*.json` (strategy fallback) | **TRANSITIONAL** | Strategy-specific; batch path does not emit these. |
+| `run.json` | **CANONICAL CANDIDATE** | Run metadata; required |
+| `tracking/{stem}_trajectory.csv` | **CANONICAL CANDIDATE** | Batch trajectory; canonical for batch path |
+| `physics/{stem}_derived.csv`, `_msd.csv`, `_psd_*.csv`, `_calibration.csv`, `_hist_*.csv` | **CANONICAL CANDIDATE** | Physics outputs |
+| `audit/{stem}_postprocess.json`, `_psd_fit.json`, `_calibration.json` | **CANONICAL CANDIDATE** | Audit trail |
+| `preview/preview_report.json`, `preview/{stem}_preview_tracking.png` | **CANONICAL CANDIDATE** | Preview outputs |
+| `welch_psd_*.png` (strategy plots) | **CANONICAL CANDIDATE** | Only from OTPipeline; no batch equivalent |
+| `{stem}_qc.png` at root | **LEGACY CANDIDATE** | Moved from tracking/; could live in audit/ |
+| `{stem}_results.csv`, `{stem}_results.xlsx` at root | **LEGACY CANDIDATE** | Bundle outputs; could move to structured subdir |
+| `ot_v2_shadow/{stem}_trajectory.csv`, `_qc.json`, `_derived.csv` | **DUPLICATE / TRANSITIONAL** | Overlap with batch path |
+| `ot_v2_shadow/{stem}_camera_meta.json`, `_ot_summary.json`, `run_manifest.json` | **TRANSITIONAL** | OTPipeline-only; useful for pipeline consumers |
+| `ot_v2_shadow/results.csv` | **DUPLICATE / TRANSITIONAL** | Bible V3; batch has `{stem}_results.csv` |
+| Rename ot_v2_shadow → pipeline | **NEEDS DECISION** | Clarifies purpose; consumers must be updated |
 
 ---
 
-## 5. CURRENT CODE PATHS WRITING INTO `ot_v2_shadow`
+## 7. RISKS OF CLEANUP
 
-| Location | Behavior |
-|----------|----------|
-| `batch_controller.py` lines ~866–874 | `shadow_dir = run_dir / "ot_v2_shadow"` when `_dataset_item_root is None`; else `shadow_dir = run_dir`. |
-| `batch_controller.py` lines ~849–895 | Import `OTPipeline`, `OTExporter`; create `OTExporter(shadow_dir)`; run `pipeline.run(str(file_path), shadow_config)`. |
-| `orchestrator.py` | `OTPipeline.run()`: load video → track → preprocess → qc → strategy → `exporter.write_all()`. |
-| `exporter.py` | `OTExporter.write_all()`: writes all 8 artifact types into `self.output_dir` (shadow_dir or run_dir). |
-
-Invocation order: OTPipeline runs **before** the batch_controller tracking loop for the same video. So the same video is tracked and processed twice: once by OTPipeline (shadow), once by batch_controller (main path).
-
----
-
-## 6. RISKS OF REMOVAL OR REDIRECTION
-
-1. **Consumers of ot_v2_shadow**: `discover_analysis_artifacts()` uses `analysis_root.rglob("*")` over `analysis/` and `module/ot/`, so it finds files under `module/ot/ot_v2_shadow/`. Export and discovery would miss those files if `ot_v2_shadow` were removed or relocated.
-2. **Manifest resolution**: `manifest.py` looks for `qc_json_path` and `*_ot_summary.json` under `analysis_dir` via `_first_existing` / `_glob_first`. In legacy layout, `analysis_dir` can resolve to `module/ot/`, so `module/ot/ot_v2_shadow/*_qc.json` and `*_ot_summary.json` are discoverable via rglob.
-3. **Schema differences**: Shadow trajectory has drift-corrected columns and QC flags; batch trajectory has raw + postprocess. Any consumer expecting shadow schema would break if shadow were removed.
-4. **Strategy plots**: PSD and drag plots exist only in ot_v2_shadow (or run_dir in dataset mode). Removing shadow without redirecting would lose these.
-5. **Determinism**: Changing where OTPipeline writes without changing what it writes could affect downstream scripts or reports that hardcode paths.
+| Risk | Level | Notes |
+|------|-------|-------|
+| Breaking manifest resolution | **MEDIUM** | Manifest points trajectory, qc, summary to ot_v2_shadow paths. Renaming or removing requires updating manifest write logic and `_resolve_analysis_dir` / `_first_existing` / `_glob_first` usage. |
+| Removing a still-read artifact | **MEDIUM** | Export discovery uses `rglob` over module/ot; any consumer expecting ot_v2_shadow paths would break. Strategy plots are read-only from OTPipeline. |
+| Duplicating summary/result files | **LOW** | Cleanup would reduce duplication; risk is in *failing* to deduplicate consistently. |
+| Breaking export checkbox inventory | **MEDIUM** | `discover_analysis_artifacts` finds files under module/ot (including ot_v2_shadow). Relocating would require discovery to scan new path. |
+| Damaging OT reproducibility | **HIGH** | Changing write paths without updating all consumers (manifest, discovery, item.json build) could cause missing-artifact failures. Determinism requires consistent paths. |
+| Skipping OTPipeline loses strategy plots | **MEDIUM** | If OTPipeline is disabled in non-dataset mode, welch_psd_*.png and other strategy plots would be lost. |
+| Rename without consumer update | **LOW** | Renaming ot_v2_shadow to pipeline is low risk if discovery uses rglob (finds any subdir); manifest and item.json build must be checked. |
 
 ---
 
-## 7. EXACT NEXT SAFE PATCH
+## 8. EXACT NEXT SAFE PATCH
 
-**Goal**: One smallest safe step to reduce duplication without breaking consumers.
+**File:** `barakuda/shell/batch_controller.py`
 
-**Suggested step**: In non-dataset mode, **redirect** OTPipeline output from `run_dir/ot_v2_shadow/` to `run_dir/` (i.e. write into the same root as dataset mode), but **keep a single consolidated OTPipeline output location** to avoid scattering files. Specifically:
+**Change:** In non-dataset mode, set `shadow_dir = run_dir / "pipeline"` instead of `run_dir / "ot_v2_shadow"`. Create `run_dir/pipeline/` and pass it to OTExporter. No other changes.
 
-- **Option A (minimal)**: Change `shadow_dir` in non-dataset mode from `run_dir / "ot_v2_shadow"` to `run_dir` (same as dataset mode). OTPipeline would then write into `run_dir/` directly: `{stem}_trajectory.csv`, `{stem}_qc.json`, etc. would appear alongside batch outputs. **Risk**: Name collisions (batch writes `tracking/{stem}_trajectory.csv`, OTPipeline would write `{stem}_trajectory.csv` to root — different paths, so no collision). But `results.csv` (OTExporter) vs `{stem}_results.csv` (batch) — different names. `{stem}_derived.csv` — OTPipeline writes to root; batch writes to `physics/`. So OTPipeline writing to root would create `run_dir/{stem}_derived.csv`, `run_dir/{stem}_trajectory.csv`, etc. The organize block does not move OTPipeline outputs; it only moves batch outputs. So we'd end up with OTPipeline files at root. That would **increase** root clutter, not reduce it. So Option A is not ideal.
+**Code location:** Lines ~868–873:
 
-- **Option B (structured redirect)**: Redirect OTPipeline to write into `run_dir/ot_v2_shadow/` but **do not run OTPipeline at all** in non-dataset mode when the batch path has already produced equivalent outputs. That would require skipping the OTPipeline call — a larger behavioral change.
+```python
+shadow_dir = (
+    run_dir if _dataset_item_root is not None
+    else run_dir / "pipeline"   # was: run_dir / "ot_v2_shadow"
+)
+```
 
-- **Option C (consolidate, smallest)**: **Stop creating `ot_v2_shadow` in non-dataset mode** and instead pass `run_dir` as the exporter output (same as dataset mode). OTPipeline would write into `run_dir/` directly. The batch path writes into `run_dir/audit/`, `run_dir/tracking/`, `run_dir/physics/`. OTPipeline writes flat: `{stem}_trajectory.csv`, `{stem}_qc.json`, `{stem}_camera_meta.json`, `{stem}_derived.csv`, `results.csv`, `{stem}_ot_summary.json`, `run_manifest.json`, strategy plots. So we'd have both batch (structured) and OTPipeline (flat) files in/under run_dir. The organize block only moves batch outputs. OTPipeline outputs would remain where written. So we'd have:
-  - `run_dir/{stem}_trajectory.csv` (OTPipeline) — **duplicate** of `run_dir/tracking/{stem}_trajectory.csv` (batch)
-  - `run_dir/{stem}_qc.json` (OTPipeline)
-  - `run_dir/{stem}_camera_meta.json`, `run_dir/{stem}_derived.csv`, `run_dir/results.csv`, `run_dir/{stem}_ot_summary.json`, `run_dir/run_manifest.json`, strategy plots
+**Required follow-up:** Update `manifest.py` and `build_item_manifest_payload` to resolve trajectory, qc, summary from `pipeline/` when present (e.g. add `pipeline/{stem}_trajectory.csv` etc. to resolution candidates, or ensure `_glob_first`/rglob finds files under pipeline/). Discovery already uses `rglob("*")` over `module/ot/`, so it will find `module/ot/pipeline/` files without change.
 
-  That would **add** root-level clutter, not reduce it.
+**Why smallest safe step:** (1) Renames output dir from `ot_v2_shadow` to `pipeline`, clarifying purpose. (2) Does not remove or skip OTPipeline; all outputs preserved. (3) Does not change dataset mode. (4) **Caveat:** item.json `build_item_manifest_payload` and manifest resolution may need to be updated so that trajectory/qc/summary paths point to `pipeline/` when that subdir exists; otherwise existing consumers (e.g. Export tab, manifest-based tools) may not find artifacts. The *minimal* patch that avoids breaking consumers is: rename + add `pipeline/` to manifest/discovery scan. If manifest currently uses `_glob_first(ad, "*_trajectory.csv")` etc., it may already find files under pipeline/ via rglob — verification needed.
 
-- **Option D (smallest safe de-duplication)**: **Disable the OTPipeline run** in non-dataset mode. The batch path already produces trajectory, physics, QC, calibration. The only unique OTPipeline artifacts are: strategy plots (psd_*, drag_*), ot_summary.json, run_manifest.json, and the alternate trajectory/qc/derived schema. If no consumer requires those in non-dataset mode, we could skip OTPipeline when `_dataset_item_root is None`. **Risk**: Strategy plots would be lost; any consumer of ot_summary or run_manifest would break.
-
-Given the constraints (smallest safe step, no broad refactor), the **exact next safe patch** is:
-
-- **File**: `barakuda/shell/batch_controller.py`
-- **Change**: Add a **configurable kill switch** (e.g. env var or run_config flag) to **skip** the OTPipeline run in non-dataset mode when set. Default: keep current behavior (run OTPipeline, write to ot_v2_shadow). When the flag is enabled, skip the OTPipeline block entirely. This allows testing de-duplication without breaking existing runs.
-- **Alternative (simpler, no new config)**: **Document** that the smallest safe runtime change is to redirect `shadow_dir` from `run_dir / "ot_v2_shadow"` to a **new** subdir `run_dir / "pipeline"` (or similar) so that OTPipeline outputs are grouped but not mixed with batch outputs, and so that `ot_v2_shadow` is no longer created. Consumers that scan for ot_v2_shadow would need to be updated to scan `pipeline/` instead. This is a rename, not a removal — lower risk.
-
-**Recommended exact next safe patch** (minimal, no new config):
-
-- **Change**: In non-dataset mode, set `shadow_dir = run_dir / "pipeline"` instead of `run_dir / "ot_v2_shadow"`. Create `run_dir/pipeline/` and pass it to OTExporter. No other changes.
-- **Rationale**: (1) Renames the output dir from `ot_v2_shadow` to `pipeline`, clarifying that it holds OTPipeline outputs. (2) Does not remove or skip OTPipeline; all outputs are preserved. (3) Prepares for a future step where `pipeline/` can be deprecated or consolidated once consumers are updated. (4) No change to dataset mode.
+**Simpler alternative (if manifest/build already scans subdirs):** Change only `shadow_dir` to `run_dir / "pipeline"` and verify that discovery and manifest resolution still find the files. If `analysis_dir` is `module/ot` and resolution uses patterns that match anywhere under it, no manifest change may be needed.
 
 ---
 
-## 8. VERIFY PLAN
+## 9. VERIFY PLAN
 
-1. **Branch**: Checkout `integration/ot-output-layout-simplification`.
-2. **Apply patch**: Change `shadow_dir` from `run_dir / "ot_v2_shadow"` to `run_dir / "pipeline"` in non-dataset mode.
-3. **Run OT batch** in legacy (non-dataset) mode on one or more files.
-4. **Check layout**: Under `runs/ot/<batch_id>/<item_id>/module/ot/`:
+After applying the shadow_dir rename to `pipeline/`:
+
+1. **Branch:** Confirm `integration/ot-output-layout-simplification`.
+2. **Run OT batch** in non-dataset (legacy batch) mode on one or more files.
+3. **Check layout:** Under `runs/ot/<batch_id>/<item_id>/module/ot/`:
    - `ot_v2_shadow/` should **not** exist.
-   - `pipeline/` should exist and contain: `{stem}_camera_meta.json`, `{stem}_qc.json`, `{stem}_trajectory.csv`, `{stem}_derived.csv`, `results.csv`, `{stem}_ot_summary.json`, `run_manifest.json`, strategy plots.
-5. **Dataset mode**: Run OT on a dataset item; confirm OTPipeline still writes into `analysis/` (run_dir) with no `pipeline/` or `ot_v2_shadow` subdir.
-6. **Discovery**: Run artifact discovery on the item; confirm files under `pipeline/` are found (discovery uses rglob over module/ot).
+   - `pipeline/` should exist and contain: `{stem}_camera_meta.json`, `{stem}_qc.json`, `{stem}_trajectory.csv`, `{stem}_derived.csv`, `results.csv`, `{stem}_ot_summary.json`, `run_manifest.json`, `welch_psd_*.png`.
+4. **Manifest:** Load item via `load_item_manifest(item_json_path)`; confirm `m.trajectory_path`, `m.qc_json_path`, and summary path resolve correctly (either from `pipeline/` or via updated resolution).
+5. **Export:** Open Export tab; confirm artifact discovery finds files under `pipeline/` and checkboxes appear.
+6. **Dataset mode:** Run OT on a dataset item; confirm OTPipeline still writes into `analysis/` (run_dir) with no `pipeline/` or `ot_v2_shadow` subdir.
+7. **Regression:** No dataset files moved or rewritten; only write destination changed for non-dataset mode.
+
+---
+
+*End of report. No runtime code was modified in this step.*
