@@ -286,6 +286,18 @@ class PipelinePanel(QWidget):
         self._export_artifacts_layout.setContentsMargins(0, 4, 0, 4)
         _exp_layout.addWidget(self._export_artifacts_container)
 
+        _exp_bulk_row = QHBoxLayout()
+        self._btn_export_select_all = QPushButton("Select All")
+        self._btn_export_select_all.setToolTip("Check all visible export artifact checkboxes.")
+        self._btn_export_select_all.clicked.connect(self._on_export_select_all)
+        _exp_bulk_row.addWidget(self._btn_export_select_all)
+        self._btn_export_clear_all = QPushButton("Clear All")
+        self._btn_export_clear_all.setToolTip("Uncheck all visible export artifact checkboxes.")
+        self._btn_export_clear_all.clicked.connect(self._on_export_clear_all)
+        _exp_bulk_row.addWidget(self._btn_export_clear_all)
+        _exp_bulk_row.addStretch(1)
+        _exp_layout.addLayout(_exp_bulk_row)
+
         self._btn_export_all = QPushButton("EXPORT")
         self._btn_export_all.setToolTip(
             "Export selected artifacts to this dataset's exports/ folder."
@@ -1161,6 +1173,16 @@ class PipelinePanel(QWidget):
                 cb.setChecked(True)
                 self._export_artifacts_layout.addWidget(cb)
                 self._export_artifact_checkboxes[art["id"]] = cb
+
+    def _on_export_select_all(self) -> None:
+        """Check all currently visible export artifact checkboxes."""
+        for cb in self._export_artifact_checkboxes.values():
+            cb.setChecked(True)
+
+    def _on_export_clear_all(self) -> None:
+        """Uncheck all currently visible export artifact checkboxes."""
+        for cb in self._export_artifact_checkboxes.values():
+            cb.setChecked(False)
 
     def _on_export_all_clicked(self) -> None:
         from pathlib import Path as _Path
