@@ -734,9 +734,37 @@ class BatchController:
                     },
                 }
 
-                result = self.run_manager.create_run(file_path, config)
-                run_dir = result.run_dir
                 stem = Path(file_path).stem
+
+                # STEP A: OT writes directly into canonical item dir (no legacy flat dir)
+                if _ot_items_root is not None and _ot_batch_id is not None:
+                    _base = re.sub(r"[^A-Za-z0-9._\-]", "_", stem)
+                    _item_id_for_run = _base
+                    _n_coll = 1
+                    while (_ot_items_root / _item_id_for_run).exists():
+                        _item_id_for_run = f"{_base}_{_n_coll:02d}"
+                        _n_coll += 1
+                    _item_root_for_run = _ot_items_root / _item_id_for_run
+                    run_dir = _item_root_for_run / "module" / "ot"
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    for _sd in ("raw", "results", "qc", "artifacts"):
+                        (_item_root_for_run / _sd).mkdir(parents=True, exist_ok=True)
+                    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
+                    (run_dir / "run.json").write_text(
+                        json.dumps({
+                            "run_id": run_id,
+                            "created_at": datetime.now().isoformat(timespec="seconds"),
+                            "input_path": str(file_path),
+                            "config": config,
+                        }, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                else:
+                    result = self.run_manager.create_run(file_path, config)
+                    run_dir = result.run_dir
+                    run_id = result.run_id
+                    _item_id_for_run = None
+                    _item_root_for_run = None
                 
                 # --- OT Pipeline v2.1 Shadow Run ---
                 if True:
@@ -1238,28 +1266,20 @@ class BatchController:
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
 
-                # --- OT archive mirror ---
+                # --- OT canonical metadata (item.json + batch.json) ---
+                # run_dir is already item_root/module/ot/ — no copy needed (STEP A)
                 try:
-                    if _ot_items_root is not None and _ot_batch_id is not None:
-                        _base = Path(file_path).stem
-                        _safe = re.sub(r"[^A-Za-z0-9._\-]", "_", _base)
-                        _item_id = _safe
-                        _n = 1
-                        while (_ot_items_root / _item_id).exists():
-                            _item_id = f"{_safe}_{_n:02d}"
-                            _n += 1
-
-                        _item_root = _ot_items_root / _item_id
-                        for _sd in ("raw", "module/ot", "results", "qc", "artifacts"):
-                            (_item_root / _sd).mkdir(parents=True, exist_ok=True)
-
-                        # C) copy raw video
+                    if _ot_items_root is not None and _ot_batch_id is not None and _item_root_for_run is not None:
+                        _item_id = _item_id_for_run
+                        _item_root = _item_root_for_run
                         _src_video = Path(file_path)
+
+                        # C) copy raw video into item_root/raw/
                         _dst_video = _item_root / "raw" / _src_video.name
                         if not _dst_video.exists() or _dst_video.stat().st_size != _src_video.stat().st_size:
                             shutil.copy2(_src_video, _dst_video)
 
-                        # D) copy acquisition meta if present
+                        # D) copy acquisition meta if present next to source video
                         _meta_src: Path | None = None
                         for _mc in (
                             _src_video.parent / f"{_src_video.stem}_meta.json",
@@ -1273,16 +1293,9 @@ class BatchController:
                             shutil.copy2(_meta_src, _item_root / "raw" / "video_meta.json")
                             _archived_meta = "raw/video_meta.json"
 
-                        # E) mirror run_dir content into module/ot
-                        _mod_ot = _item_root / "module" / "ot"
-                        for _entry in run_dir.iterdir():
-                            _dst_e = _mod_ot / _entry.name
-                            if _entry.is_dir():
-                                shutil.copytree(_entry, _dst_e, dirs_exist_ok=True)
-                            else:
-                                shutil.copy2(_entry, _dst_e)
+                        # E) run_dir IS item_root/module/ot/ — no copy required (STEP A)
 
-                        # F) artifacts inventory
+                        # F) artifacts inventory (recursive under item_root)
                         _inv: list[str] = []
                         for _ap in _item_root.rglob("*"):
                             if _ap.is_file():
@@ -1301,7 +1314,7 @@ class BatchController:
                                 "source_input_path": str(file_path),
                                 "archived_raw_video": f"raw/{_src_video.name}",
                                 "archived_meta": _archived_meta,
-                                "mirrored_from_run_dir": str(run_dir),
+                                "run_dir": str(run_dir),
                                 "created_at": datetime.now().isoformat(),
                                 "artifacts_inventory": _inv,
                                 "fps_source": _fps_source,
@@ -1339,10 +1352,10 @@ class BatchController:
                             encoding="utf-8",
                         )
                 except Exception as _mirror_err:
-                    self._log(f"WARN: OT mirror failed ({file_path.name}): {_mirror_err!r}")
+                    self._log(f"WARN: OT canonical metadata failed ({file_path.name}): {_mirror_err!r}")
 
                 dataset_set_status_fn(file_path, "done")
-                self._log(f"OK: {file_path.name} -> {result.run_id}")
+                self._log(f"OK: {file_path.name} -> {run_id}")
 
             except Exception as e:
                 dataset_set_status_fn(file_path, "failed")
