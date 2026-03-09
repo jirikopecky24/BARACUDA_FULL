@@ -797,6 +797,13 @@ class ShellMainWindow(QMainWindow):
                         self._ot_preview.set_after_from_file(after_path)
                     except Exception:
                         pass
+                # Refresh Export tab so artifact checkboxes reflect new analysis outputs
+                paths = self.dataset.get_selected_paths()
+                if paths and hasattr(self._device_panel, "set_dataset_path"):
+                    try:
+                        self._device_panel.set_dataset_path(str(paths[0]))
+                    except Exception:
+                        pass
                 self._ot_run_thread.quit()
 
             def _on_ot_err(err: str):
