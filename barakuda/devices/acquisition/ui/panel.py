@@ -482,10 +482,13 @@ class AcquisitionPanel(QWidget):
         rec_form.addRow("Basename:", self._edit_basename)
 
         self._combo_format = QComboBox()
-        self._combo_format.addItem("RAW (fast)")
-        self._combo_format.addItem("AVI (compat)")
+        self._combo_format.addItem("RAW (scientific, recommended)")
+        self._combo_format.addItem("AVI (preview, ≤600 FPS)")
         self._combo_format.setCurrentIndex(0)
-        self._combo_format.setToolTip("RAW = raw binary (fastest, no codec overhead). AVI = MJPG container.")
+        self._combo_format.setToolTip(
+            "RAW = raw binary frames, full fidelity, recommended for scientific acquisition.\n"
+            "AVI = MJPG container, preview/compatibility only, unreliable above 600 FPS."
+        )
         self._combo_format.currentIndexChanged.connect(self._on_format_changed)
         rec_form.addRow("Format:", self._combo_format)
 
