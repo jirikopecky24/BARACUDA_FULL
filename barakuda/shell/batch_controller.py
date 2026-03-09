@@ -811,7 +811,7 @@ class BatchController:
                     _item_root_for_run = _ot_items_root / _item_id_for_run
                     run_dir = _item_root_for_run / "module" / "ot"
                     run_dir.mkdir(parents=True, exist_ok=True)
-                    for _sd in ("raw", "results", "qc", "artifacts"):
+                    for _sd in ("raw",):
                         (_item_root_for_run / _sd).mkdir(parents=True, exist_ok=True)
                     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
                     (run_dir / "run.json").write_text(
