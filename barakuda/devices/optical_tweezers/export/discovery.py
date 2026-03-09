@@ -159,6 +159,14 @@ def discover_analysis_artifacts(dataset_root: Path | str) -> list[dict[str, Any]
         if len(seen_ids) >= 5:
             break
 
+    # Policy: return only OPTIONAL EXPORT artifacts. Canonical outputs (.json, .xlsx)
+    # must not be offered in the Export tab.
+    _CANONICAL_SUFFIXES = (".json", ".xlsx")
+    result = [
+        r for r in result
+        if Path(r["path"]).suffix.lower() not in _CANONICAL_SUFFIXES
+    ]
+
     # Return in stable order matching original artifact order
     order = {aid: i for i, (aid, _) in enumerate(_ARTIFACT_DEFS)}
     result.sort(key=lambda r: order.get(r["id"], 99))
