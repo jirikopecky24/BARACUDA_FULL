@@ -1076,12 +1076,13 @@ class PipelinePanel(QWidget):
 
         path = _Path(p)
 
-        # Accept both item.json directly and video paths inside the item folder
+        # Accept item.json directly, item folder, or video paths inside the item folder
         item_json: _Path | None = None
         if path.name == "item.json":
             item_json = path
         else:
             for candidate in (
+                path / "item.json",
                 path.parent / "item.json",
                 path.parent.parent / "item.json",
             ):
@@ -1190,6 +1191,7 @@ class PipelinePanel(QWidget):
                     item_json = path
                 else:
                     for candidate in (
+                        path / "item.json",
                         path.parent / "item.json",
                         path.parent.parent / "item.json",
                     ):
