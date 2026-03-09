@@ -679,6 +679,8 @@ class BatchController:
                 reader = VideoReader(file_path)
                 fps = float(reader.meta.fps)
                 fc = int(reader.meta.frame_count)
+                _reader_w = int(getattr(reader.meta, "width", 0)) or None
+                _reader_h = int(getattr(reader.meta, "height", 0)) or None
 
                 # Auto-ROI per file if enabled
                 file_roi_rect = roi_rect
@@ -1338,29 +1340,31 @@ class BatchController:
                 # --- OT canonical metadata (item.json + batch.json) ---
                 try:
                     if _dataset_item_root is not None:
-                        # Dataset mode: update existing item.json with new analysis paths.
+                        # Dataset mode: update existing item.json with canonical fields.
+                        from barakuda.devices.optical_tweezers.manifest import (
+                            build_item_manifest_payload,
+                        )
                         _item_json_path = _dataset_item_root / "item.json"
                         try:
                             _existing_item = json.loads(_item_json_path.read_text(encoding="utf-8"))
                         except Exception:
-                            _existing_item = {"schema_version": 1, "module": "ot"}
-                        _inv_ds: list[str] = []
-                        for _ap in _dataset_item_root.rglob("*"):
-                            if _ap.is_file():
-                                try:
-                                    _inv_ds.append(
-                                        str(_ap.relative_to(_dataset_item_root)).replace("\\", "/")
-                                    )
-                                except Exception:
-                                    pass
-                        _existing_item.update({
-                            "analysis_dir": "analysis",
-                            "run_dir": str(run_dir),
-                            "updated_at": datetime.now().isoformat(),
-                            "artifacts_inventory": _inv_ds,
-                        })
+                            _existing_item = {}
+                        _updated = build_item_manifest_payload(
+                            item_root=_dataset_item_root,
+                            item_id=_dataset_item_root.name,
+                            fps=fps,
+                            width_px=_reader_w,
+                            height_px=_reader_h,
+                            frame_count=fc,
+                            roi=list(file_roi_rect) if file_roi_rect else None,
+                            analysis_dir=run_dir,
+                            um_per_px=um_per_px if um_per_px else None,
+                            um_per_px_source=um_src if um_src else None,
+                            status="analyzed",
+                            existing_payload=_existing_item,
+                        )
                         _item_json_path.write_text(
-                            json.dumps(_existing_item, indent=2, ensure_ascii=False),
+                            json.dumps(_updated, indent=2, ensure_ascii=False),
                             encoding="utf-8",
                         )
                     elif _ot_items_root is not None and _ot_batch_id is not None and _item_root_for_run is not None:
@@ -1398,21 +1402,28 @@ class BatchController:
                                 except Exception:
                                     pass
 
-                        _fps_source = "acquisition_meta" if _archived_meta else "unknown"
+                        from barakuda.devices.optical_tweezers.manifest import (
+                            build_item_manifest_payload,
+                        )
+                        _new_payload = build_item_manifest_payload(
+                            item_root=_item_root,
+                            item_id=_item_id,
+                            batch_id=_ot_batch_id,
+                            source_input_path=str(file_path),
+                            acquisition_video=_dst_video,
+                            acquisition_meta=(_item_root / "raw" / "video_meta.json") if _archived_meta else None,
+                            fps=fps,
+                            width_px=_reader_w,
+                            height_px=_reader_h,
+                            frame_count=fc,
+                            roi=list(file_roi_rect) if file_roi_rect else None,
+                            analysis_dir=run_dir,
+                            um_per_px=um_per_px if um_per_px else None,
+                            um_per_px_source=um_src if um_src else None,
+                            status="analyzed",
+                        )
                         (_item_root / "item.json").write_text(
-                            json.dumps({
-                                "schema_version": 1,
-                                "module": "ot",
-                                "batch_id": _ot_batch_id,
-                                "item_id": _item_id,
-                                "source_input_path": str(file_path),
-                                "archived_raw_video": f"raw/{_src_video.name}",
-                                "archived_meta": _archived_meta,
-                                "run_dir": str(run_dir),
-                                "created_at": datetime.now().isoformat(),
-                                "artifacts_inventory": _inv,
-                                "fps_source": _fps_source,
-                            }, indent=2, ensure_ascii=False),
+                            json.dumps(_new_payload, indent=2, ensure_ascii=False),
                             encoding="utf-8",
                         )
 

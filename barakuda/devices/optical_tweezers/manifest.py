@@ -14,8 +14,9 @@ All resolution is read-only. Paths that cannot be found are left as None.
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -85,12 +86,27 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
     if m.analysis_dir is not None:
         ad = m.analysis_dir
         m.run_json_path = _first_existing(ad, ["run.json"])
-        m.qc_json_path  = _first_existing(ad, ["qc.json"])
 
-        m.trajectory_path = (
-            _first_existing(ad, ["trajectory.csv", "tracking/trajectory.csv"])
-            or _glob_first(ad, "*_trajectory.csv")
-        )
+        # qc: prefer manifest field, then scan
+        _an = raw.get("analysis", {})
+        if _an.get("qc"):
+            _p = (item_root / _an["qc"])
+            m.qc_json_path = _p if _p.exists() else _first_existing(ad, ["qc.json"]) or _glob_first(ad, "*_qc.json")
+        else:
+            m.qc_json_path = _first_existing(ad, ["qc.json"]) or _glob_first(ad, "*_qc.json")
+
+        # trajectory: prefer manifest field, then scan
+        if _an.get("trajectory"):
+            _p = (item_root / _an["trajectory"])
+            m.trajectory_path = _p if _p.exists() else (
+                _first_existing(ad, ["trajectory.csv", "tracking/trajectory.csv"])
+                or _glob_first(ad, "*_trajectory.csv")
+            )
+        else:
+            m.trajectory_path = (
+                _first_existing(ad, ["trajectory.csv", "tracking/trajectory.csv"])
+                or _glob_first(ad, "*_trajectory.csv")
+            )
 
         m.preview_report_path = _first_existing(ad, ["preview_report.json"])
 
@@ -109,6 +125,13 @@ _VIDEO_EXTENSIONS = {".raw", ".avi", ".mp4", ".mov", ".mkv", ".m4v"}
 
 def _resolve_video(item_root: Path, raw: dict) -> Optional[Path]:
     """Resolve the acquisition video file."""
+    # 0. Canonical acquisition.video field (new schema)
+    acq_video = raw.get("acquisition", {}).get("video")
+    if acq_video:
+        p = item_root / acq_video
+        if p.exists():
+            return p
+
     # 1. Canonical acquisition/ folder — first video file found
     acq_dir = item_root / "acquisition"
     if acq_dir.is_dir():
@@ -146,6 +169,13 @@ def _resolve_meta(
     video_path: Optional[Path],
 ) -> Optional[Path]:
     """Resolve the acquisition metadata JSON."""
+    # 0. Canonical acquisition.meta field (new schema)
+    acq_meta = raw.get("acquisition", {}).get("meta")
+    if acq_meta:
+        p = item_root / acq_meta
+        if p.exists():
+            return p
+
     # 1. Canonical acquisition/video_meta.json
     p = item_root / "acquisition" / "video_meta.json"
     if p.exists():
@@ -174,6 +204,13 @@ def _resolve_meta(
 
 def _resolve_analysis_dir(item_root: Path, raw: dict) -> Optional[Path]:
     """Resolve the analysis output directory."""
+    # 0. Canonical analysis.dir field (new schema, relative to item_root)
+    an_dir = raw.get("analysis", {}).get("dir")
+    if an_dir:
+        p = item_root / an_dir
+        if p.is_dir():
+            return p
+
     # 1. Canonical analysis/ folder
     p = item_root / "analysis"
     if p.is_dir():
@@ -208,6 +245,143 @@ def _first_video_in_dir(directory: Path) -> Optional[Path]:
             if f.is_file() and f.suffix.lower() == ext:
                 return f
     return None
+
+
+def build_item_manifest_payload(
+    item_root: Path,
+    item_id: str,
+    *,
+    module: str = "ot",
+    batch_id: Optional[str] = None,
+    source_input_path: Optional[str] = None,
+    acquisition_video: Optional[Path] = None,
+    acquisition_meta: Optional[Path] = None,
+    acquisition_timestamps: Optional[Path] = None,
+    fps: Optional[float] = None,
+    width_px: Optional[int] = None,
+    height_px: Optional[int] = None,
+    frame_count: Optional[int] = None,
+    roi: Optional[list] = None,
+    analysis_dir: Optional[Path] = None,
+    um_per_px: Optional[float] = None,
+    um_per_px_source: Optional[str] = None,
+    status: str = "analyzed",
+    existing_payload: Optional[dict] = None,
+) -> dict[str, Any]:
+    """
+    Build (or update) the canonical item.json payload.
+
+    All path arguments should be absolute.  Paths inside item_root are stored
+    as relative strings; paths outside are stored as absolute strings.
+
+    If existing_payload is provided, new fields are merged on top of it so that
+    existing metadata (batch_id, created_at, etc.) is preserved.
+    """
+    item_root = Path(item_root)
+    now = datetime.now().isoformat(timespec="seconds")
+
+    def _rel(p: Optional[Path]) -> Optional[str]:
+        if p is None:
+            return None
+        try:
+            return str(Path(p).relative_to(item_root)).replace("\\", "/")
+        except ValueError:
+            return str(p)
+
+    payload: dict[str, Any] = dict(existing_payload) if existing_payload else {}
+
+    # ── Core identity ────────────────────────────────────────────────────────
+    payload.setdefault("schema_version", 1)
+    payload.setdefault("module", module)
+    payload.setdefault("item_id", item_id)
+    payload.setdefault("created_at", now)
+    payload["updated_at"] = now
+    payload["status"] = status
+
+    if batch_id is not None:
+        payload["batch_id"] = batch_id
+    if source_input_path is not None:
+        payload["source_input_path"] = str(source_input_path)
+
+    # ── Acquisition section ──────────────────────────────────────────────────
+    acq: dict[str, Any] = dict(payload.get("acquisition") or {})
+
+    if acquisition_video is not None:
+        rel_v = _rel(acquisition_video)
+        if rel_v:
+            acq["video"] = rel_v
+            payload["archived_raw_video"] = rel_v   # backward-compat
+
+    if acquisition_meta is not None:
+        rel_m = _rel(acquisition_meta)
+        if rel_m:
+            acq["meta"] = rel_m
+            payload["archived_meta"] = rel_m         # backward-compat
+
+    if acquisition_timestamps is not None:
+        rel_t = _rel(acquisition_timestamps)
+        if rel_t:
+            acq["timestamps"] = rel_t
+
+    if fps is not None:
+        acq["fps"] = float(fps)
+    if width_px is not None:
+        acq["width_px"] = int(width_px)
+    if height_px is not None:
+        acq["height_px"] = int(height_px)
+    if frame_count is not None:
+        acq["frame_count"] = int(frame_count)
+    if roi is not None:
+        acq["roi"] = list(roi)
+
+    if acq:
+        payload["acquisition"] = acq
+
+    # ── Analysis section ─────────────────────────────────────────────────────
+    if analysis_dir is not None:
+        analysis_dir = Path(analysis_dir)
+        rel_ad = _rel(analysis_dir)
+        an: dict[str, Any] = dict(payload.get("analysis") or {})
+        if rel_ad:
+            an["dir"] = rel_ad
+            payload["analysis_dir"] = rel_ad         # backward-compat
+        payload["run_dir"] = str(analysis_dir)       # backward-compat
+
+        if analysis_dir.is_dir():
+            for f in analysis_dir.glob("run.json"):
+                an["run_json"] = _rel(f)
+            for f in sorted(analysis_dir.rglob("*_trajectory.csv")):
+                an["trajectory"] = _rel(f)
+                break
+            for f in sorted(analysis_dir.rglob("*_qc.json")):
+                an["qc"] = _rel(f)
+                break
+            for f in sorted(analysis_dir.rglob("*_ot_summary.json")):
+                an["summary"] = _rel(f)
+                break
+
+        payload["analysis"] = an
+
+    # ── Calibration section ──────────────────────────────────────────────────
+    if um_per_px is not None:
+        cal: dict[str, Any] = dict(payload.get("calibration") or {})
+        cal["um_per_px"] = float(um_per_px)
+        if um_per_px_source:
+            cal["source"] = str(um_per_px_source)
+        payload["calibration"] = cal
+
+    # ── Artifacts inventory ──────────────────────────────────────────────────
+    inv: list[str] = []
+    if item_root.is_dir():
+        for ap in sorted(item_root.rglob("*")):
+            if ap.is_file():
+                try:
+                    inv.append(str(ap.relative_to(item_root)).replace("\\", "/"))
+                except Exception:
+                    pass
+    payload["artifacts_inventory"] = inv
+
+    return payload
 
 
 def is_item_json(path: Path) -> bool:
