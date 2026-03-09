@@ -35,6 +35,10 @@ from barakuda.devices.acquisition.camera import (
 )
 from barakuda.devices.acquisition.camera_base import AbstractCamera
 from barakuda.devices.acquisition.camera_factory import enumerate_all, create as create_camera
+from barakuda.devices.acquisition.dataset import create_acquisition_dataset_home
+
+# Project runs/ root — two levels above the package root (barakuda/)
+_RUNS_ROOT = Path(__file__).resolve().parents[4] / "runs"
 
 
 # ------------------------------------------------------------------ #
@@ -1165,6 +1169,21 @@ class AcquisitionPanel(QWidget):
                 with open(qc_path, "w", encoding="utf-8") as f:
                     json.dump(qc, f, indent=2)
 
+                # Create canonical acquisition dataset home
+                try:
+                    create_acquisition_dataset_home(
+                        item_id=basename,
+                        video_path=Path(result["raw_path"]),
+                        meta_path=Path(result["meta_path"]) if result.get("meta_path") else None,
+                        timestamps_path=Path(result["ts_path"]) if result.get("ts_path") else None,
+                        qc_path=Path(qc_path),
+                        runs_root=_RUNS_ROOT,
+                        fps_effective=fps_eff,
+                        frame_count=frames,
+                    )
+                except Exception:
+                    pass
+
                 if fps_ratio < 0.90:
                     tag = "FAIL"
                 elif fps_ratio < 0.95:
@@ -1208,6 +1227,7 @@ class AcquisitionPanel(QWidget):
         self._last_record_result = result
 
         # --- Write qc.json ---
+        qc_path: str | None = None
         try:
             fps_target = self._spin_fps_hint.value()
             fps_eff = result.fps_effective or 0.0
@@ -1239,6 +1259,26 @@ class AcquisitionPanel(QWidget):
                 json.dump(qc, f, indent=2)
         except Exception:
             pass
+
+        # --- Create canonical acquisition dataset home ---
+        try:
+            meta = result.meta or {}
+            ts_str = meta.get("timestamps_path")
+            item_root = create_acquisition_dataset_home(
+                item_id=self._edit_basename.text(),
+                video_path=Path(result.video_path),
+                meta_path=Path(result.meta_path) if result.meta_path else None,
+                timestamps_path=Path(ts_str) if ts_str else None,
+                qc_path=Path(qc_path) if qc_path else None,
+                runs_root=_RUNS_ROOT,
+                fps_effective=result.fps_effective,
+                pixel_format=meta.get("pixel_format"),
+                roi=meta.get("record_roi"),
+                frame_count=result.frames_written,
+            )
+            self._log(f"Dataset home: {item_root}")
+        except Exception as _e:
+            self._log(f"Dataset home creation failed (non-fatal): {_e}")
 
         self._btn_record.setEnabled(True)
         self._btn_stop_record.setEnabled(False)
