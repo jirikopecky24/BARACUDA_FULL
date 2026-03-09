@@ -864,12 +864,9 @@ class BatchController:
                             from barakuda.devices.optical_tweezers.strategies.psd_welch import PsdWelchStrategy
                             strat = PsdWelchStrategy()
                             
-                        # Dataset mode: write OTPipeline outputs directly into analysis/.
-                        # Non-dataset mode: use pipeline subdirectory (manifest supports both).
-                        shadow_dir = (
-                            run_dir if _dataset_item_root is not None
-                            else run_dir / "pipeline"
-                        )
+                        # Dataset and non-dataset: write OTPipeline outputs under pipeline/
+                        # (manifest supports both pipeline/ and ot_v2_shadow/ for backward compat).
+                        shadow_dir = run_dir / "pipeline"
                         shadow_dir.mkdir(parents=True, exist_ok=True)
                         exporter = OTExporter(shadow_dir)
                         pipeline = OTPipeline(strat, exporter, self._log)
