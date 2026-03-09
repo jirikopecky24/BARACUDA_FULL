@@ -205,6 +205,7 @@ class AcquisitionPanel(QWidget):
         self._camera: AbstractCamera = BaslerCamera()  # default; replaced after dialog
         self._record_thread: QThread | None = None
         self._record_worker: _RecordWorker | None = None
+        self._log_fn = None  # set via set_log_fn() from shell
 
         # Connect thread-safe fps signals to UI slots (always run in main thread)
         self._fps_done_signal.connect(self._on_fps_done)
@@ -244,6 +245,22 @@ class AcquisitionPanel(QWidget):
                 "Install Basler Pylon SDK, then: pip install pypylon"
             )
             self._status.setStyleSheet("color: #cc3333; font-weight: bold;")
+
+    # ------------------------------------------------------------------ #
+    #  Logging hook
+    # ------------------------------------------------------------------ #
+
+    def set_log_fn(self, fn) -> None:
+        """Wire an external log function, e.g. log_panel.log, from the shell."""
+        self._log_fn = fn
+
+    def _log(self, msg: str) -> None:
+        """Forward message to external log (if wired) and also append to info panel."""
+        if self._log_fn is not None:
+            try:
+                self._log_fn(f"[ACQ] {msg}")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     #  UI Construction
@@ -991,6 +1008,18 @@ class AcquisitionPanel(QWidget):
         self._btn_stop_preview.setEnabled(False)
         self._status.setText("Recording…")
 
+        rec_fmt = self._combo_format.currentText().split()[0]  # "RAW" or "AVI"
+        dur_s = self._spin_duration.value()
+        fps_h = self._spin_fps_hint.value()
+        dur_str = f"{dur_s:.1f}s" if dur_s > 0 else "unlimited"
+        out_path = self._edit_output_dir.text()
+        bn = self._edit_basename.text()
+        self._log(
+            f"Recording requested — format={rec_fmt}  duration={dur_str}  "
+            f"ROI={roi[0]}×{roi[1]}+{roi[2]}+{roi[3]}  fps_hint={fps_h:.0f}  "
+            f"out={out_path}\\{bn}"
+        )
+
         # Stop the Qt render timer so no more frames are painted.
         # The actual camera stop_preview() + join happens inside the worker
         # thread (record_raw / record both call it on entry) — calling it here
@@ -1111,6 +1140,10 @@ class AcquisitionPanel(QWidget):
             f"Video: {result.video_path}\n"
             f"Meta:  {result.meta_path}"
         )
+        self._log(
+            f"Recording done — frames={result.frames_written}  fps_eff={fps_str}"
+            f"  dropped={result.dropped}  video={result.video_path}"
+        )
         self._last_record_result = result
 
         # --- Write qc.json ---
@@ -1153,6 +1186,7 @@ class AcquisitionPanel(QWidget):
 
     def _on_record_error(self, err: str) -> None:
         self._status.setText(f"❌ Record error: {err}")
+        self._log(f"Recording FAILED — {err}")
         self._btn_record.setEnabled(True)
         self._btn_stop_record.setEnabled(False)
         self._btn_start_preview.setEnabled(True)

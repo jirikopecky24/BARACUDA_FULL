@@ -341,8 +341,9 @@ class ShellMainWindow(QMainWindow):
 
         elif self._active_device_id == "acquisition":
             # AcquisitionPanel is self-contained (owns its preview).
-            # No signal wiring needed — panel handles everything internally.
-            pass
+            # Wire log function so recording lifecycle events reach the Log panel.
+            if hasattr(self._device_panel, "set_log_fn"):
+                self._device_panel.set_log_fn(self.log_panel.log)  # type: ignore[union-attr]
 
         self.log_panel.log(f"Device selected: {spec.display_name}")
 
