@@ -467,7 +467,8 @@ class PipelinePanel(QWidget):
         prof_layout.addWidget(prof_lbl)
         prof_layout.addLayout(row1)
         prof_layout.addLayout(row2)
-        
+        tab_run_layout.addWidget(prof_box)
+
         # ── Frame range ──
         range_form = QWidget()
         range_layout = QFormLayout(range_form)
