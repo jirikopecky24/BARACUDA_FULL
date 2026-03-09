@@ -247,6 +247,7 @@ class PipelinePanel(QWidget):
 
         # ── Export ───────────────────────────────────────────────
         self._export_dataset_path: str | None = None
+        self._export_paths: list[str] = []  # all selected paths for batch export
 
         export_box = QWidget()
         _exp_layout = QVBoxLayout(export_box)
@@ -1034,6 +1035,10 @@ class PipelinePanel(QWidget):
         self._export_dataset_path = str(path_str) if path_str else None
         self._refresh_export_status()
 
+    def set_export_paths(self, paths: list) -> None:
+        """Set the list of dataset paths to use when exporting (e.g. multi-selection)."""
+        self._export_paths = [str(p) for p in paths] if paths else []
+
     def _on_open_export_dataset(self) -> None:
         from PyQt6.QtWidgets import QFileDialog
         path_str, _ = QFileDialog.getOpenFileName(
@@ -1145,49 +1150,59 @@ class PipelinePanel(QWidget):
         from pathlib import Path as _Path
         import shutil as _shutil
 
-        p = self._export_dataset_path
-        if not p:
+        paths_to_export = (
+            self._export_paths
+            if self._export_paths
+            else ([self._export_dataset_path] if self._export_dataset_path else [])
+        )
+        if not paths_to_export:
             return
-
-        path = _Path(p)
-        item_json: _Path | None = None
-        if path.name == "item.json":
-            item_json = path
-        else:
-            for candidate in (
-                path.parent / "item.json",
-                path.parent.parent / "item.json",
-            ):
-                if candidate.is_file():
-                    item_json = candidate
-                    break
-
-        if item_json is None:
-            self._export_status_lbl.setText("Export failed: item.json not found.")
-            return
-
-        item_root = item_json.parent
-        exports_dir = item_root / "exports"
-        exports_dir.mkdir(parents=True, exist_ok=True)
 
         art_by_id = {a["id"]: a for a in self._export_artifacts}
-        copied = 0
+        total_copied = 0
+        export_dirs: list[str] = []
         try:
-            for aid, cb in self._export_artifact_checkboxes.items():
-                if not cb.isChecked():
-                    continue
-                art = art_by_id.get(aid)
-                if not art:
-                    continue
-                src = item_root / art["path"]
-                if not src.is_file():
-                    continue
-                dst = exports_dir / _Path(art["path"]).name
-                _shutil.copy2(src, dst)
-                copied += 1
+            for p in paths_to_export:
+                path = _Path(p)
+                item_json: _Path | None = None
+                if path.name == "item.json":
+                    item_json = path
+                else:
+                    for candidate in (
+                        path.parent / "item.json",
+                        path.parent.parent / "item.json",
+                    ):
+                        if candidate.is_file():
+                            item_json = candidate
+                            break
 
-            self._export_status_lbl.setText(
-                f"Exported {copied} file(s) to:\n{exports_dir}"
-            )
+                if item_json is None:
+                    continue
+
+                item_root = item_json.parent
+                exports_dir = item_root / "exports"
+                exports_dir.mkdir(parents=True, exist_ok=True)
+
+                for aid, cb in self._export_artifact_checkboxes.items():
+                    if not cb.isChecked():
+                        continue
+                    art = art_by_id.get(aid)
+                    if not art:
+                        continue
+                    src = item_root / art["path"]
+                    if not src.is_file():
+                        continue
+                    dst = exports_dir / _Path(art["path"]).name
+                    _shutil.copy2(src, dst)
+                    total_copied += 1
+
+                export_dirs.append(str(exports_dir))
+
+            if export_dirs:
+                self._export_status_lbl.setText(
+                    f"Exported {total_copied} file(s) to:\n" + "\n".join(export_dirs)
+                )
+            else:
+                self._export_status_lbl.setText("Export failed: no valid dataset path(s).")
         except Exception as _e:
             self._export_status_lbl.setText(f"Export error:\n{_e!r}")

@@ -280,6 +280,11 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.set_dataset_path(str(path))  # type: ignore[attr-defined]
                 except Exception as e:
                     self.log_panel.log(f"WARN: Export tab update failed: {e!r}")
+            if hasattr(self._device_panel, "set_export_paths"):
+                try:
+                    self._device_panel.set_export_paths(self.dataset.get_selected_paths())
+                except Exception:
+                    pass
 
     def _on_ot_panel_value_changed(self) -> None:
         """When an OT control changes, save the new params to the currently active dataset item."""
