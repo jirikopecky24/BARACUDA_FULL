@@ -1103,7 +1103,6 @@ class PipelinePanel(QWidget):
             m = load_item_manifest(item_json)
 
             lines: list[str] = [f"Item: {item_json.parent.name}"]
-            file_lines: list[str] = []
 
             if m.analysis_dir is not None and m.analysis_dir.is_dir():
                 try:
@@ -1111,12 +1110,6 @@ class PipelinePanel(QWidget):
                 except ValueError:
                     rel = m.analysis_dir
                 lines.append(f"Analysis: {rel}")
-                for f in sorted(m.analysis_dir.rglob("*")):
-                    if f.is_file():
-                        try:
-                            file_lines.append(f"  {f.relative_to(m.item_root)}")
-                        except Exception:
-                            file_lines.append(f"  {f.name}")
             else:
                 lines.append("No analysis folder found yet — run the pipeline first.")
 
@@ -1128,9 +1121,7 @@ class PipelinePanel(QWidget):
                 lines.append(f"Exports: {rel}")
 
             self._export_status_lbl.setText("\n".join(lines))
-            self._export_files_lbl.setText(
-                "\n".join(file_lines) if file_lines else "  (no files yet)"
-            )
+            self._export_files_lbl.setText("")
 
             artifacts = discover_analysis_artifacts(m.item_root)
             self._export_artifacts = artifacts
