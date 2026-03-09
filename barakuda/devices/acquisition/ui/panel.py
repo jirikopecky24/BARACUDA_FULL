@@ -493,6 +493,21 @@ class AcquisitionPanel(QWidget):
         rec_btn_row.addWidget(self._btn_sim_raw)
         rec_form.addRow("", rec_btn_row)
 
+        # -- Settings --
+        grp_settings = QGroupBox("Settings")
+        settings_form = QFormLayout(grp_settings)
+
+        self._combo_pixel_format = QComboBox()
+        self._combo_pixel_format.addItems(["Mono8", "Mono12"])
+        self._combo_pixel_format.setCurrentText("Mono8")
+        self._combo_pixel_format.setToolTip(
+            "Pixel format for recording. Mono8 = 8-bit (smaller files),\n"
+            "Mono12 = 12-bit (higher dynamic range, larger files)."
+        )
+        settings_form.addRow("Pixel format:", self._combo_pixel_format)
+
+        right_layout.addWidget(grp_settings)
+
         # -- Status --
         grp_status = QGroupBox("Status")
         status_l = QVBoxLayout(grp_status)

@@ -339,6 +339,11 @@ class ShellMainWindow(QMainWindow):
             except Exception as e:
                 self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
 
+        elif self._active_device_id == "acquisition":
+            # AcquisitionPanel is self-contained (owns its preview).
+            # No signal wiring needed — panel handles everything internally.
+            pass
+
         self.log_panel.log(f"Device selected: {spec.display_name}")
 
         # Switch the preview stack to the correct panel
@@ -373,7 +378,7 @@ class ShellMainWindow(QMainWindow):
                 self.method_combo.setCurrentIndex(0)
                 self.method_combo.setVisible(True)
                 
-                self.method_label.setText("Calibration mode:")
+                self.method_label.setText("Method:")
                 self.method_label.setVisible(True)
 
                 if hasattr(self._device_panel, "set_calibration_mode"):
@@ -408,6 +413,10 @@ class ShellMainWindow(QMainWindow):
             self._manual_roi_edited_paths.add(str(paths[0]))
 
     # ---------------- OT helpers ----------------
+
+    def _on_ot_load_profile(self, profile_name: str) -> None:
+        """Minimal handler to satisfy signal wiring without modifying profile logic."""
+        self.log_panel.log(f"OT load profile requested: {profile_name} (No-op)")
 
     def _ot_save_scale(self) -> None:
         if self._device_panel is None:
