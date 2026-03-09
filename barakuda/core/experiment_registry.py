@@ -132,6 +132,66 @@ def list_datasets(experiment_path: Path) -> list[Path]:
     return [p for p in sorted(datasets_dir.iterdir()) if p.is_dir()]
 
 
+# Artifact file name -> summary key (for get_experiment_summary)
+_ANALYSIS_FILE_TO_ARTIFACT = {
+    "trajectory.csv": "trajectory",
+    "tracking.csv": "tracking",
+    "psd.csv": "psd",
+    "qc.json": "qc",
+    "run.json": "run",
+}
+
+
+def get_experiment_summary(experiment_path: Path) -> dict[str, Any]:
+    """
+    Build summary metadata for an experiment folder.
+
+    Input: experiment folder (e.g. runs/experiments/hydrogel_test).
+    Output: dict with datasets (count), modules (list), artifacts (list), date_range (min/max).
+    """
+    path = Path(experiment_path).resolve()
+    payload = load_experiment(path)
+    dataset_paths = list_datasets(path)
+
+    modules_set: set[str] = set()
+    artifacts_set: set[str] = set()
+    dates: list[str] = []
+
+    exp_created = payload.get("created_at")
+    if exp_created:
+        dates.append(exp_created)
+
+    for ds_path in dataset_paths:
+        item_json = ds_path / "item.json"
+        if item_json.is_file():
+            try:
+                item = json.loads(item_json.read_text(encoding="utf-8"))
+                mod = item.get("module")
+                if mod:
+                    modules_set.add(str(mod))
+                for key in ("created_at", "updated_at"):
+                    if item.get(key):
+                        dates.append(item[key])
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        analysis_dir = ds_path / "analysis"
+        if analysis_dir.is_dir():
+            for fname, artifact_key in _ANALYSIS_FILE_TO_ARTIFACT.items():
+                if (analysis_dir / fname).is_file():
+                    artifacts_set.add(artifact_key)
+
+    date_min = min(dates) if dates else None
+    date_max = max(dates) if dates else None
+
+    return {
+        "datasets": len(dataset_paths),
+        "modules": sorted(modules_set),
+        "artifacts": sorted(artifacts_set),
+        "date_range": {"min": date_min, "max": date_max} if (date_min and date_max) else {},
+    }
+
+
 def register_dataset_to_experiment(
     runs_folder: Path,
     dataset_path: Path,
