@@ -560,10 +560,6 @@ class PipelinePanel(QWidget):
 
         layout.addWidget(self.tabs, stretch=1)
         
-        # Disable tracking and postprocess advanced checkboxes themselves so user only uses master
-        self._trk_advanced.setVisible(False)
-        self._pp_advanced.setVisible(False)
-        
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
         for w in self.findChildren(QAbstractSpinBox):
