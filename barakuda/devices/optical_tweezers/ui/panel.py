@@ -1135,7 +1135,6 @@ class PipelinePanel(QWidget):
             artifacts = discover_analysis_artifacts(m.item_root)
             self._export_artifacts = artifacts
             self._refresh_export_artifact_checkboxes(artifacts)
-            self._btn_export_all.setEnabled(len(artifacts) > 0)
 
         except Exception as _e:
             self._export_status_lbl.setText(f"Error loading manifest:\n{_e!r}")
@@ -1171,8 +1170,17 @@ class PipelinePanel(QWidget):
                 cb = QCheckBox(art["label"])
                 cb.setEnabled(True)
                 cb.setChecked(True)
+                cb.stateChanged.connect(self._update_export_button_state)
                 self._export_artifacts_layout.addWidget(cb)
                 self._export_artifact_checkboxes[art["id"]] = cb
+
+        self._update_export_button_state()
+
+    def _update_export_button_state(self) -> None:
+        """Enable EXPORT only when at least one export artifact checkbox is checked."""
+        has_any = bool(self._export_artifact_checkboxes)
+        any_checked = any(cb.isChecked() for cb in self._export_artifact_checkboxes.values())
+        self._btn_export_all.setEnabled(has_any and any_checked)
 
     def _on_export_select_all(self) -> None:
         """Check all currently visible export artifact checkboxes."""
