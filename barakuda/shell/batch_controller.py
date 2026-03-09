@@ -865,10 +865,10 @@ class BatchController:
                             strat = PsdWelchStrategy()
                             
                         # Dataset mode: write OTPipeline outputs directly into analysis/.
-                        # Non-dataset mode: use legacy ot_v2_shadow subdirectory.
+                        # Non-dataset mode: use pipeline subdirectory (manifest supports both).
                         shadow_dir = (
                             run_dir if _dataset_item_root is not None
-                            else run_dir / "ot_v2_shadow"
+                            else run_dir / "pipeline"
                         )
                         shadow_dir.mkdir(parents=True, exist_ok=True)
                         exporter = OTExporter(shadow_dir)
