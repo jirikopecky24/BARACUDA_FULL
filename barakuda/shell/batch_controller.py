@@ -788,7 +788,6 @@ class BatchController:
                     run_dir.mkdir(parents=True, exist_ok=True)
                     for _sd in ("audit", "tracking", "physics"):
                         (run_dir / _sd).mkdir(parents=True, exist_ok=True)
-                    (_item_root_for_run / "exports").mkdir(parents=True, exist_ok=True)
                     _item_id_for_run = _item_root_for_run.name
                     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
                     (run_dir / "run.json").write_text(
