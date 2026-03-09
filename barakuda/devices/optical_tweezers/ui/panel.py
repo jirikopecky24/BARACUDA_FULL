@@ -1132,19 +1132,35 @@ class PipelinePanel(QWidget):
             self._refresh_export_artifact_checkboxes([])
 
     def _refresh_export_artifact_checkboxes(self, artifacts: list[dict]) -> None:
-        """Rebuild artifact checkboxes from discovery result. Checkbox enabled only if artifact exists."""
+        """Rebuild artifact checkboxes from discovery result, grouped by DATA / REPORTS / PLOTS."""
         while self._export_artifacts_layout.count():
             child = self._export_artifacts_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
         self._export_artifact_checkboxes.clear()
 
-        for art in artifacts:
-            cb = QCheckBox(art["label"])
-            cb.setEnabled(True)
-            cb.setChecked(True)
-            self._export_artifacts_layout.addWidget(cb)
-            self._export_artifact_checkboxes[art["id"]] = cb
+        artifacts_by_id = {a["id"]: a for a in artifacts}
+        group_style = "font-weight: bold; color: #555; font-size: 11px; margin-top: 6px;"
+
+        groups = [
+            ("DATA", ["trajectory_csv", "tracking_csv", "psd_csv"]),
+            ("REPORTS", ["qc_report", "run_json"]),
+            ("PLOTS", []),
+        ]
+
+        for group_label, artifact_ids in groups:
+            group_artifacts = [(aid, artifacts_by_id[aid]) for aid in artifact_ids if aid in artifacts_by_id]
+            if not group_artifacts:
+                continue
+            header = QLabel(group_label)
+            header.setStyleSheet(group_style)
+            self._export_artifacts_layout.addWidget(header)
+            for aid, art in group_artifacts:
+                cb = QCheckBox(art["label"])
+                cb.setEnabled(True)
+                cb.setChecked(True)
+                self._export_artifacts_layout.addWidget(cb)
+                self._export_artifact_checkboxes[art["id"]] = cb
 
     def _on_export_all_clicked(self) -> None:
         from pathlib import Path as _Path
