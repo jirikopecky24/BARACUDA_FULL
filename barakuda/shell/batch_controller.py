@@ -999,8 +999,15 @@ class BatchController:
                 # Save overlays (never crash the run)
                 try:
                     if first_frame is not None and first_xy is not None:
+                        dir_preview = run_dir / "preview"
+                        dir_preview.mkdir(parents=True, exist_ok=True)
+                        if self._preview_dir and (self._preview_dir / "preview_report.json").exists():
+                            shutil.copy2(
+                                self._preview_dir / "preview_report.json",
+                                dir_preview / "preview_report.json",
+                            )
                         self.run_manager.save_overlay_png(
-                            run_dir=run_dir,
+                            run_dir=dir_preview,
                             frame_rgb=first_frame,
                             x=first_xy[0],
                             y=first_xy[1],
@@ -1313,7 +1320,7 @@ class BatchController:
 
                     # 2. Tracking
                     _move_to(traj_path, dir_tracking)
-                    _move_to(run_dir / f"{stem}_preview_tracking.png", dir_tracking)
+                    # preview_tracking.png lives in run_dir/preview/ (unified preview output)
                     _move_to(run_dir / f"{stem}_after.png", dir_tracking)
                     _move_to(run_dir / f"{stem}_after_raw.png", dir_tracking)
 
