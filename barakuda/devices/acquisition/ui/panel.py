@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QFileDialog, QGroupBox, QScrollArea, QFrame,
     QSlider, QGridLayout, QPlainTextEdit, QComboBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
-    QTabWidget,
+    QTabWidget, QMessageBox,
 )
 from PyQt6.QtGui import QFont
 
@@ -486,6 +486,7 @@ class AcquisitionPanel(QWidget):
         self._combo_format.addItem("AVI (compat)")
         self._combo_format.setCurrentIndex(0)
         self._combo_format.setToolTip("RAW = raw binary (fastest, no codec overhead). AVI = MJPG container.")
+        self._combo_format.currentIndexChanged.connect(self._on_format_changed)
         rec_form.addRow("Format:", self._combo_format)
 
         rec_btn_row = QHBoxLayout()
@@ -994,6 +995,24 @@ class AcquisitionPanel(QWidget):
     # ------------------------------------------------------------------ #
     #  Recording
     # ------------------------------------------------------------------ #
+
+    _AVI_FPS_WARN_THRESHOLD = 600.0
+
+    def _on_format_changed(self, _index: int) -> None:
+        """Warn the user if AVI is selected while target FPS exceeds the safe threshold."""
+        fmt = self._combo_format.currentText()
+        fps = self._spin_fps_hint.value()
+        if "AVI" in fmt and fps > self._AVI_FPS_WARN_THRESHOLD:
+            QMessageBox.warning(
+                self,
+                "High FPS AVI Warning",
+                (
+                    f"AVI recording is not reliable above ~{self._AVI_FPS_WARN_THRESHOLD:.0f} FPS.\n\n"
+                    "For scientific acquisition use RAW format.\n\n"
+                    "AVI is intended only for preview or compatibility\n"
+                    "and may produce invalid timestamps at high frame rates."
+                ),
+            )
 
     def _on_record(self) -> None:
         if not self._camera.is_connected:
