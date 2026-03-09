@@ -546,6 +546,22 @@ class BatchController:
         p = Path(self._preview_dir) / "preview_report.json"
         return p if p.exists() else None
 
+    # ---------------- Dataset Item Detection ----------------
+
+    @staticmethod
+    def _detect_dataset_item_root(video_path: Path) -> Optional[Path]:
+        """
+        If video_path lives inside a dataset item folder (acquisition/ or raw/),
+        return the item root directory (parent of those folders, where item.json lives).
+        Returns None for standalone videos not inside a known item layout.
+        """
+        parent = video_path.parent
+        if parent.name in ("acquisition", "raw"):
+            item_root = parent.parent
+            if (item_root / "item.json").is_file():
+                return item_root
+        return None
+
     # ---------------- Run Batch ----------------
 
     def run_batch(
@@ -758,8 +774,32 @@ class BatchController:
 
                 stem = Path(file_path).stem
 
-                # STEP A: OT writes directly into canonical item dir (no legacy flat dir)
-                if _ot_items_root is not None and _ot_batch_id is not None:
+                # Detect whether this video lives inside an existing dataset item folder.
+                _dataset_item_root = self._detect_dataset_item_root(file_path)
+
+                # STEP A: select output root
+                if _dataset_item_root is not None:
+                    # Dataset mode: write analysis directly into existing item home.
+                    # No new batch item directory is created.
+                    _item_root_for_run = _dataset_item_root
+                    run_dir = _item_root_for_run / "analysis"
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    for _sd in ("audit", "tracking", "physics"):
+                        (run_dir / _sd).mkdir(parents=True, exist_ok=True)
+                    (_item_root_for_run / "exports").mkdir(parents=True, exist_ok=True)
+                    _item_id_for_run = _item_root_for_run.name
+                    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
+                    (run_dir / "run.json").write_text(
+                        json.dumps({
+                            "run_id": run_id,
+                            "created_at": datetime.now().isoformat(timespec="seconds"),
+                            "input_path": str(file_path),
+                            "config": config,
+                        }, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                elif _ot_items_root is not None and _ot_batch_id is not None:
+                    # New-batch mode: create a fresh item directory under current batch.
                     _base = re.sub(r"[^A-Za-z0-9._\-]", "_", stem)
                     _item_id_for_run = _base
                     _n_coll = 1
@@ -787,6 +827,7 @@ class BatchController:
                     run_id = result.run_id
                     _item_id_for_run = None
                     _item_root_for_run = None
+                    _dataset_item_root = None
                 
                 # --- OT Pipeline v2.1 Shadow Run ---
                 if True:
@@ -1289,9 +1330,34 @@ class BatchController:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
 
                 # --- OT canonical metadata (item.json + batch.json) ---
-                # run_dir is already item_root/module/ot/ — no copy needed (STEP A)
                 try:
-                    if _ot_items_root is not None and _ot_batch_id is not None and _item_root_for_run is not None:
+                    if _dataset_item_root is not None:
+                        # Dataset mode: update existing item.json with new analysis paths.
+                        _item_json_path = _dataset_item_root / "item.json"
+                        try:
+                            _existing_item = json.loads(_item_json_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            _existing_item = {"schema_version": 1, "module": "ot"}
+                        _inv_ds: list[str] = []
+                        for _ap in _dataset_item_root.rglob("*"):
+                            if _ap.is_file():
+                                try:
+                                    _inv_ds.append(
+                                        str(_ap.relative_to(_dataset_item_root)).replace("\\", "/")
+                                    )
+                                except Exception:
+                                    pass
+                        _existing_item.update({
+                            "analysis_dir": "analysis",
+                            "run_dir": str(run_dir),
+                            "updated_at": datetime.now().isoformat(),
+                            "artifacts_inventory": _inv_ds,
+                        })
+                        _item_json_path.write_text(
+                            json.dumps(_existing_item, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                    elif _ot_items_root is not None and _ot_batch_id is not None and _item_root_for_run is not None:
                         _item_id = _item_id_for_run
                         _item_root = _item_root_for_run
                         _src_video = Path(file_path)
