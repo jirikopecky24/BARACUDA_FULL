@@ -108,7 +108,7 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
                 or _glob_first(ad, "*_trajectory.csv")
             )
 
-        m.preview_report_path = _first_existing(ad, ["preview_report.json"])
+        m.preview_report_path = _first_existing(ad, ["preview_report.json", "preview/preview_report.json"])
 
     # ── Exports directory ────────────────────────────────────────────────────
     exp = _first_existing(item_root, ["exports", "module/ot/exports"])
