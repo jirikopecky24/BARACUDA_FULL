@@ -1226,9 +1226,8 @@ class PipelinePanel(QWidget):
                     continue
 
                 item_root = item_json.parent
-                exports_dir = item_root / "exports"
-                exports_dir.mkdir(parents=True, exist_ok=True)
-
+                # Collect selected artifacts that exist for this dataset
+                to_copy: list[tuple[str, dict]] = []
                 for aid, cb in self._export_artifact_checkboxes.items():
                     if not cb.isChecked():
                         continue
@@ -1238,10 +1237,18 @@ class PipelinePanel(QWidget):
                     src = item_root / art["path"]
                     if not src.is_file():
                         continue
+                    to_copy.append((aid, art))
+
+                if not to_copy:
+                    continue
+
+                exports_dir = item_root / "exports"
+                exports_dir.mkdir(parents=True, exist_ok=True)
+                for aid, art in to_copy:
+                    src = item_root / art["path"]
                     dst = exports_dir / _Path(art["path"]).name
                     _shutil.copy2(src, dst)
                     total_copied += 1
-
                 export_dirs.append(str(exports_dir))
 
             if export_dirs:
