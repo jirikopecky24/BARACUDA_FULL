@@ -132,7 +132,7 @@ def list_datasets(experiment_path: Path) -> list[Path]:
     return [p for p in sorted(datasets_dir.iterdir()) if p.is_dir()]
 
 
-# Artifact file name -> summary key (for get_experiment_summary)
+# Artifact file name -> summary key (for get_experiment_summary and get_dataset_artifacts)
 _ANALYSIS_FILE_TO_ARTIFACT = {
     "trajectory.csv": "trajectory",
     "tracking.csv": "tracking",
@@ -140,6 +140,31 @@ _ANALYSIS_FILE_TO_ARTIFACT = {
     "qc.json": "qc",
     "run.json": "run",
 }
+
+
+def get_dataset_artifacts(dataset_path: Path) -> list[str]:
+    """
+    Report available artifacts for a single dataset by inspecting dataset_root/analysis/
+    and dataset_root/exports/.
+
+    Returns a sorted list of artifact keys present, e.g. ["trajectory", "tracking", "psd", "qc", "run", "exports"].
+    """
+    path = Path(dataset_path).resolve()
+    if not path.is_dir():
+        return []
+
+    out: set[str] = set()
+    analysis_dir = path / "analysis"
+    if analysis_dir.is_dir():
+        for fname, artifact_key in _ANALYSIS_FILE_TO_ARTIFACT.items():
+            if (analysis_dir / fname).is_file():
+                out.add(artifact_key)
+
+    exports_dir = path / "exports"
+    if exports_dir.is_dir() and any(exports_dir.iterdir()):
+        out.add("exports")
+
+    return sorted(out)
 
 
 def get_experiment_summary(experiment_path: Path) -> dict[str, Any]:
