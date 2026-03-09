@@ -518,11 +518,27 @@ class BaslerCamera(AbstractCamera):
         timestamps: list[float] = []
         self._record_stop.clear()
 
+        _AVI_QUEUE_MAXSIZE = 512
+        write_q_avi: queue.Queue = queue.Queue(maxsize=_AVI_QUEUE_MAXSIZE)
+
+        def _avi_writer() -> None:
+            while True:
+                item = write_q_avi.get()
+                if item is None:
+                    break
+                writer.write(item)
+
+        avi_writer_thread = threading.Thread(
+            target=_avi_writer, daemon=True, name="avi-writer"
+        )
+        avi_writer_thread.start()
+
         try:
-            self._cam.StartGrabbing(
-                pylon.GrabStrategy_OneByOne,
-                pylon.GrabLoop_ProvidedByInstantCamera,
-            )
+            # GrabStrategy_OneByOne without GrabLoop_ProvidedByInstantCamera:
+            # we drive the grab loop ourselves via RetrieveResult — mixing
+            # the InstantCamera internal loop with a manual loop causes silent
+            # frame drops on some pylon versions.
+            self._cam.StartGrabbing(pylon.GrabStrategy_OneByOne)
             t0 = time.perf_counter()
 
             while not self._record_stop.is_set():
@@ -540,16 +556,21 @@ class BaslerCamera(AbstractCamera):
                     grab.Release()
                     continue
 
-                img = grab.Array
+                img = grab.Array.copy()
                 grab.Release()
-                writer.write(img)
-                frames += 1
-                timestamps.append(time.perf_counter())
+                try:
+                    write_q_avi.put_nowait(img)
+                    frames += 1
+                    timestamps.append(time.perf_counter())
+                except queue.Full:
+                    dropped += 1
 
                 if progress_callback is not None and frames % 100 == 0:
                     progress_callback(frames, time.perf_counter() - t0)
 
         finally:
+            write_q_avi.put(None)  # sentinel — drain and stop writer thread
+            avi_writer_thread.join()
             writer.release()
             try:
                 if self._cam is not None and self._cam.IsGrabbing():
@@ -718,7 +739,9 @@ class BaslerCamera(AbstractCamera):
         ts_path = os.path.join(output_dir, basename + "_timestamps.csv")
         meta_path = os.path.join(output_dir, basename + "_meta.json")
 
-        frame_bytes = w * h  # Mono8
+        # Mono8 = 1 byte/px, Mono12/Mono16 = 2 bytes/px (packed into uint16)
+        bytes_per_pixel = 2 if pixel_format in ("Mono12", "Mono16") else 1
+        frame_bytes = w * h * bytes_per_pixel
 
         _QUEUE_MAXSIZE = 1024
         frames = 0
@@ -742,10 +765,7 @@ class BaslerCamera(AbstractCamera):
         writer_thread.start()
 
         try:
-            self._cam.StartGrabbing(
-                pylon.GrabStrategy_OneByOne,
-                pylon.GrabLoop_ProvidedByInstantCamera,
-            )
+            self._cam.StartGrabbing(pylon.GrabStrategy_OneByOne)
             t0 = time.perf_counter()
 
             while not self._record_stop.is_set():
@@ -818,7 +838,7 @@ class BaslerCamera(AbstractCamera):
             "record_roi": {"x": ox, "y": oy, "w": w, "h": h},
             "pixel_format": pixel_format,
             "frame_bytes": frame_bytes,
-            "dtype": "uint8",
+            "dtype": "uint16" if pixel_format in ("Mono12", "Mono16") else "uint8",
             "raw_path": raw_path,
             "timestamps_path": ts_path,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),

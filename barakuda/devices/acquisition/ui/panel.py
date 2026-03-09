@@ -991,8 +991,11 @@ class AcquisitionPanel(QWidget):
         self._btn_stop_preview.setEnabled(False)
         self._status.setText("Recording…")
 
+        # Stop the Qt render timer so no more frames are painted.
+        # The actual camera stop_preview() + join happens inside the worker
+        # thread (record_raw / record both call it on entry) — calling it here
+        # in the UI thread would block the event loop for up to 3 s.
         self._preview_timer.stop()
-        self._camera.stop_preview()
 
         self._record_thread = QThread()
         self._record_worker = _RecordWorker(
