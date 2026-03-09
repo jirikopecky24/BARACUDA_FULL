@@ -5,6 +5,7 @@ Operates on runs/experiments/. Does not change dataset schema or pipelines.
 """
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 from datetime import datetime
@@ -217,7 +218,113 @@ def get_experiment_summary(experiment_path: Path) -> dict[str, Any]:
     }
 
 
-def register_dataset_to_experiment(
+def _read_trajectory_stats(analysis_dir: Path) -> dict[str, Any] | None:
+    """Read trajectory.csv and return simple comparable stats. Returns None if missing/invalid."""
+    traj_path = analysis_dir / "trajectory.csv"
+    if not traj_path.is_file():
+        return None
+    try:
+        with traj_path.open("r", encoding="utf-8", newline="") as f:
+            lines = [ln for ln in f if not ln.strip().startswith("#")]
+        if not lines:
+            return None
+        reader = csv.DictReader(lines)
+        rows = list(reader)
+    except (OSError, csv.Error):
+        return None
+    if not rows:
+        return {"n_points": 0, "t_span_s": 0.0}
+
+    def _col(name: str) -> list[float]:
+        if not rows or name not in rows[0]:
+            return []
+        out = []
+        for r in rows:
+            try:
+                out.append(float(r[name]))
+            except (ValueError, TypeError):
+                pass
+        return out
+
+    t_col = _col("t_s") or _col("t")
+    n = len(rows)
+    t_span = (max(t_col) - min(t_col)) if len(t_col) >= 2 else 0.0
+    out: dict[str, Any] = {"n_points": n, "t_span_s": t_span}
+    for xkey, ykey in [("x_um", "y_um"), ("x_px", "y_px")]:
+        xv, yv = _col(xkey), _col(ykey)
+        if xv:
+            out[f"{xkey}_mean"] = sum(xv) / len(xv)
+            out[f"{xkey}_std"] = (sum((x - out[f"{xkey}_mean"]) ** 2 for x in xv) / len(xv)) ** 0.5
+        if yv:
+            out[f"{ykey}_mean"] = sum(yv) / len(yv)
+            out[f"{ykey}_std"] = (sum((y - out[f"{ykey}_mean"]) ** 2 for y in yv) / len(yv)) ** 0.5
+    return out
+
+
+def _read_psd_curves(analysis_dir: Path) -> dict[str, Any] | None:
+    """Read psd.csv and return freq + psd columns for comparison. Returns None if missing/invalid."""
+    psd_path = analysis_dir / "psd.csv"
+    if not psd_path.is_file():
+        return None
+    try:
+        with psd_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+    except (OSError, csv.Error):
+        return None
+    if not rows:
+        return None
+    # Prefer freq_hz / psd or freq / psd column names
+    first = rows[0]
+    freq_key = next((k for k in ("freq_hz", "freq", "frequency") if k in first), None)
+    psd_key = next((k for k in ("psd", "psd_um2_hz", "P") if k in first), None)
+    if not freq_key or not psd_key:
+        return None
+    try:
+        freq = [float(r[freq_key]) for r in rows if r.get(freq_key)]
+        psd = [float(r[psd_key]) for r in rows if r.get(psd_key)]
+    except (ValueError, TypeError):
+        return None
+    if len(freq) != len(psd) or not freq:
+        return None
+    return {"freq_hz": freq, "psd_um2_hz": psd}
+
+
+def _read_drift_stats(analysis_dir: Path) -> dict[str, Any] | None:
+    """Read run.json and return drift-related fields for comparison. Returns None if missing/invalid."""
+    run_path = analysis_dir / "run.json"
+    if not run_path.is_file():
+        return None
+    try:
+        payload = json.loads(run_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    drift_keys = ("drift_enabled", "drift_window_s", "drift_mode")
+    out = {k: payload[k] for k in drift_keys if k in payload}
+    return out if out else None
+
+
+def compare_datasets(dataset_paths: list[Path]) -> dict[str, Any]:
+    """
+    Extract comparable artifacts from multiple datasets for comparison (no plotting).
+
+    Returns structured data: per-dataset trajectory stats, PSD curves, and drift stats
+    when available. Used later for experiment comparison and plotting.
+    """
+    paths = [Path(p).resolve() for p in dataset_paths if Path(p).is_dir()]
+    datasets: list[dict[str, Any]] = []
+    for ds_path in paths:
+        analysis_dir = ds_path / "analysis"
+        entry: dict[str, Any] = {
+            "dataset_path": str(ds_path),
+            "dataset_name": ds_path.name,
+            "trajectory_stats": _read_trajectory_stats(analysis_dir) if analysis_dir.is_dir() else None,
+            "psd": _read_psd_curves(analysis_dir) if analysis_dir.is_dir() else None,
+            "drift_stats": _read_drift_stats(analysis_dir) if analysis_dir.is_dir() else None,
+        }
+        datasets.append(entry)
+    return {"datasets": datasets}
+
     runs_folder: Path,
     dataset_path: Path,
     experiment_id: str,
