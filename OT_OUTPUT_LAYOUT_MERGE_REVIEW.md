@@ -1,60 +1,66 @@
-# OT Output Layout Merge Review
+# OT Output Layout — Merge Review
 
 ## 1. PURPOSE
 
-This document performs the final merge-review audit for the `integration/ot-output-layout-simplification` branch. The goal is to prepare this branch for safe human-reviewed merge into `main`, without changing runtime code and without performing a merge. It summarizes functional changes, remaining risks, merge readiness, and recommended procedure.
+This document is the **final merge-review audit** for the BARAKUDA OT output layout simplification branch (`integration/ot-output-layout-simplification`). It summarizes the branch goal, commit chain, verified functional changes, remaining risks, merge readiness, and recommended merge procedure for a human reviewer. **This step does NOT merge anything** — it only adds this report. The actual merge into `main` is to be done by a human after review.
 
 ---
 
 ## 2. BRANCH SUMMARY
 
-**Branch**: `integration/ot-output-layout-simplification`
-
-**Scope**: OT (Optical Tweezers) output layout simplification. The branch reduces clutter and clarifies where OT outputs are written:
-
-- **Empty placeholders**: Stops creating unused `results/`, `qc/`, and `artifacts/` subdirectories under item root in legacy batch mode. Only `raw/` is created.
-- **Preview unification**: Writes preview metadata (`preview_report.json`) and preview overlay image (`{stem}_preview_tracking.png`) into a single dedicated `run_dir/preview/` directory instead of splitting across `runs_folder/PREVIEW-{ts}/` and `run_dir/tracking/`.
-- **Root-level cleanup**: Writes newly generated outputs directly into structured subdirectories (`audit/`, `tracking/`, `physics/`) instead of writing to run root and then moving. Reduces stray root-level files in `module/ot` and `analysis`.
-
-**Note**: The branch may contain other commits (export, experiment registry, etc.) from earlier integration work. This review focuses on the OT output layout simplification commits (93f152c through 6d35ca7).
+| Item | Value |
+|------|--------|
+| **Current branch name** | `integration/ot-output-layout-simplification` |
+| **Branch goal** | Simplify OT analysis output layout: move new pipeline artifacts to `pipeline/`, result summaries to `summary/`, QC image to `qc/`; keep manifest backward compatibility with `ot_v2_shadow/` and legacy root-level files. |
+| **Merge target** | Intended to merge directly into `main` after human review. (If your process uses an integration branch first, merge there then to `main`.) |
 
 ---
 
 ## 3. COMMIT CHAIN
 
-OT output layout simplification commits (newest first):
+Relevant commits (oldest to newest along the branch):
 
-| Commit | Message |
-|--------|---------|
-| `6d35ca7` | docs: audit ot_v2_shadow overlap and migration path |
-| `b5d89e7` | fix: stop writing new legacy root-level ot outputs |
-| `562233b` | fix: unify ot preview outputs under one preview directory |
-| `3963db2` | fix: stop precreating empty ot placeholder directories |
-| `93f152c` | docs: audit ot output layout and preview storage |
+| Short SHA | Commit message | Purpose |
+|-----------|----------------|---------|
+| `c3db219` | fix: resolve preview report from preview directory | Preview report manifest resolution: resolve from `preview/preview_report.json`. |
+| `ac90bae` | fix: support pipeline and ot_v2_shadow in ot manifest | Manifest supports both `pipeline/` and `ot_v2_shadow/` for qc/trajectory and related paths. |
+| `2e65ea4` | fix: write new ot pipeline artifacts under pipeline directory | Non-dataset OT runs write pipeline artifacts to `run_dir/pipeline/` instead of `ot_v2_shadow/`. |
+| `5d242b8` | fix: write dataset-mode ot pipeline artifacts under pipeline directory | Dataset-mode OT runs also write pipeline artifacts to `run_dir/pipeline/` (unified path). |
+| `5f107f4` | fix: write new ot result summaries under structured summary directory | New `*_results.csv` and `*_results.xlsx` write to `run_dir/summary/` instead of analysis root. |
+| `22de3ca` | fix: write new ot qc image under structured qc directory | New `*_qc.png` writes to `run_dir/qc/` instead of analysis root. |
+| `797184f` | docs: verify current ot output layout after cleanup steps | Layout verification report: fresh-run snapshot, checklist, remaining root-level outputs, next-step recommendation. |
 
-**Runtime changes**: 3 commits modify `barakuda/shell/batch_controller.py`.  
-**Docs only**: 2 commits add audit reports (`OT_OUTPUT_LAYOUT_AUDIT.md`, `OT_V2_SHADOW_AUDIT.md`).
+Additional docs/audit commits on the branch (e.g. `af6d7fa`, `44e1b6b`, `0ba5a2f`) support the above changes but are not listed in full here.
 
 ---
 
 ## 4. VERIFIED FUNCTIONAL CHANGES
 
-| Change | File(s) | Behavior |
-|--------|---------|----------|
-| **Stop empty placeholders** | `batch_controller.py` | In legacy batch mode, creates only `item_root/raw/` instead of `raw`, `results`, `qc`, `artifacts`. |
-| **Unify preview storage** | `batch_controller.py` | Creates `run_dir/preview/`; writes preview overlay to `run_dir/preview/`; copies `preview_report.json` from gate run into `run_dir/preview/` when processing each run. Preview image no longer moved to `tracking/`. |
-| **Direct structured writes** | `batch_controller.py` | Creates `audit/`, `tracking/`, `physics/` at run start; writes trajectory to `tracking/`, postprocess to `audit/`, after overlays to `tracking/`, compare/drag to `physics/`. Postprocess_ot outputs go to `tracking/` (traj parent) then are moved to `audit/` and `physics/` in organize block. QC plot moved from `tracking/` to root. |
+Concrete functional changes now present on the branch:
 
-**Deterministic behavior**: Same inputs and config produce the same outputs; only file locations changed. No change to file contents or naming conventions beyond paths.
+- **Preview report** — Can resolve from `preview/preview_report.json` (manifest and batch copy into run’s `preview/`).
+- **Manifest compatibility** — Manifest supports both `pipeline/` and `ot_v2_shadow/` for qc JSON, trajectory, and related resolution; old datasets keep working.
+- **New pipeline writes** — New OT runs write pipeline artifacts under `pipeline/` (dataset and non-dataset).
+- **No new ot_v2_shadow** — New runs do not create a fresh `ot_v2_shadow/` directory.
+- **Result summaries** — New OT result summaries (`*_results.csv`, `*_results.xlsx`) go under `summary/`.
+- **QC image** — New OT QC image (`*_qc.png`) goes under `qc/`.
+- **Root-level files** — Fresh OT runs leave only `run.json` in the analysis root (plus subdirs: `preview/`, `pipeline/`, `tracking/`, `audit/`, `physics/`, `summary/`, `qc/`).
+- **Old datasets** — Old datasets with `ot_v2_shadow/` (or root-level result/qc files) remain readable via manifest fallbacks; full manual regression (load and use an old dataset) is recommended post-merge but is not a code blocker.
 
 ---
 
 ## 5. REMAINING RISKS
 
-1. **ot_v2_shadow still present**: In non-dataset mode, OTPipeline still writes into `run_dir/ot_v2_shadow/`. This duplicates trajectory, derived, QC, and audit-style outputs. The audit (OT_V2_SHADOW_AUDIT.md) recommends a future step (rename to `pipeline/` or consolidate). No change in this branch.
-2. **Preview report discovery**: `manifest.py` looks for `preview_report.json` under `analysis_dir`; it can now be found at `analysis/preview/preview_report.json` or `module/ot/preview/preview_report.json` when copied. Manifest uses `_first_existing(ad, ["preview_report.json"])` — it does not search `preview/` subdir. May need follow-up to add `preview/preview_report.json` to manifest resolution.
-3. **Existing datasets**: Old datasets created before this branch will have the previous layout (preview in tracking/, root-level stray files, etc.). No migration is performed. New runs get the new layout.
-4. **Consumer scripts**: Any external scripts that hardcode paths (e.g. `module/ot/{stem}_trajectory.csv` at root) would break. The canonical path is now `module/ot/tracking/{stem}_trajectory.csv`.
+| Risk | Level |
+|------|--------|
+| OT manifest backward compatibility (old paths still resolved) | **LOW** — Manifest explicitly checks `ot_v2_shadow/` and root fallbacks; risk is limited to untested legacy layouts. |
+| Dataset-mode vs non-dataset-mode consistency | **NONE** — Both modes use the same `pipeline/`, `summary/`, `qc/` layout under their respective run roots. |
+| Root-level `run.json` remaining in analysis root | **NONE** — Intentional; single canonical root file. |
+| Old dataset compatibility | **LOW** — Design preserves fallbacks; recommend one manual test with an old `ot_v2_shadow/` dataset after merge. |
+| Need for later `qc/` manifest enhancement (e.g. resolve QC PNG from manifest) | **LOW** — Only if UI/export needs to resolve the QC image by path; current manifest focuses on `*_qc.json` in `pipeline/`. |
+| Future cleanup of legacy datasets (no migration in this branch) | **LOW** — Known; migration can be a separate, optional follow-up. |
+
+**No confirmed code blocker** for merge from a layout/behavior perspective.
 
 ---
 
@@ -62,52 +68,56 @@ OT output layout simplification commits (newest first):
 
 **READY FOR MERGE REVIEW**
 
-The branch is ready for human review and merge decision. The OT output layout changes are:
+Reasons:
 
-- **Self-contained**: Only `batch_controller.py` modified for runtime; no changes to manifest, discovery, or other modules.
-- **Backward-compatible**: No schema changes; no migration required. Old datasets remain readable; new runs use the new layout.
-- **Documented**: Audit reports describe current state, overlaps, and next steps (e.g. ot_v2_shadow).
-- **Incremental**: Each commit is focused; no broad refactor.
-
-**Recommended human checks before merge**:
-
-- Run OT analysis on a dataset and confirm expected outputs.
-- Run OT batch in legacy mode and confirm no empty `results/`, `qc/`, `artifacts/` under item root.
-- Confirm preview metadata and image appear under `run_dir/preview/`.
-- Confirm no stray root-level trajectory/postprocess/msd/psd/calibration files in new runs.
+- All stated layout goals are implemented: new writes go to `pipeline/`, `summary/`, and `qc/`; no new `ot_v2_shadow/`; only `run.json` remains in the analysis root for new runs.
+- Manifest backward compatibility is in place for `ot_v2_shadow/` and legacy paths.
+- Verification document (`OT_OUTPUT_LAYOUT_VERIFICATION.md`) confirms layout and recommends no further runtime patch before merge.
+- Remaining risks are LOW or NONE; no mandatory code change is required before a human-reviewed merge.
 
 ---
 
 ## 7. RECOMMENDED MERGE PROCEDURE
 
-1. **Pre-merge**:
-   - Ensure CI/tests pass (if any).
-   - Perform manual verification per Section 8.
-   - Resolve any conflicts with `main` if present.
+Perform these steps as a **human developer**; do not automate the merge in this audit step.
 
-2. **Merge**:
-   - Merge `integration/ot-output-layout-simplification` into `main` via PR or direct merge.
-   - Use a merge commit (no squash) if preserving the audit trail is desired; otherwise squash as per project policy.
+1. **Verify working tree**  
+   On your machine, ensure the working tree is clean and you are on the target branch (e.g. `main`):  
+   `git status`  
+   `git branch --show-current`
 
-3. **Post-merge**:
-   - Run post-merge verification (Section 8).
-   - Tag release if applicable.
-   - Update any internal docs that reference OT output paths.
+2. **Optional: tag or note current main**  
+   To be able to revert or compare:  
+   `git tag pre-ot-layout-merge`  
+   or note the current `main` commit SHA.
+
+3. **Merge with review**  
+   From `main`:  
+   `git checkout main`  
+   `git pull origin main`  
+   `git merge integration/ot-output-layout-simplification`  
+   Resolve any conflicts if they appear; complete the merge (e.g. `git commit` after conflict resolution).
+
+4. **Post-merge verification**  
+   Run the checks in Section 8 below.
+
+5. **Do not auto-merge in this step**  
+   This document does not perform the merge; a human must run the merge after review.
 
 ---
 
 ## 8. POST-MERGE VERIFY CHECKLIST
 
-- [ ] Branch merged into `main` successfully.
-- [ ] Run OT analysis on a **dataset** item; confirm:
-  - [ ] `item_root/analysis/audit/`, `tracking/`, `physics/`, `preview/` exist.
-  - [ ] `audit/` has postprocess, psd_fit, calibration JSONs.
-  - [ ] `tracking/` has trajectory, after.png, after_raw.png.
-  - [ ] `physics/` has msd, psd, calibration csv, hist, derived; compare/drag if applicable.
-  - [ ] `preview/` has preview_report.json (if gate was run) and preview_tracking.png.
-  - [ ] Root has only run.json, *_results.csv, *_results.xlsx, *_qc.png.
-- [ ] Run OT batch in **legacy** mode; confirm:
-  - [ ] `item_root/raw/` exists; `results/`, `qc/`, `artifacts/` do not.
-  - [ ] `module/ot/` has same structure as above.
-- [ ] Preview Gate: run gate then full analysis; confirm preview_report.json and preview_tracking.png under `run_dir/preview/`.
-- [ ] No regression: same inputs produce same analysis results (only paths changed).
+After merging `integration/ot-output-layout-simplification` into `main`, run these checks:
+
+- [ ] **Fresh OT dataset-mode run** — Run a full OT analysis in dataset mode on a real dataset; confirm run completes and outputs are under the expected subdirs.
+- [ ] **Fresh non-dataset OT run** — Run OT on a standalone video (non-dataset); confirm outputs under `module/ot/pipeline/`, `module/ot/summary/`, `module/ot/qc/` and no new `ot_v2_shadow/`.
+- [ ] **Preview report** — Confirm preview report resolves from the preview directory (e.g. `preview/preview_report.json` in the run).
+- [ ] **Pipeline artifacts** — Confirm new run writes pipeline artifacts under `pipeline/` (e.g. `*_qc.json`, `*_trajectory.csv`, `*_ot_summary.json`).
+- [ ] **No ot_v2_shadow** — Confirm the new run does not create `ot_v2_shadow/`.
+- [ ] **Result summaries** — Confirm `*_results.csv` and `*_results.xlsx` are under `summary/`.
+- [ ] **QC image** — Confirm `*_qc.png` is under `qc/`.
+- [ ] **Old dataset** — If available, open an old dataset that still uses `ot_v2_shadow/` (or root-level result/qc files) and confirm it still loads and behaves correctly.
+- [ ] **No OT workflow regression** — Quick smoke test: load dataset, run analysis, open results/export; no obvious breakage.
+
+Document any failure; fix or revert as needed before considering the merge complete.
