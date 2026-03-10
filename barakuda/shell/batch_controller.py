@@ -1333,10 +1333,12 @@ class BatchController:
                     _move_to(_hist_r, dir_physics)
                     _move_to(_derived, dir_physics)
 
-                    # QC plot stays in root (postprocess_ot wrote it to tracking/)
-                    _move_to(_tracking / f"{stem}_qc.png", run_dir)
+                    # QC image under qc/ (postprocess_ot wrote it to tracking/)
+                    dir_qc = run_dir / "qc"
+                    dir_qc.mkdir(parents=True, exist_ok=True)
+                    _move_to(_tracking / f"{stem}_qc.png", dir_qc)
 
-                    # IMPORTANT: run.json, _qc.png stay in ROOT; _results.csv, _results.xlsx go under summary/.
+                    # IMPORTANT: run.json stays in ROOT; _qc.png under qc/; _results.* under summary/.
 
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
