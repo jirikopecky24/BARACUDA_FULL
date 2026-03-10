@@ -1261,9 +1261,11 @@ class BatchController:
                             except Exception:
                                 meta_pairs.append((f"{tag}_json_error", f"failed to parse {pth.name}"))
 
-                    # --- _results.xlsx (human bundle; MUST include Metadata + Calibration) ---
+                    # --- Result summaries under summary/ (new runs only; legacy root-level remains readable) ---
+                    dir_summary = run_dir / "summary"
+                    dir_summary.mkdir(parents=True, exist_ok=True)
                     export_ot_results_xlsx(
-                        output_dir=run_dir,
+                        output_dir=dir_summary,
                         base_name=stem,
                         trajectory_csv_path=traj_path,
                         msd_csv_path=_msd,
@@ -1272,7 +1274,7 @@ class BatchController:
                     )
 
                     # --- _results.csv (single-file bundle; keep canonical CSVs too) ---
-                    results_csv = run_dir / f"{stem}_results.csv"
+                    results_csv = dir_summary / f"{stem}_results.csv"
                     with results_csv.open("w", encoding="utf-8", newline="") as out:
                         # Metadata section (key/value)
                         out.write("# [Metadata]\n")
@@ -1334,7 +1336,7 @@ class BatchController:
                     # QC plot stays in root (postprocess_ot wrote it to tracking/)
                     _move_to(_tracking / f"{stem}_qc.png", run_dir)
 
-                    # IMPORTANT: run.json, _results.csv, _results.xlsx, _qc.png stay in ROOT.
+                    # IMPORTANT: run.json, _qc.png stay in ROOT; _results.csv, _results.xlsx go under summary/.
 
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
