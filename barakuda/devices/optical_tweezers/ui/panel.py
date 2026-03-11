@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import pyqtSignal, Qt, QObject, QEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
-    QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox,
+    QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox, QLineEdit,
     QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
     QSizePolicy, QAbstractSpinBox, QTabWidget
 )
@@ -217,6 +219,17 @@ class PipelinePanel(QWidget):
         self._end_frame.setRange(0, 10**9)
         self._end_frame.setValue(0)
         self._end_frame.setToolTip("Last frame to process.")
+
+        self._default_run_output_root = Path(__file__).resolve().parents[4] / "runs" / "ot"
+        self._run_output_root = QLineEdit(str(self._default_run_output_root))
+        self._run_output_root.setToolTip(
+            "Base folder for new non-dataset OT batch runs. "
+            "Dataset-mode runs still write into the existing dataset."
+        )
+        self._btn_browse_run_output_root = QPushButton("…")
+        self._btn_browse_run_output_root.setToolTip("Choose Output Root for new non-dataset OT runs.")
+        self._btn_browse_run_output_root.setFixedWidth(32)
+        self._btn_browse_run_output_root.clicked.connect(self._on_browse_run_output_root)
 
         # scale
         self._fps_override = QDoubleSpinBox()
@@ -530,6 +543,10 @@ class PipelinePanel(QWidget):
         range_layout.setContentsMargins(0, 0, 0, 4)
         range_layout.addRow("Start frame", self._start_frame)
         range_layout.addRow("End frame", self._end_frame)
+        output_root_row = QHBoxLayout()
+        output_root_row.addWidget(self._run_output_root, 1)
+        output_root_row.addWidget(self._btn_browse_run_output_root)
+        range_layout.addRow("Output Root", output_root_row)
         tab_run_layout.addWidget(range_form)
 
         sep_range = QFrame()
@@ -666,6 +683,7 @@ class PipelinePanel(QWidget):
         # Scale Defaults
         self._use_dataset_scale.setChecked(True)
         self._um_per_px.setValue(0.066528)
+        self._run_output_root.setText(str(self._default_run_output_root))
         
         # Postprocess Defaults
         self._pp_enabled.setChecked(True)
@@ -961,6 +979,9 @@ class PipelinePanel(QWidget):
             "um_per_px": float(self._um_per_px.value()),
         }
 
+    def get_run_output_root(self) -> str:
+        return self._run_output_root.text().strip()
+
     def get_frame_range(self) -> tuple[int, int]:
         return int(self._start_frame.value()), int(self._end_frame.value())
 
@@ -1039,6 +1060,17 @@ class PipelinePanel(QWidget):
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()
+
+    def _on_browse_run_output_root(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "Select OT Output Root",
+            self._run_output_root.text(),
+        )
+        if chosen:
+            self._run_output_root.setText(chosen)
 
     # ── Export tab helpers ────────────────────────────────────────────────────
 

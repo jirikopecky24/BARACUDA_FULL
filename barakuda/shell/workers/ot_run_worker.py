@@ -4,12 +4,21 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 class MockPanel:
     """Mock device panel to pass parameter dicts safely across thread boundaries."""
-    def __init__(self, dataset_params: dict, fallback_tp: dict, fallback_pp: dict, fallback_sp: dict, fallback_fr: tuple):
+    def __init__(
+        self,
+        dataset_params: dict,
+        fallback_tp: dict,
+        fallback_pp: dict,
+        fallback_sp: dict,
+        fallback_fr: tuple,
+        fallback_output_root: str,
+    ):
         self._dataset_params = dataset_params
         self.fallback_tp = fallback_tp
         self.fallback_pp = fallback_pp
         self.fallback_sp = fallback_sp
         self.fallback_fr = fallback_fr
+        self.fallback_output_root = fallback_output_root
         
         self._current_path = ""
         
@@ -37,6 +46,9 @@ class MockPanel:
     def get_frame_range(self): 
         p = self._get_params_for_path()
         return p.get("frame_range") if p.get("frame_range") is not None else self.fallback_fr
+
+    def get_run_output_root(self):
+        return self.fallback_output_root
 
 class OTRunWorker(QObject):
     """Worker thread for Optical Tweezers RUN batch."""
@@ -108,7 +120,8 @@ class OTRunWorker(QObject):
                 self._panel_data.get("tracking", {}),
                 self._panel_data.get("postprocess", {}),
                 self._panel_data.get("scale", {}),
-                self._panel_data.get("frame_range", (0, -1))
+                self._panel_data.get("frame_range", (0, -1)),
+                str(self._panel_data.get("run_output_root", "")),
             )
 
             self._batch.run_batch(

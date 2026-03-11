@@ -764,6 +764,11 @@ class ShellMainWindow(QMainWindow):
                 "postprocess": self._device_panel.get_postprocess_params(),
                 "scale": self._device_panel.get_scale_params(),
                 "frame_range": self._device_panel.get_frame_range(),
+                "run_output_root": (
+                    self._device_panel.get_run_output_root()
+                    if hasattr(self._device_panel, "get_run_output_root")
+                    else ""
+                ),
             }
 
             # Collect all per-video params from the dataset panel

@@ -609,8 +609,19 @@ class BatchController:
         _ot_batch_created_at: str | None = None
         _ot_batch_items: list[dict] = []
         if device_id == "optical_tweezers":
+            _ot_output_root = self.run_manager.runs_folder / "ot"
+            try:
+                if hasattr(device_panel, "get_run_output_root"):
+                    _raw_output_root = str(device_panel.get_run_output_root() or "").strip()
+                    if _raw_output_root:
+                        _candidate_output_root = Path(_raw_output_root).expanduser()
+                        if _candidate_output_root.exists() and not _candidate_output_root.is_dir():
+                            raise ValueError(f"not a directory: {_candidate_output_root}")
+                        _ot_output_root = _candidate_output_root
+            except Exception as e:
+                self._log(f"WARN: invalid OT Output Root, using default: {e!r}")
             _ot_batch_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            _ot_mirror_root = self.run_manager.runs_folder / "ot" / _ot_batch_id
+            _ot_mirror_root = _ot_output_root / _ot_batch_id
             _ot_items_root = _ot_mirror_root / "items"
             # Directory created lazily: only when a non-dataset item actually needs it.
             _ot_batch_created_at = datetime.now().isoformat()
