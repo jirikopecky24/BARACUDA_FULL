@@ -627,7 +627,6 @@ class PipelinePanel(QWidget):
         self.tabs.addTab(tab_run, "Run")
         self.tabs.addTab(tab_tracking, "Tracking")
         self.tabs.addTab(tab_postprocess, "Postprocess")
-        self.tabs.addTab(tab_export, "Export")
         self.tabs.addTab(tab_settings, "Settings")
 
         layout.addWidget(self.tabs, stretch=1)

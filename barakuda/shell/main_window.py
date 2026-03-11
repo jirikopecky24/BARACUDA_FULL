@@ -273,19 +273,6 @@ class ShellMainWindow(QMainWindow):
                 except Exception as e:
                     self.log_panel.log(f"WARN: OT per-video load failed: {e!r}")
 
-            # OT Export tab: notify the panel of the current dataset path so it can show
-            # available analysis files and enable the export button.
-            if hasattr(self._device_panel, "set_dataset_path"):
-                try:
-                    self._device_panel.set_dataset_path(str(path))  # type: ignore[attr-defined]
-                except Exception as e:
-                    self.log_panel.log(f"WARN: Export tab update failed: {e!r}")
-            if hasattr(self._device_panel, "set_export_paths"):
-                try:
-                    self._device_panel.set_export_paths(self.dataset.get_selected_paths())
-                except Exception:
-                    pass
-
     def _on_ot_panel_value_changed(self) -> None:
         """When an OT control changes, save the new params to the currently active dataset item."""
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
@@ -805,13 +792,6 @@ class ShellMainWindow(QMainWindow):
                 if after_path:
                     try:
                         self._ot_preview.set_after_from_file(after_path)
-                    except Exception:
-                        pass
-                # Refresh Export tab so artifact checkboxes reflect new analysis outputs
-                paths = self.dataset.get_selected_paths()
-                if paths and hasattr(self._device_panel, "set_dataset_path"):
-                    try:
-                        self._device_panel.set_dataset_path(str(paths[0]))
                     except Exception:
                         pass
                 self._ot_run_thread.quit()
