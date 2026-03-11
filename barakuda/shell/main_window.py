@@ -788,10 +788,14 @@ class ShellMainWindow(QMainWindow):
             def _on_ot_done():
                 if hasattr(self._device_panel, 'btn_run'):
                     self._device_panel.btn_run.setEnabled(True)
-                after_path = getattr(self.batch, "last_after_overlay_path", None)
-                if after_path:
+                overlay_video_path = getattr(self.batch, "last_ot_overlay_video_path", None)
+                overlay_trajectory_path = getattr(self.batch, "last_ot_overlay_trajectory_path", None)
+                if overlay_video_path and overlay_trajectory_path:
                     try:
-                        self._ot_preview.set_after_from_file(after_path)
+                        self._ot_preview.set_ot_live_overlay(
+                            overlay_trajectory_path,
+                            video_path=overlay_video_path,
+                        )
                     except Exception:
                         pass
                 self._ot_run_thread.quit()

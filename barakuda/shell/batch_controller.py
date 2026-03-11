@@ -52,7 +52,8 @@ class BatchController:
         self._preview_report_path: Optional[Path] = None
         self._stop_requested = False
         self.gate_results: dict[Path, tuple[bool, str]] = {}
-        self.last_after_overlay_path: str | None = None
+        self.last_ot_overlay_video_path: str | None = None
+        self.last_ot_overlay_trajectory_path: str | None = None
 
     def _resolve_ot_runtime(self, tracking_params: Optional[dict] = None) -> dict[str, Any]:
         params = tracking_params or {}
@@ -705,7 +706,8 @@ class BatchController:
 
         self._log(f"Run Batch start: PASS items={len(ok_paths)}")
         self._stop_requested = False
-        self.last_after_overlay_path = None
+        self.last_ot_overlay_video_path = None
+        self.last_ot_overlay_trajectory_path = None
         progress_fn(0, len(ok_paths), "", 0)
 
         if device_id != "optical_tweezers":
@@ -954,20 +956,8 @@ class BatchController:
                     # No new batch item directory is created.
                     _item_root_for_run = _dataset_item_root
                     run_dir = _item_root_for_run / "analysis"
-                    run_dir.mkdir(parents=True, exist_ok=True)
-                    for _sd in ("audit", "tracking", "physics"):
-                        (run_dir / _sd).mkdir(parents=True, exist_ok=True)
                     _item_id_for_run = _item_root_for_run.name
                     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
-                    (run_dir / "run.json").write_text(
-                        json.dumps({
-                            "run_id": run_id,
-                            "created_at": datetime.now().isoformat(timespec="seconds"),
-                            "input_path": str(file_path),
-                            "config": config,
-                        }, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
                 elif _ot_items_root is not None and _ot_batch_id is not None:
                     # New-batch mode: create a fresh item directory under current batch.
                     _ot_items_root.mkdir(parents=True, exist_ok=True)  # lazy creation
@@ -978,22 +968,10 @@ class BatchController:
                         _item_id_for_run = f"{_base}_{_n_coll:02d}"
                         _n_coll += 1
                     _item_root_for_run = _ot_items_root / _item_id_for_run
-                    run_dir = _item_root_for_run / "module" / "ot"
-                    run_dir.mkdir(parents=True, exist_ok=True)
+                    run_dir = _item_root_for_run / "analysis"
                     for _sd in ("raw",):
                         (_item_root_for_run / _sd).mkdir(parents=True, exist_ok=True)
-                    for _d in ("audit", "tracking", "physics"):
-                        (run_dir / _d).mkdir(parents=True, exist_ok=True)
                     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
-                    (run_dir / "run.json").write_text(
-                        json.dumps({
-                            "run_id": run_id,
-                            "created_at": datetime.now().isoformat(timespec="seconds"),
-                            "input_path": str(file_path),
-                            "config": config,
-                        }, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
                 else:
                     result = self.run_manager.create_run(file_path, config)
                     run_dir = result.run_dir
@@ -1001,8 +979,34 @@ class BatchController:
                     _item_id_for_run = None
                     _item_root_for_run = None
                     _dataset_item_root = None
-                    for _d in ("audit", "tracking", "physics"):
-                        (run_dir / _d).mkdir(parents=True, exist_ok=True)
+
+                run_dir.mkdir(parents=True, exist_ok=True)
+                dir_audit = run_dir / "audit"
+                dir_results = run_dir / "results"
+                dir_csv = run_dir / "csv"
+                for _d in (dir_audit, dir_results, dir_csv):
+                    _d.mkdir(parents=True, exist_ok=True)
+
+                run_json_payload = {
+                    "run_id": run_id,
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "input_path": str(file_path),
+                    "config": config,
+                }
+                run_json_path = dir_audit / "run.json"
+                if _item_root_for_run is None and (run_dir / "run.json").exists():
+                    try:
+                        (run_dir / "run.json").rename(run_json_path)
+                    except Exception:
+                        run_json_path.write_text(
+                            json.dumps(run_json_payload, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                else:
+                    run_json_path.write_text(
+                        json.dumps(run_json_payload, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
 
                 _shadow_progress_span = 40 if shadow_mode == "full" else 0
                 _main_progress_base = _shadow_progress_span
@@ -1091,17 +1095,7 @@ class BatchController:
                     self._log(f"[OT shadow] Skipped for {file_path.name} (shadow_mode=off).")
                 # -----------------------------------
 
-                traj_path = run_dir / "tracking" / f"{stem}_trajectory.csv"
-
-
-                # Tracking loop bookkeeping for overlays:
-                first_frame = None
-                first_xy = None
-                first_roi: tuple[int, int, int, int] | None = None
-
-                last_frame = None
-                last_xy = None
-                last_roi: tuple[int, int, int, int] | None = None
+                traj_path = dir_csv / f"{stem}_trajectory.csv"
 
                 with traj_path.open("w", newline="", encoding="utf-8") as f_meta:
                     f_meta.write(f"# source_file={file_path.name}\n")
@@ -1182,16 +1176,7 @@ class BatchController:
                                 annulus_profile_smooth=ann_smooth,
                             )
 
-                        if first_frame is None:
-                            first_frame = frame
-                            first_xy = (float(det.x_px), float(det.y_px))
-                            first_roi = (roi_obj.x, roi_obj.y, roi_obj.w, roi_obj.h)
-
-                        last_frame = frame
-                        last_xy = (float(det.x_px), float(det.y_px))
-                        last_roi = (roi_obj.x, roi_obj.y, roi_obj.w, roi_obj.h)
-
-                        if adaptive_roi and first_frame is not None and fi > s:
+                        if adaptive_roi and fi > s:
                             # Follow the detected center with fixed window size.
                             current_roi = roi_follow_center(frame.shape, current_roi, det.x_px, det.y_px)
 
@@ -1215,56 +1200,30 @@ class BatchController:
                     progress_fn(done, len(ok_paths), file_path.name, 100)
                     break
 
-                # Save overlays (never crash the run)
+                # Finalize preview report placement (never crash the run)
                 try:
-                    if first_frame is not None and first_xy is not None:
-                        dir_preview = run_dir / "preview"
-                        dir_preview.mkdir(parents=True, exist_ok=True)
-                        if self._preview_report_json:
-                            if _dataset_item_root is not None:
-                                preview_report_path = dir_preview / "preview_report.json"
-                                preview_report_path.write_text(
-                                    self._preview_report_json,
-                                    encoding="utf-8",
-                                )
-                                self._preview_report_path = preview_report_path
-                            elif _ot_mirror_root is not None and not _ot_batch_preview_report_written:
-                                _ot_mirror_root.mkdir(parents=True, exist_ok=True)
-                                preview_report_path = _ot_mirror_root / "preview_report.json"
-                                preview_report_path.write_text(
-                                    self._preview_report_json,
-                                    encoding="utf-8",
-                                )
-                                self._preview_report_path = preview_report_path
-                                _ot_batch_preview_report_written = True
-                        self.run_manager.save_overlay_png(
-                            run_dir=dir_preview,
-                            frame_rgb=first_frame,
-                            x=first_xy[0],
-                            y=first_xy[1],
-                            roi=(first_roi if first_roi is not None else roi_rect),
-                            name=f"{stem}_preview_tracking.png",
-                        )
+                    if self._preview_report_json:
+                        if _dataset_item_root is not None:
+                            preview_report_path = dir_audit / "preview_report.json"
+                            preview_report_path.write_text(
+                                self._preview_report_json,
+                                encoding="utf-8",
+                            )
+                            self._preview_report_path = preview_report_path
+                        elif _ot_mirror_root is not None and not _ot_batch_preview_report_written:
+                            _ot_mirror_root.mkdir(parents=True, exist_ok=True)
+                            preview_report_path = _ot_mirror_root / "preview_report.json"
+                            preview_report_path.write_text(
+                                self._preview_report_json,
+                                encoding="utf-8",
+                            )
+                            self._preview_report_path = preview_report_path
+                            _ot_batch_preview_report_written = True
                 except Exception as e:
-                    self._log(f"WARN: preview overlay failed ({file_path.name}): {e!r}")
+                    self._log(f"WARN: preview report finalization failed ({file_path.name}): {e!r}")
 
-                try:
-                    if last_frame is not None and last_xy is not None:
-                        dir_tracking = run_dir / "tracking"
-                        # Raw frame for audit (optional)
-                        self.run_manager.save_after_png(dir_tracking, last_frame, name=f"{stem}_after_raw.png")
-                        # Overlay as 'after.png' (what user expects)
-                        self.run_manager.save_overlay_png(
-                            run_dir=dir_tracking,
-                            frame_rgb=last_frame,
-                            x=last_xy[0],
-                            y=last_xy[1],
-                            roi=(last_roi if last_roi is not None else roi_rect),
-                            name=f"{stem}_after.png",
-                        )
-                        self.last_after_overlay_path = str(dir_tracking / f"{stem}_after.png")
-                except Exception as e:
-                    self._log(f"WARN: after overlay failed ({file_path.name}): {e!r}")
+                self.last_ot_overlay_video_path = str(file_path)
+                self.last_ot_overlay_trajectory_path = str(traj_path)
 
                 if pp_enabled:
                     try:
@@ -1277,7 +1236,7 @@ class BatchController:
                             start_frame=int(s),
                             end_frame=int(e),
                         )
-                        (run_dir / "audit" / f"{stem}_postprocess.json").write_text(
+                        (dir_audit / f"{stem}_postprocess.json").write_text(
                             json.dumps({
                                 "enabled": True,
                                 "params": {
@@ -1301,13 +1260,13 @@ class BatchController:
                     tok = self._parse_capture_tokens(file_path)
                     if tok.get("ok") and float(tok["speed"]) == 0.0:
                         # Store Brownian baseline info for later comparison
-                        # Store paths after organize: psd_fit in audit/, trajectory in tracking/
+                        # Store paths after organize: psd_fit in audit/, trajectory in csv/
                         baseline_by_key[tok["key"]] = {
                             "path": str(file_path),
                             "run_dir": str(run_dir),
                             "base_name": str(file_path.stem),
-                            "psd_fit_json": str(run_dir / "audit" / f"{file_path.stem}_psd_fit.json"),
-                            "trajectory_csv": str(run_dir / "tracking" / f"{file_path.stem}_trajectory.csv"),
+                            "psd_fit_json": str(dir_audit / f"{file_path.stem}_psd_fit.json"),
+                            "trajectory_csv": str(dir_csv / f"{file_path.stem}_trajectory.csv"),
                         }
                     
                     elif tok.get("ok") and float(tok["speed"]) > 0.0:
@@ -1334,7 +1293,7 @@ class BatchController:
                                 )
                                 # steady mean from drag: last 50%
                                 steady_mean_um = self._mean_axis_um(
-                                    Path(run_dir / "tracking" / f"{file_path.stem}_trajectory.csv"), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=True
+                                    Path(dir_csv / f"{file_path.stem}_trajectory.csv"), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=True
                                 )
 
                                 offset_um = float(steady_mean_um - baseline_mean_um)
@@ -1365,10 +1324,10 @@ class BatchController:
                                 else:
                                     fc, kappa_b, kappa_b_pn_um = 0.0, 0.0, 0.0
 
-                                # Write compare artifacts into DRAG run dir (physics subdir)
-                                compare_csv = Path(run_dir) / "physics" / f"{file_path.stem}_compare.csv"
-                                compare_json = Path(run_dir) / "physics" / f"{file_path.stem}_compare.json"
-                                drag_json = Path(run_dir) / "physics" / f"{file_path.stem}_drag.json"
+                                # Write compare artifacts into CSV / audit outputs
+                                compare_csv = dir_csv / f"{file_path.stem}_compare.csv"
+                                compare_json = dir_audit / f"{file_path.stem}_compare.json"
+                                drag_json = dir_audit / f"{file_path.stem}_drag.json"
 
                                 import json as _json
                                 drag_json.write_text(_json.dumps({
@@ -1444,8 +1403,8 @@ class BatchController:
                     self._log(f"WARN: drag comparison failed ({file_path.name}): {e!r}")
 
                 try:
-                    # postprocess_ot writes to trajectory dir (run_dir/tracking/)
-                    _tracking = run_dir / "tracking"
+                    # postprocess_ot writes to trajectory dir (run_dir/csv/)
+                    _tracking = dir_csv
                     _msd = _tracking / f"{stem}_msd.csv"
                     _psd_x = _tracking / f"{stem}_psd_x.csv"
                     _psd_y = _tracking / f"{stem}_psd_y.csv"
@@ -1469,7 +1428,7 @@ class BatchController:
 
                     meta_pairs: list[tuple[str, str]] = []
                     try:
-                        run_payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+                        run_payload = json.loads((dir_audit / "run.json").read_text(encoding="utf-8"))
                         _flatten("run.", run_payload, meta_pairs)
                     except Exception:
                         meta_pairs.append(("run_json_error", "failed to parse run.json"))
@@ -1484,7 +1443,7 @@ class BatchController:
 
                     # postprocess + calibration json (if present)
                     for tag, pth in [
-                        ("postprocess", run_dir / "audit" / f"{stem}_postprocess.json"),
+                        ("postprocess", dir_audit / f"{stem}_postprocess.json"),
                         ("calibration", _cal_json),
                     ]:
                         if pth.exists():
@@ -1493,12 +1452,8 @@ class BatchController:
                             except Exception:
                                 meta_pairs.append((f"{tag}_json_error", f"failed to parse {pth.name}"))
 
-                    # --- Result summaries under summary/ (new runs only; legacy root-level remains readable) ---
-                    dir_summary = run_dir / "summary"
-                    dir_summary.mkdir(parents=True, exist_ok=True)
-
                     # --- _results.csv (single-file bundle; keep canonical CSVs too) ---
-                    results_csv = dir_summary / f"{stem}_results.csv"
+                    results_csv = dir_csv / f"{stem}_results.csv"
                     with results_csv.open("w", encoding="utf-8", newline="") as out:
                         # Metadata section (key/value)
                         out.write("# [Metadata]\n")
@@ -1527,11 +1482,9 @@ class BatchController:
                                     out.write(line + "\n")
                                 out.write("\n")
 
-                    # --- Organize Outputs (Audit/Tracking/Physics) ---
-                    # Subfolders already exist; move postprocess_ot outputs from tracking/ to audit/ and physics/
-                    dir_audit = run_dir / "audit"
-                    dir_tracking = run_dir / "tracking"
-                    dir_physics = run_dir / "physics"
+                    # --- Organize Outputs (Audit / CSV / Results) ---
+                    # Subfolders already exist; move postprocess outputs by file type.
+                    dir_tracking = dir_csv
 
                     # Helper to move file if exists
                     def _move_to(src_path: Path, dest_dir: Path) -> None:
@@ -1541,29 +1494,23 @@ class BatchController:
                             except Exception as e:
                                 self._log(f"WARN: failed to move {src_path.name} -> {dest_dir.name}: {e}")
 
-                    # 1. Audit: psd_fit and calibration written by postprocess_ot to tracking/ -> move to audit
+                    # 1. Audit: all JSON artifacts go to audit
                     _move_to(_tracking / f"{stem}_psd_fit.json", dir_audit)
                     _move_to(_tracking / f"{stem}_calibration.json", dir_audit)
 
-                    # 2. Tracking: trajectory, after.png, after_raw.png already written to tracking/; no move needed
+                    # 2. CSV: trajectory and all .csv stay in csv/
 
-                    # 3. Physics: move postprocess_ot outputs from tracking/ to physics; compare/drag already in physics/
-                    _move_to(_msd, dir_physics)
-                    _move_to(_psd_x, dir_physics)
-                    _move_to(_psd_y, dir_physics)
-                    _move_to(_cal_csv, dir_physics)
-                    _move_to(_hist_x, dir_physics)
-                    _move_to(_hist_y, dir_physics)
-                    _move_to(_hist_r, dir_physics)
-                    _move_to(_derived, dir_physics)
-
-                    # QC image under qc/ (postprocess_ot wrote it to tracking/)
-                    dir_qc = run_dir / "qc"
-                    dir_qc.mkdir(parents=True, exist_ok=True)
-                    _move_to(_tracking / f"{stem}_qc.png", dir_qc)
+                    # 3. Results: all PNG artifacts go to results/
+                    for _png_name in (
+                        f"{stem}_qc.png",
+                        f"{stem}_hist_x.png",
+                        f"{stem}_hist_y.png",
+                        f"{stem}_hist_r.png",
+                    ):
+                        _move_to(_tracking / _png_name, dir_results)
 
                     export_ot_results_xlsx(
-                        output_dir=dir_summary,
+                        output_dir=dir_results,
                         base_name=stem,
                         trajectory_csv_path=traj_path,
                         msd_csv_path=_msd,
@@ -1571,7 +1518,7 @@ class BatchController:
                         psd_y_csv_path=_psd_y,
                     )
 
-                    # IMPORTANT: run.json stays in ROOT; _qc.png under qc/; _results.* under summary/.
+                    # IMPORTANT: run.json lives in audit/; results workbook in results/; all CSV in csv/.
 
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")

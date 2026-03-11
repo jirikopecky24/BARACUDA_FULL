@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTabWidget, QSlider, QHBoxLayout
 )
 
+from barakuda.core.trajectory_csv_io import read_trajectory_csv
 from barakuda.core.video_io import is_video_file
 from barakuda.core.video_reader import VideoReader
 
@@ -39,6 +40,12 @@ class PreviewPanel(QWidget):
         self._vb_after.invertY(True)
         self._img_after = pg.ImageItem()
         self._vb_after.addItem(self._img_after)
+        self._ot_after_cross_h = pg.PlotCurveItem(pen=pg.mkPen((255, 0, 0), width=2))
+        self._ot_after_cross_v = pg.PlotCurveItem(pen=pg.mkPen((255, 0, 0), width=2))
+        self._ot_after_cross_h.setZValue(20)
+        self._ot_after_cross_v.setZValue(20)
+        self._vb_after.addItem(self._ot_after_cross_h)
+        self._vb_after.addItem(self._ot_after_cross_v)
 
         self._tabs.addTab(self._view_before, "BEFORE")
         self._tabs.addTab(self._view_after, "AFTER")
@@ -81,6 +88,9 @@ class PreviewPanel(QWidget):
 
         self._last_before: np.ndarray | None = None
         self._after_locked: bool = False
+        self._ot_live_overlay_enabled: bool = False
+        self._ot_live_positions: dict[int, tuple[float, float]] = {}
+        self._ot_live_trajectory_path: Path | None = None
 
         # video state
         self._video_path: Path | None = None
@@ -144,6 +154,7 @@ class PreviewPanel(QWidget):
         self._video_path = None
         self._is_video = False
         self._current_frame_index = 0
+        self._clear_ot_live_overlay()
 
         if is_video_file(path):
             self._is_video = True
@@ -278,6 +289,38 @@ class PreviewPanel(QWidget):
         except Exception:
             return False
 
+    def set_ot_live_overlay(self, trajectory_csv_path: str, video_path: str | None = None) -> bool:
+        try:
+            if video_path:
+                video_path_obj = Path(video_path)
+                if self._video_path != video_path_obj or self._reader is None:
+                    self.show_file(str(video_path_obj))
+            if self._reader is None or not self._is_video:
+                return False
+
+            table = read_trajectory_csv(Path(trajectory_csv_path))
+            positions: dict[int, tuple[float, float]] = {}
+            for row in table.rows:
+                try:
+                    frame_idx = int(float(row.get("frame", 0)))
+                    x_px = float(row["x_px"])
+                    y_px = float(row["y_px"])
+                except Exception:
+                    continue
+                positions[frame_idx] = (x_px, y_px)
+            if not positions:
+                return False
+
+            self._ot_live_overlay_enabled = True
+            self._ot_live_positions = positions
+            self._ot_live_trajectory_path = Path(trajectory_csv_path)
+            self._apply_ot_live_overlay(self._current_frame_index)
+            self.show_after_tab()
+            return True
+        except Exception:
+            self._clear_ot_live_overlay()
+            return False
+
     def unlock_after(self) -> None:
         self._after_locked = False
 
@@ -376,8 +419,9 @@ class PreviewPanel(QWidget):
             self._current_frame_index = i
             self._last_before = frame_rgb
             
-            # Slider change invalidates previous preview overlay
-            self.unlock_after()
+            if not self._ot_live_overlay_enabled:
+                # Slider change invalidates static AFTER snapshots.
+                self.unlock_after()
             self._set_before_and_after(frame_rgb, is_initial_load=False)
 
             self._ensure_roi_for_image(frame_rgb.shape[0], frame_rgb.shape[1])
@@ -443,6 +487,7 @@ class PreviewPanel(QWidget):
         
         if not self._after_locked:
             self._img_after.setImage(arr)
+            self._apply_ot_live_overlay(self._current_frame_index)
             
         if is_initial_load:
             self._vb_before.autoRange()
@@ -451,6 +496,30 @@ class PreviewPanel(QWidget):
             if not self._after_locked:
                 self._vb_after.autoRange()
                 self._fit_imageview(self._vb_after, self._img_after)
+
+    def _clear_ot_live_overlay(self) -> None:
+        self._ot_live_overlay_enabled = False
+        self._ot_live_positions = {}
+        self._ot_live_trajectory_path = None
+        self._ot_after_cross_h.setData([], [])
+        self._ot_after_cross_v.setData([], [])
+
+    def _apply_ot_live_overlay(self, frame_idx: int) -> None:
+        if not self._ot_live_overlay_enabled:
+            self._ot_after_cross_h.setData([], [])
+            self._ot_after_cross_v.setData([], [])
+            return
+
+        pos = self._ot_live_positions.get(int(frame_idx))
+        if pos is None:
+            self._ot_after_cross_h.setData([], [])
+            self._ot_after_cross_v.setData([], [])
+            return
+
+        cx, cy = float(pos[0]), float(pos[1])
+        arm = 10.0
+        self._ot_after_cross_h.setData([cx - arm, cx + arm], [cy, cy])
+        self._ot_after_cross_v.setData([cx, cx], [cy - arm, cy + arm])
 
     def _ensure_roi_for_image(self, H: int, W: int) -> None:
         """
@@ -545,6 +614,7 @@ class PreviewPanel(QWidget):
     def _clear_views(self) -> None:
         self._last_before = None
         self._after_locked = False
+        self._clear_ot_live_overlay()
         self._img_before.clear()
         self._img_after.clear()
         # Reset the active device's ROI

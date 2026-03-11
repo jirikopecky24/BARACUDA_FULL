@@ -85,11 +85,13 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
 
     if m.analysis_dir is not None:
         ad = m.analysis_dir
-        m.run_json_path = _first_existing(ad, ["run.json"])
+        m.run_json_path = _first_existing(ad, ["audit/run.json", "run.json"])
 
         # qc: prefer manifest field, then pipeline/, then ot_v2_shadow/, then root
         _an = raw.get("analysis", {})
         _qc_fallback = (
+            _glob_first(ad / "audit", "*_qc.json")
+            or
             _glob_first(ad / "pipeline", "*_qc.json")
             or _glob_first(ad / "ot_v2_shadow", "*_qc.json")
             or _first_existing(ad, ["qc.json"])
@@ -103,8 +105,11 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
 
         # trajectory: prefer manifest field, then pipeline/, then ot_v2_shadow/, then tracking, then root
         _traj_fallback = (
+            _glob_first(ad / "csv", "*_trajectory.csv")
+            or
             _glob_first(ad / "pipeline", "*_trajectory.csv")
             or _glob_first(ad / "ot_v2_shadow", "*_trajectory.csv")
+            or _glob_first(ad / "tracking", "*_trajectory.csv")
             or _first_existing(ad, ["trajectory.csv", "tracking/trajectory.csv"])
             or _glob_first(ad, "*_trajectory.csv")
         )
@@ -114,7 +119,7 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
         else:
             m.trajectory_path = _traj_fallback
 
-        m.preview_report_path = _first_existing(ad, ["preview_report.json", "preview/preview_report.json"])
+        m.preview_report_path = _first_existing(ad, ["audit/preview_report.json", "preview_report.json", "preview/preview_report.json"])
 
     # ── Exports directory ────────────────────────────────────────────────────
     exp = _first_existing(item_root, ["exports", "module/ot/exports"])
@@ -354,8 +359,13 @@ def build_item_manifest_payload(
         payload["run_dir"] = str(analysis_dir)       # backward-compat
 
         if analysis_dir.is_dir():
-            for f in analysis_dir.glob("run.json"):
+            for f in analysis_dir.glob("audit/run.json"):
                 an["run_json"] = _rel(f)
+                break
+            for f in analysis_dir.glob("run.json"):
+                if "run_json" not in an:
+                    an["run_json"] = _rel(f)
+                    break
             for f in sorted(analysis_dir.rglob("*_trajectory.csv")):
                 an["trajectory"] = _rel(f)
                 break

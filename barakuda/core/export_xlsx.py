@@ -264,7 +264,7 @@ def export_ot_results_xlsx(
     def _discover_csvs() -> list[Path]:
         matches: list[Path] = []
         seen: set[Path] = set()
-        search_roots = [run_dir / "tracking", run_dir / "physics", run_dir / "audit", output_dir, run_dir]
+        search_roots = [run_dir / "csv", run_dir / "tracking", run_dir / "physics", run_dir / "audit", output_dir, run_dir]
         for root in search_roots:
             if not root.exists() or not root.is_dir():
                 continue
@@ -333,22 +333,26 @@ def export_ot_results_xlsx(
     trajectory_name = trajectory_csv_path.name
     derived_csv = _first_existing(
         output_dir / f"{base_name}_derived.csv",
+        run_dir / "csv" / f"{base_name}_derived.csv",
         run_dir / "physics" / f"{base_name}_derived.csv",
         run_dir / "tracking" / f"{base_name}_derived.csv",
     )
     calibration_csv = _first_existing(
         output_dir / f"{base_name}_calibration.csv",
+        run_dir / "csv" / f"{base_name}_calibration.csv",
         run_dir / "physics" / f"{base_name}_calibration.csv",
         run_dir / "tracking" / f"{base_name}_calibration.csv",
     )
     compare_csv = _first_existing(
         output_dir / f"{base_name}_compare.csv",
+        run_dir / "csv" / f"{base_name}_compare.csv",
         run_dir / "physics" / f"{base_name}_compare.csv",
         run_dir / "tracking" / f"{base_name}_compare.csv",
     )
     hist_csvs = {
         tag: _first_existing(
             output_dir / f"{base_name}_hist_{tag}.csv",
+            run_dir / "csv" / f"{base_name}_hist_{tag}.csv",
             run_dir / "physics" / f"{base_name}_hist_{tag}.csv",
             run_dir / "tracking" / f"{base_name}_hist_{tag}.csv",
         )
@@ -356,10 +360,10 @@ def export_ot_results_xlsx(
     }
 
     core_specs = [
-        ("trajectory", "Trajectory", _first_existing(trajectory_csv_path, run_dir / "tracking" / trajectory_name), True),
-        ("msd", "MSD", _first_existing(msd_csv_path, run_dir / "physics" / f"{base_name}_msd.csv"), False),
-        ("psd_x", "PSD_X", _first_existing(psd_x_csv_path, run_dir / "physics" / f"{base_name}_psd_x.csv"), False),
-        ("psd_y", "PSD_Y", _first_existing(psd_y_csv_path, run_dir / "physics" / f"{base_name}_psd_y.csv"), False),
+        ("trajectory", "Trajectory", _first_existing(trajectory_csv_path, run_dir / "csv" / trajectory_name, run_dir / "tracking" / trajectory_name), True),
+        ("msd", "MSD", _first_existing(msd_csv_path, run_dir / "csv" / f"{base_name}_msd.csv", run_dir / "physics" / f"{base_name}_msd.csv"), False),
+        ("psd_x", "PSD_X", _first_existing(psd_x_csv_path, run_dir / "csv" / f"{base_name}_psd_x.csv", run_dir / "physics" / f"{base_name}_psd_x.csv"), False),
+        ("psd_y", "PSD_Y", _first_existing(psd_y_csv_path, run_dir / "csv" / f"{base_name}_psd_y.csv", run_dir / "physics" / f"{base_name}_psd_y.csv"), False),
         ("derived", "Derived_Physics", derived_csv, False),
         ("calibration", "CALIBRATION", calibration_csv, False),
         ("hist_x", "HIST_X", hist_csvs["x"], False),
@@ -377,11 +381,11 @@ def export_ot_results_xlsx(
             continue
         _add_csv_sheet(_sheet_name_for_path(csv_path), csv_path, skip_comments=False)
 
-    run_json = _first_existing(run_dir / "run.json", output_dir / "run.json")
+    run_json = _first_existing(run_dir / "audit" / "run.json", run_dir / "run.json", output_dir / "run.json")
     post_json = _first_existing(run_dir / "audit" / f"{base_name}_postprocess.json", output_dir / f"{base_name}_postprocess.json")
-    psd_fit_json = _first_existing(run_dir / "audit" / f"{base_name}_psd_fit.json", run_dir / "tracking" / f"{base_name}_psd_fit.json", output_dir / f"{base_name}_psd_fit.json")
-    calibration_json = _first_existing(run_dir / "audit" / f"{base_name}_calibration.json", run_dir / "tracking" / f"{base_name}_calibration.json", output_dir / f"{base_name}_calibration.json")
-    drag_json = _first_existing(run_dir / "physics" / f"{base_name}_drag.json", output_dir / f"{base_name}_drag.json")
+    psd_fit_json = _first_existing(run_dir / "audit" / f"{base_name}_psd_fit.json", run_dir / "csv" / f"{base_name}_psd_fit.json", run_dir / "tracking" / f"{base_name}_psd_fit.json", output_dir / f"{base_name}_psd_fit.json")
+    calibration_json = _first_existing(run_dir / "audit" / f"{base_name}_calibration.json", run_dir / "csv" / f"{base_name}_calibration.json", run_dir / "tracking" / f"{base_name}_calibration.json", output_dir / f"{base_name}_calibration.json")
+    drag_json = _first_existing(run_dir / "audit" / f"{base_name}_drag.json", run_dir / "physics" / f"{base_name}_drag.json", output_dir / f"{base_name}_drag.json")
 
     meta_pairs: list[tuple[str, str]] = []
     if run_json is not None:
