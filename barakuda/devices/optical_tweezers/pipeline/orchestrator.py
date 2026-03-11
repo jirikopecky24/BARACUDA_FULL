@@ -35,17 +35,6 @@ class OTPipeline:
         self.exporter = exporter
         self.log_fn = log_fn
 
-    def _emit_progress(self, cb: Callable[[int], None] | None, pct: int) -> None:
-        if cb is None:
-            return
-        cb(max(0, min(100, int(pct))))
-
-    def _stop_requested(self, should_stop: Callable[[], bool] | None) -> bool:
-        try:
-            return bool(should_stop and should_stop())
-        except Exception:
-            return False
-
     def run(self, video_path: str, run_config: dict[str, Any]) -> dict[str, Any]:
         """
         Run the full OT pipeline for a single video.
@@ -60,6 +49,21 @@ class OTPipeline:
         
         self.log_fn(f"[OTv2.1] Starting pipeline for {video_path}")
         start_time = time.time()
+        progress_cb = run_config.get("progress_cb")
+        log_progress = run_config.get("log_progress")
+        should_stop = run_config.get("should_stop")
+
+        def _emit_progress(pct: int, msg: str = "") -> None:
+            if callable(progress_cb):
+                progress_cb(int(max(0, min(100, pct))), msg)
+            if msg and callable(log_progress):
+                log_progress(msg)
+
+        def _stop_requested() -> bool:
+            try:
+                return bool(should_stop()) if callable(should_stop) else False
+            except Exception:
+                return False
         
         # 1. Load Setup
         reader = VideoReader(video_path)
@@ -70,14 +74,30 @@ class OTPipeline:
         qc = run_config.get("qc", {})
         sc = run_config.get("strategy_params", {})
         cal_c = run_config.get("calibration", {})
-        progress_cb = run_config.get("progress_cb")
-        should_stop = run_config.get("should_stop")
-        resolved_runtime = run_config.get("runtime")
-        if resolved_runtime is None:
+        runtime = run_config.get("runtime", {})
+        if runtime and "resolved_device" in runtime and "resolved_profile" in runtime:
+            resolved_runtime = dict(runtime)
+        else:
+            requested_profile = runtime.get("requested_profile", tc.get("compute_profile", "cpu"))
             resolved_runtime = resolve_compute_profile(
-                tc.get("compute_profile", "cpu"),
-                tc.get("method", "RADIAL_SYMMETRY"),
+                str(requested_profile),
+                str(tc.get("method", "RADIAL_SYMMETRY")),
             )
+        self.log_fn(
+            "[OTv2.1] Runtime compute "
+            f"requested={resolved_runtime['requested_profile']} "
+            f"resolved={resolved_runtime['resolved_profile']} "
+            f"device={resolved_runtime['resolved_device']}"
+        )
+        _emit_progress(0, "starting")
+        if resolved_runtime["resolved_device"] == "cuda":
+            self.log_fn(
+                "[OTv2.1] GPU "
+                f"{resolved_runtime['gpu_name']} "
+                f"(torch {resolved_runtime['torch_version']})"
+            )
+        elif resolved_runtime.get("fallback_reason"):
+            self.log_fn(f"[OTv2.1] {resolved_runtime['fallback_reason']}")
 
         fps_override = float(tc.get("fps_override", 0.0))
         if fps_override > 0:
@@ -122,18 +142,7 @@ class OTPipeline:
 
         # 2. Tracking Loop
         self.log_fn("  - Tracking...")
-        self.log_fn(
-            "[OTv2.1 runtime] requested="
-            f"{str(resolved_runtime.get('requested_profile', 'cpu')).upper()} "
-            "resolved="
-            f"{str(resolved_runtime.get('resolved_profile', 'cpu')).upper()} "
-            f"device={resolved_runtime.get('resolved_device', 'cpu')}"
-        )
-        fallback_reason = str(resolved_runtime.get("fallback_reason", "")).strip()
-        if fallback_reason:
-            self.log_fn(f"[OTv2.1 runtime] {fallback_reason}")
-        if bool(resolved_runtime.get("cuda_available")):
-            self.log_fn(f"[OTv2.1 runtime] detected CUDA GPU: {resolved_runtime.get('gpu_name', 'unknown')}")
+        _emit_progress(5, "tracking")
         init_roi_list = tc.get("roi", [0, 0, reader.meta.width, reader.meta.height])
         roi_obj = Roi(*init_roi_list)
         
@@ -147,16 +156,18 @@ class OTPipeline:
         peak = []
         roi_x, roi_y, roi_w, roi_h = [], [], [], []
         total_frames = max(1, e - s + 1)
+        last_heartbeat = time.monotonic()
+        
         try:
             for fi in range(s, e + 1):
-                if self._stop_requested(should_stop):
-                    raise InterruptedError("OTPipeline stop requested during tracking.")
-
+                if _stop_requested():
+                    raise InterruptedError("OT shadow stopped by request.")
                 frame = reader.get_frame(fi)
                 det = track_particle(
                     frame,
                     roi_obj,
                     method=method,
+                    compute_device=str(resolved_runtime.get("resolved_device", "cpu")),
                     invert=tc.get("invert", True),
                     blur_sigma=tc.get("blur_sigma", 1.2),
                     radial_grad_threshold=tc.get("radial_grad_threshold", 2.0),
@@ -180,8 +191,12 @@ class OTPipeline:
                 if adaptive_roi:
                     roi_obj = roi_follow_center(frame.shape, roi_obj, det.x_px, det.y_px)
 
-                frame_pct = int(60 * ((fi - s + 1) / total_frames))
-                self._emit_progress(progress_cb, frame_pct)
+                frame_idx = fi - s
+                now = time.monotonic()
+                if frame_idx == 0 or fi == e or frame_idx % 250 == 0 or (now - last_heartbeat) >= 1.0:
+                    pct = 5 + int(round(65 * (frame_idx / total_frames)))
+                    _emit_progress(pct, f"tracking frame {frame_idx + 1}/{total_frames}")
+                    last_heartbeat = now
         finally:
             reader.close()
         
@@ -201,35 +216,36 @@ class OTPipeline:
             
         # 3. Preprocess (Drift)
         self.log_fn("  - Preprocessing (Drift)...")
-        if self._stop_requested(should_stop):
-            raise InterruptedError("OTPipeline stop requested before preprocess.")
+        if _stop_requested():
+            raise InterruptedError("OT shadow stopped before preprocess.")
+        _emit_progress(75, "preprocess")
         drift_mode = pc.get("drift_mode", "none")
         traj_pp, drift_audit = preprocess_trajectory(traj_raw, fps, drift_mode, pc)
-        self._emit_progress(progress_cb, 72)
             
         # 4. QC
         self.log_fn("  - QC...")
-        if self._stop_requested(should_stop):
-            raise InterruptedError("OTPipeline stop requested before QC.")
+        if _stop_requested():
+            raise InterruptedError("OT shadow stopped before qc.")
+        _emit_progress(82, "qc")
         qc_audit = compute_qc(traj_pp, camera_meta, qc)
         traj_pp["lost_mask"] = qc_audit.pop("_lost_mask")
         traj_pp["lost_reason"] = qc_audit.pop("_lost_reason")
-        self._emit_progress(progress_cb, 84)
         
         # 5. Strategy
         self.log_fn(f"  - Strategy: {self.strategy.name}")
-        if self._stop_requested(should_stop):
-            raise InterruptedError("OTPipeline stop requested before strategy.")
+        if _stop_requested():
+            raise InterruptedError("OT shadow stopped before strategy.")
+        _emit_progress(90, "strategy")
         # Combine all params so strategy has what it needs (viscosity, bead diameter, etc)
         # In a real app we'd strictly namespace, but here we pass merged run_config for simplicity, 
         # or the specific sc dictionary. We'll pass sc.
         result_dict, artifacts_dict = self.strategy.compute(traj_pp, camera_meta, sc)
-        self._emit_progress(progress_cb, 92)
         
         # 6. Export
         self.log_fn("  - Exporting...")
-        if self._stop_requested(should_stop):
-            raise InterruptedError("OTPipeline stop requested before export.")
+        if _stop_requested():
+            raise InterruptedError("OT shadow stopped before export.")
+        _emit_progress(97, "export")
         self.exporter.write_all(
             video_path=video_path,
             traj_pp=traj_pp,
@@ -242,9 +258,9 @@ class OTPipeline:
             artifacts_dict=artifacts_dict,
             export_prefix=self.strategy.export_prefix
         )
-        self._emit_progress(progress_cb, 100)
         
         elapsed = time.time() - start_time
         self.log_fn(f"[OTv2.1] Pipeline completed in {elapsed:.2f}s")
+        _emit_progress(100, "done")
         
         return result_dict

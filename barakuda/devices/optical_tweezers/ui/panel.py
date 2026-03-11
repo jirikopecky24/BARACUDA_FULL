@@ -604,8 +604,8 @@ class PipelinePanel(QWidget):
         self._compute_backend.setCurrentText("CPU")
         self._compute_backend.setToolTip(
             "Select requested OT compute profile. "
-            "This branch keeps OT execution safely on CPU, "
-            "but shows runtime resolution and detected GPU details."
+            "RADIAL_SYMMETRY tracking may use CUDA when available; "
+            "other OT processing still runs on CPU."
         )
         self._compute_backend_status = QLabel("")
         self._compute_backend_status.setWordWrap(True)
@@ -941,7 +941,10 @@ class PipelinePanel(QWidget):
         resolved_profile = str(resolved.get("resolved_profile", "cpu")).upper()
         lines = [f"Requested: {requested} | Resolved: {resolved_profile}"]
 
-        if bool(resolved.get("cuda_available")):
+        if resolved.get("resolved_device") == "cuda":
+            gpu_name = str(resolved.get("gpu_name", "unknown"))
+            lines.append(f"GPU: {gpu_name}")
+        elif bool(resolved.get("cuda_available")):
             gpu_name = str(resolved.get("gpu_name", "unknown"))
             lines.append(f"Detected CUDA GPU: {gpu_name}")
 
