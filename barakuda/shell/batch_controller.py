@@ -48,6 +48,8 @@ class BatchController:
         self._preview_done: bool = False
         self._last_preview_results: list[PreviewResult] = []
         self._preview_dir: Optional[Path] = None
+        self._preview_report_json: str | None = None
+        self._preview_report_path: Optional[Path] = None
         self._stop_requested = False
         self.gate_results: dict[Path, tuple[bool, str]] = {}
         self.last_after_overlay_path: str | None = None
@@ -160,6 +162,8 @@ class BatchController:
         self._preview_done = False
         self._last_preview_results = []
         self._preview_dir = None
+        self._preview_report_json = None
+        self._preview_report_path = None
 
     def stop(self) -> None:
         """Request cooperative stop of the running batch."""
@@ -320,9 +324,8 @@ class BatchController:
                 uniq = keep[:n]
             return uniq
 
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        self._preview_dir = self.run_manager.runs_folder / f"PREVIEW-{ts}"
-        self._preview_dir.mkdir(parents=True, exist_ok=True)
+        self._preview_dir = None
+        self._preview_report_path = None
 
         results: list[PreviewResult] = []
 
@@ -629,10 +632,7 @@ class BatchController:
                 for r in results
             ],
         }
-        (self._preview_dir / "preview_report.json").write_text(
-            json.dumps(report, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        self._preview_report_json = json.dumps(report, indent=2, ensure_ascii=False)
 
         ok_all = all(r.ok for r in results)
         self._preview_done = ok_all
@@ -644,7 +644,7 @@ class BatchController:
             self.gate_results[Path(r.path)] = (r.ok, r.message)
 
         self._log(f"Preview Gate finished: {'PASS' if ok_all else 'FAIL'} (items={len(results)})")
-        self._log(f"Preview report saved: {self._preview_dir / 'preview_report.json'}")
+        self._log("Preview report prepared in memory.")
         self._log_perf_summary(
             "preview_gate",
             items=len(results),
@@ -658,9 +658,9 @@ class BatchController:
 
     def get_preview_gate_report_path(self) -> Path | None:
         """Path to preview_report.json for the last gate run."""
-        if self._preview_dir is None:
+        p = self._preview_report_path
+        if p is None:
             return None
-        p = Path(self._preview_dir) / "preview_report.json"
         return p if p.exists() else None
 
     # ---------------- Dataset Item Detection ----------------
@@ -1220,18 +1220,22 @@ class BatchController:
                     if first_frame is not None and first_xy is not None:
                         dir_preview = run_dir / "preview"
                         dir_preview.mkdir(parents=True, exist_ok=True)
-                        if self._preview_dir and (self._preview_dir / "preview_report.json").exists():
+                        if self._preview_report_json:
                             if _dataset_item_root is not None:
-                                shutil.copy2(
-                                    self._preview_dir / "preview_report.json",
-                                    dir_preview / "preview_report.json",
+                                preview_report_path = dir_preview / "preview_report.json"
+                                preview_report_path.write_text(
+                                    self._preview_report_json,
+                                    encoding="utf-8",
                                 )
+                                self._preview_report_path = preview_report_path
                             elif _ot_mirror_root is not None and not _ot_batch_preview_report_written:
                                 _ot_mirror_root.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(
-                                    self._preview_dir / "preview_report.json",
-                                    _ot_mirror_root / "preview_report.json",
+                                preview_report_path = _ot_mirror_root / "preview_report.json"
+                                preview_report_path.write_text(
+                                    self._preview_report_json,
+                                    encoding="utf-8",
                                 )
+                                self._preview_report_path = preview_report_path
                                 _ot_batch_preview_report_written = True
                         self.run_manager.save_overlay_png(
                             run_dir=dir_preview,
@@ -1492,14 +1496,6 @@ class BatchController:
                     # --- Result summaries under summary/ (new runs only; legacy root-level remains readable) ---
                     dir_summary = run_dir / "summary"
                     dir_summary.mkdir(parents=True, exist_ok=True)
-                    export_ot_results_xlsx(
-                        output_dir=dir_summary,
-                        base_name=stem,
-                        trajectory_csv_path=traj_path,
-                        msd_csv_path=_msd,
-                        psd_x_csv_path=_psd_x,
-                        psd_y_csv_path=_psd_y,
-                    )
 
                     # --- _results.csv (single-file bundle; keep canonical CSVs too) ---
                     results_csv = dir_summary / f"{stem}_results.csv"
@@ -1565,6 +1561,15 @@ class BatchController:
                     dir_qc = run_dir / "qc"
                     dir_qc.mkdir(parents=True, exist_ok=True)
                     _move_to(_tracking / f"{stem}_qc.png", dir_qc)
+
+                    export_ot_results_xlsx(
+                        output_dir=dir_summary,
+                        base_name=stem,
+                        trajectory_csv_path=traj_path,
+                        msd_csv_path=_msd,
+                        psd_x_csv_path=_psd_x,
+                        psd_y_csv_path=_psd_y,
+                    )
 
                     # IMPORTANT: run.json stays in ROOT; _qc.png under qc/; _results.* under summary/.
 
