@@ -1,0 +1,75 @@
+# AGENT BARAKUDA WORKFLOW NOTE
+
+## 1. PROJECT MODE
+- BARAKUDA is deterministic scientific software
+- same input + same config + same version = same output
+- no AI-computed physics
+- protect reproducibility and auditability
+
+## 2. BRANCH MODEL
+- `main` must remain the stable branch
+- `staging/barakuda-next` is the current integration/testing branch
+- new feature/fix branches should branch from staging unless explicitly told otherwise
+- merge to `main` only after human verification
+- never merge automatically
+
+## 3. EXECUTION RULES
+- one step only
+- one commit only
+- allowed files only
+- STOP after commit
+- no broad refactors
+- no "also changed"
+- if another file is needed -> STOP and report it
+
+## 4. CURRENT WORKFLOW DECISIONS
+- RUN is the primary output mechanism
+- for Optical Tweezers, new non-dataset runs are moving toward using a selected Output Root
+- dataset-mode must continue writing into the existing dataset unless explicitly changed later
+- the dataset/run folder is the canonical output package
+- Export is no longer the intended primary output model
+- OT Export UI/workflow is being phased out / removed
+- Preview Gate report should ultimately live at batch root, not inside each individual run folder
+- new OT layout direction is `preview/`, `pipeline/`, `summary/`, `qc/` instead of legacy clutter
+
+## 5. CURRENT VERIFIED OT STATE
+- Output Root selector exists in OT Run UI
+- manifest supports `pipeline/` and legacy `ot_v2_shadow/`
+- new OT writes should use `pipeline/`
+- result summaries should go to `summary/`
+- QC image should go to `qc/`
+- preview report is resolvable from `preview/preview_report.json`
+- old datasets should remain readable
+
+## 6. HOW TO HANDLE NEW TASKS
+- first decide whether the task is:
+  - docs/spec
+  - diagnostic
+  - minimal runtime fix
+  - integration verification
+  - merge review
+- if uncertain, do docs/spec or diagnostic first
+- for risky changes, do compatibility/read path before writer/path migration
+- do not combine unrelated fixes
+
+## 7. PATCH CORRIDOR POLICY
+- always declare allowed files
+- everything else is forbidden
+- if the requested corridor conflicts with actual code locations, STOP and report the correct file before editing
+
+## 8. BARAKUDA STORAGE POLICY
+- canonical outputs belong in the run/dataset folder
+- do not create duplicate internal exports inside the same dataset unless explicitly required
+- avoid redundant outputs and legacy duplicates
+- prefer one canonical location per logical result
+- preserve old dataset compatibility when changing new write locations
+
+## 9. MERGE POLICY
+- after a branch is functionally complete, do verification doc first
+- then merge-review doc
+- then human review/testing
+- only then merge to `main`
+
+## 10. HOW FUTURE PROMPTS SHOULD REFERENCE THIS NOTE
+- read `AGENT_BARAKUDA_WORKFLOW_NOTE.md` first
+- follow it unless the current prompt explicitly overrides a point
