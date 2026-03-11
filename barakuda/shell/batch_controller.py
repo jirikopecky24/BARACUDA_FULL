@@ -608,6 +608,7 @@ class BatchController:
         _ot_batch_id: str | None = None
         _ot_batch_created_at: str | None = None
         _ot_batch_items: list[dict] = []
+        _ot_batch_preview_report_written = False
         if device_id == "optical_tweezers":
             _ot_output_root = self.run_manager.runs_folder / "ot"
             try:
@@ -1014,10 +1015,18 @@ class BatchController:
                         dir_preview = run_dir / "preview"
                         dir_preview.mkdir(parents=True, exist_ok=True)
                         if self._preview_dir and (self._preview_dir / "preview_report.json").exists():
-                            shutil.copy2(
-                                self._preview_dir / "preview_report.json",
-                                dir_preview / "preview_report.json",
-                            )
+                            if _dataset_item_root is not None:
+                                shutil.copy2(
+                                    self._preview_dir / "preview_report.json",
+                                    dir_preview / "preview_report.json",
+                                )
+                            elif _ot_mirror_root is not None and not _ot_batch_preview_report_written:
+                                _ot_mirror_root.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(
+                                    self._preview_dir / "preview_report.json",
+                                    _ot_mirror_root / "preview_report.json",
+                                )
+                                _ot_batch_preview_report_written = True
                         self.run_manager.save_overlay_png(
                             run_dir=dir_preview,
                             frame_rgb=first_frame,
