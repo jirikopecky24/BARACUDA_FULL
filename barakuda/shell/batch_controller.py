@@ -25,8 +25,9 @@ from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, Pos
 from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, kappa_from_fc_n_per_m
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
-from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
+from barakuda.core.tracking import Detection, choose_tracking_polarity, track_particle, Roi, TrackingMethod, roi_follow_center
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
+from barakuda.devices.optical_tweezers import perf as ot_perf
 
 
 
@@ -165,6 +166,77 @@ class BatchController:
         self._stop_requested = True
         self._log("STOP requested: batch will stop at the next safe checkpoint.")
 
+    def _clear_perf(self) -> None:
+        if ot_perf.enabled():
+            ot_perf.clear()
+
+    def _log_perf_summary(self, scope: str, **extra: Any) -> None:
+        if not ot_perf.enabled():
+            return
+        payload: dict[str, Any] = {}
+        for key, value in extra.items():
+            if value is not None:
+                payload[key] = value
+        stats = ot_perf.snapshot(reset=True)
+        if stats:
+            payload["stats"] = stats
+        self._log(f"[OT perf] {scope}: {json.dumps(payload, ensure_ascii=False)}")
+
+    def _resolve_auto_roi(
+        self,
+        reader: VideoReader,
+        device_panel,
+        tracking_params: dict[str, Any],
+        post_params: dict[str, Any],
+        *,
+        log_name: str,
+    ) -> tuple[int, int, int, int] | None:
+        with ot_perf.record("batch.auto_roi.resolve"):
+            from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
+
+            scale_params = device_panel.get_scale_params()
+            um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
+            dia_auto = float(post_params.get("bead_diameter_um", 1.0))
+            margin_auto = float(tracking_params.get("roi_margin", 1.8))
+            frame0 = reader.get_frame(0)
+            roi = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
+            self._log(f"[OT] Auto ROI for {log_name}: {roi}")
+            return roi
+
+    def _resolve_locked_polarity(
+        self,
+        frame: np.ndarray,
+        roi_obj: Roi,
+        *,
+        method: TrackingMethod,
+        compute_device: str,
+        invert: bool,
+        blur_sigma: float,
+        radial_grad_threshold: float,
+        auto_polarity: bool,
+        annulus_enabled: bool,
+        annulus_auto: bool,
+        annulus_r_inner_px: float | None,
+        annulus_r_outer_px: float | None,
+        annulus_profile_smooth: int,
+    ) -> tuple[bool, Detection | None]:
+        if not auto_polarity:
+            return bool(invert), None
+        chosen_invert, chosen_det = choose_tracking_polarity(
+            frame,
+            roi_obj,
+            method=method,
+            blur_sigma=blur_sigma,
+            radial_grad_threshold=radial_grad_threshold,
+            annulus_enabled=annulus_enabled,
+            annulus_r_inner_px=annulus_r_inner_px,
+            annulus_r_outer_px=annulus_r_outer_px,
+            annulus_auto=annulus_auto,
+            annulus_profile_smooth=annulus_profile_smooth,
+            compute_device=compute_device,
+        )
+        return bool(chosen_invert), chosen_det
+
     # ---------------- Preview Gate ----------------
 
     def run_preview_gate(
@@ -179,6 +251,8 @@ class BatchController:
         self.reset_gate()
         if not file_paths:
             return []
+        self._clear_perf()
+        preview_started = time.perf_counter()
 
         # Defaults (device panel may override)
         SAMPLE_COUNT = 7
@@ -334,25 +408,15 @@ class BatchController:
             file_roi = None
             if is_auto_roi_on_load:
                 try:
-                    from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
-                    scale_params = device_panel.get_scale_params()
-                    um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
-                    
-                    dia_auto = 1.0
-                    if hasattr(device_panel, "get_postprocess_params"):
-                        dia_auto = float(device_panel.get_postprocess_params().get("bead_diameter_um", 1.0))
-                    elif hasattr(device_panel, "_bead_diameter_um"):
-                        dia_auto = float(device_panel._bead_diameter_um.value())
-                    
-                    margin_auto = 1.8
-                    if hasattr(device_panel, "get_tracking_params"):
-                        margin_auto = float(device_panel.get_tracking_params().get("roi_margin", 1.8))
-                    elif hasattr(device_panel, "_roi_margin"):
-                        margin_auto = float(device_panel._roi_margin.value())
-
-                    frame0 = vr.get_frame(0)
-                    rx, ry, rw, rh = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
-                    file_roi = (rx, ry, rw, rh)
+                    tracking_params_for_roi = device_panel.get_tracking_params() if hasattr(device_panel, "get_tracking_params") else {}
+                    post_params_for_roi = device_panel.get_postprocess_params() if hasattr(device_panel, "get_postprocess_params") else {}
+                    file_roi = self._resolve_auto_roi(
+                        vr,
+                        device_panel,
+                        tracking_params_for_roi,
+                        post_params_for_roi,
+                        log_name=p.name,
+                    )
                 except Exception as e:
                     self._log(f"WARN: auto ROI failed for {p.name}: {e!r}")
             
@@ -398,25 +462,48 @@ class BatchController:
             samples: list[Dict[str, Any]] = []
             pass_count = 0
             fail_messages: list[str] = []
+            locked_invert = bool(params.get("invert", True))
+            locked_det: Detection | None = None
 
             # Loop sampled frames
             for fi in frame_indices:
                 try:
                     frame = vr.get_frame(int(fi))
-                    det = track_particle(
-                        frame,
-                        roi_obj,
-                        method=method,
-                        compute_device=str(ot_runtime.get("resolved_device", "cpu")),
-                        invert=bool(params.get("invert", True)),
-                        blur_sigma=float(params.get("blur_sigma", 1.2)),
-                        radial_grad_threshold=float(params.get("radial_grad_threshold", 2.0)),
-                        auto_polarity=bool(params.get("auto_polarity", True)),
-                        annulus_auto=bool(params.get("annulus_auto", True)) if bool(params.get("annulus_enabled", True)) else False,
-                        annulus_r_inner_px=params.get("annulus_r_inner_px", None),
-                        annulus_r_outer_px=params.get("annulus_r_outer_px", None),
-                        annulus_profile_smooth=int(params.get("annulus_profile_smooth", 3)),
-                    )
+                    if locked_det is None:
+                        locked_invert, locked_det = self._resolve_locked_polarity(
+                            frame,
+                            roi_obj,
+                            method=method,
+                            compute_device=str(ot_runtime.get("resolved_device", "cpu")),
+                            invert=bool(params.get("invert", True)),
+                            blur_sigma=float(params.get("blur_sigma", 1.2)),
+                            radial_grad_threshold=float(params.get("radial_grad_threshold", 2.0)),
+                            auto_polarity=bool(params.get("auto_polarity", True)),
+                            annulus_enabled=bool(params.get("annulus_enabled", True)),
+                            annulus_auto=bool(params.get("annulus_auto", True)) if bool(params.get("annulus_enabled", True)) else False,
+                            annulus_r_inner_px=params.get("annulus_r_inner_px", None),
+                            annulus_r_outer_px=params.get("annulus_r_outer_px", None),
+                            annulus_profile_smooth=int(params.get("annulus_profile_smooth", 3)),
+                        )
+                    if int(fi) == int(frame_indices[0]) and locked_det is not None:
+                        det = locked_det
+                        locked_det = None
+                    else:
+                        det = track_particle(
+                            frame,
+                            roi_obj,
+                            method=method,
+                            compute_device=str(ot_runtime.get("resolved_device", "cpu")),
+                            invert=locked_invert,
+                            blur_sigma=float(params.get("blur_sigma", 1.2)),
+                            radial_grad_threshold=float(params.get("radial_grad_threshold", 2.0)),
+                            auto_polarity=False,
+                            annulus_enabled=bool(params.get("annulus_enabled", True)),
+                            annulus_auto=bool(params.get("annulus_auto", True)) if bool(params.get("annulus_enabled", True)) else False,
+                            annulus_r_inner_px=params.get("annulus_r_inner_px", None),
+                            annulus_r_outer_px=params.get("annulus_r_outer_px", None),
+                            annulus_profile_smooth=int(params.get("annulus_profile_smooth", 3)),
+                        )
 
                     # Minimal, physically safe gate: finite outputs
                     finite = (
@@ -501,7 +588,9 @@ class BatchController:
 
             details.update({
                 "method": method.value,
-                "roi": list(preview_roi_rect),
+                "roi": list(file_roi),
+                "resolved_roi": list(file_roi),
+                "polarity_locked_invert": bool(locked_invert),
                 "pass_count": int(pass_count),
                 "sample_n": int(n),
                 "pass_ratio": float(ratio),
@@ -556,6 +645,11 @@ class BatchController:
 
         self._log(f"Preview Gate finished: {'PASS' if ok_all else 'FAIL'} (items={len(results)})")
         self._log(f"Preview report saved: {self._preview_dir / 'preview_report.json'}")
+        self._log_perf_summary(
+            "preview_gate",
+            items=len(results),
+            elapsed_ms=round((time.perf_counter() - preview_started) * 1000.0, 3),
+        )
         return results
 
     def get_preview_gate_results(self) -> list[PreviewResult]:
@@ -625,6 +719,7 @@ class BatchController:
 
         ok_paths = [Path(p) for p in ok_paths]
         ok_paths = self._reorder_for_pairing(ok_paths)
+        preview_result_by_path = {Path(r.path): r for r in self._last_preview_results}
 
         _ot_mirror_root: Path | None = None
         _ot_items_root: Path | None = None
@@ -657,6 +752,12 @@ class BatchController:
             if self._stop_requested:
                 self._log("Batch stopped before processing next file.")
                 break
+            self._clear_perf()
+            file_started = time.perf_counter()
+            auto_roi_reused = False
+            tracking_elapsed_ms: float | None = None
+            postprocess_elapsed_ms: float | None = None
+            locked_invert = False
 
             file_path = Path(file_path)
             dataset_set_status_fn(file_path, "running")
@@ -753,16 +854,22 @@ class BatchController:
                     
                 if is_auto_roi_on_load:
                     try:
-                        from barakuda.devices.optical_tweezers.pipeline.auto_roi import auto_roi_rs
-                        scale_params = device_panel.get_scale_params()
-                        um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
-                        
-                        dia_auto = float(post_params.get("bead_diameter_um", 1.0))
-                        margin_auto = float(tracking_params.get("roi_margin", 1.8))
-
-                        frame0 = reader.get_frame(0)
-                        file_roi_rect = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
-                        self._log(f"[OT] Auto ROI for {file_path.name}: {file_roi_rect}")
+                        preview_result = preview_result_by_path.get(file_path)
+                        preview_roi = preview_result.details.get("resolved_roi") if preview_result is not None else None
+                        if isinstance(preview_roi, list) and len(preview_roi) == 4:
+                            file_roi_rect = tuple(int(v) for v in preview_roi)
+                            auto_roi_reused = True
+                            self._log(f"[OT] Reusing preview Auto ROI for {file_path.name}: {file_roi_rect}")
+                        else:
+                            _resolved_auto_roi = self._resolve_auto_roi(
+                                reader,
+                                device_panel,
+                                tracking_params,
+                                post_params,
+                                log_name=file_path.name,
+                            )
+                            if _resolved_auto_roi is not None:
+                                file_roi_rect = _resolved_auto_roi
                     except Exception as e:
                         self._log(f"WARN: auto ROI failed for {file_path.name}: {e!r}")
                 
@@ -1020,8 +1127,11 @@ class BatchController:
                     w.writerow(["frame", "t_s", "x_px", "y_px", "quality", "peak", "roi_x", "roi_y", "roi_w", "roi_h"])
 
                     current_roi = base_roi
+                    locked_invert = invert
+                    locked_det: Detection | None = None
 
                     total_frames = max(1, e - s + 1)
+                    tracking_started = time.perf_counter()
 
                     for fi in range(s, e + 1):
                         if self._stop_requested:
@@ -1036,20 +1146,41 @@ class BatchController:
 
                         frame = reader.get_frame(fi)
                         roi_obj = current_roi
-                        det = track_particle(
-                            frame,
-                            roi_obj,
-                            method=method,
-                            compute_device=str(ot_runtime.get("resolved_device", "cpu")),
-                            invert=invert,
-                            blur_sigma=blur_sigma,
-                            radial_grad_threshold=grad_th,
-                            auto_polarity=auto_pol,
-                            annulus_auto=ann_auto if ann_enabled else False,
-                            annulus_r_inner_px=ann_r_in,
-                            annulus_r_outer_px=ann_r_out,
-                            annulus_profile_smooth=ann_smooth,
-                        )
+                        if locked_det is None:
+                            locked_invert, locked_det = self._resolve_locked_polarity(
+                                frame,
+                                roi_obj,
+                                method=method,
+                                compute_device=str(ot_runtime.get("resolved_device", "cpu")),
+                                invert=invert,
+                                blur_sigma=blur_sigma,
+                                radial_grad_threshold=grad_th,
+                                auto_polarity=auto_pol,
+                                annulus_enabled=ann_enabled,
+                                annulus_auto=ann_auto if ann_enabled else False,
+                                annulus_r_inner_px=ann_r_in,
+                                annulus_r_outer_px=ann_r_out,
+                                annulus_profile_smooth=ann_smooth,
+                            )
+                        if fi == s and locked_det is not None:
+                            det = locked_det
+                            locked_det = None
+                        else:
+                            det = track_particle(
+                                frame,
+                                roi_obj,
+                                method=method,
+                                compute_device=str(ot_runtime.get("resolved_device", "cpu")),
+                                invert=locked_invert,
+                                blur_sigma=blur_sigma,
+                                radial_grad_threshold=grad_th,
+                                auto_polarity=False,
+                                annulus_enabled=ann_enabled,
+                                annulus_auto=ann_auto if ann_enabled else False,
+                                annulus_r_inner_px=ann_r_in,
+                                annulus_r_outer_px=ann_r_out,
+                                annulus_profile_smooth=ann_smooth,
+                            )
 
                         if first_frame is None:
                             first_frame = frame
@@ -1076,6 +1207,7 @@ class BatchController:
                         ])
 
                 reader.close()
+                tracking_elapsed_ms = round((time.perf_counter() - tracking_started) * 1000.0, 3)
 
                 if self._stop_requested:
                     dataset_set_status_fn(file_path, "stopped")
@@ -1132,6 +1264,7 @@ class BatchController:
 
                 if pp_enabled:
                     try:
+                        post_started = time.perf_counter()
                         pp_summary = postprocess_trajectory_csv_inplace(
                             trajectory_csv_path=traj_path,
                             fps=fps,
@@ -1155,6 +1288,7 @@ class BatchController:
                             }, indent=2, ensure_ascii=False),
                             encoding="utf-8",
                         )
+                        postprocess_elapsed_ms = round((time.perf_counter() - post_started) * 1000.0, 3)
                     except Exception as e:
                         self._log(f"WARN: postprocess failed ({file_path.name}): {e!r}")
 
@@ -1561,10 +1695,22 @@ class BatchController:
 
                 dataset_set_status_fn(file_path, "done")
                 self._log(f"OK: {file_path.name} -> {run_id}")
+                self._log_perf_summary(
+                    f"run_batch:{file_path.name}",
+                    auto_roi_reused=auto_roi_reused,
+                    polarity_locked_invert=bool(locked_invert),
+                    tracking_elapsed_ms=tracking_elapsed_ms,
+                    postprocess_elapsed_ms=postprocess_elapsed_ms,
+                    total_elapsed_ms=round((time.perf_counter() - file_started) * 1000.0, 3),
+                )
 
             except Exception as e:
                 dataset_set_status_fn(file_path, "failed")
                 self._log(f"ERROR: {file_path.name}: {e!r}")
+                self._log_perf_summary(
+                    f"run_batch:{file_path.name}:failed",
+                    total_elapsed_ms=round((time.perf_counter() - file_started) * 1000.0, 3),
+                )
 
             done += 1
             progress_fn(done, len(ok_paths), file_path.name, 100)

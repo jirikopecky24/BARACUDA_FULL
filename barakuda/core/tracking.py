@@ -6,6 +6,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from barakuda.devices.optical_tweezers import perf as ot_perf
+
 _TORCH_MESHGRID_CACHE: dict[tuple[str, int, int], tuple[object, object]] = {}
 
 
@@ -204,74 +206,75 @@ def _solve_rs_center_from_gradients(
     annulus_r_outer: float | None,
     center_hint_xy: tuple[float, float] | None,
 ) -> tuple[float, float, float, float]:
-    h, w = gmag.shape
-    mask = gmag >= float(radial_grad_threshold)
+    with ot_perf.record("tracking.rs.solve.cpu"):
+        h, w = gmag.shape
+        mask = gmag >= float(radial_grad_threshold)
 
-    if center_hint_xy is not None and annulus_r_inner is not None and annulus_r_outer is not None:
-        cxh, cyh = float(center_hint_xy[0]), float(center_hint_xy[1])
+        if center_hint_xy is not None and annulus_r_inner is not None and annulus_r_outer is not None:
+            cxh, cyh = float(center_hint_xy[0]), float(center_hint_xy[1])
+            yy, xx = np.mgrid[0:h, 0:w]
+            rr = np.sqrt((xx - cxh) ** 2 + (yy - cyh) ** 2)
+            mask = mask & (rr >= float(annulus_r_inner)) & (rr <= float(annulus_r_outer))
+
+        if not np.any(mask):
+            return np.nan, np.nan, 0.0, 0.0
+
+        eps = 1e-12
+        inv = 1.0 / (gmag + eps)
+        nx = gx * inv
+        ny = gy * inv
+
+        wm = (gmag[mask].astype(np.float64) ** 2)
+
         yy, xx = np.mgrid[0:h, 0:w]
-        rr = np.sqrt((xx - cxh) ** 2 + (yy - cyh) ** 2)
-        mask = mask & (rr >= float(annulus_r_inner)) & (rr <= float(annulus_r_outer))
+        xxm = xx[mask].astype(np.float64)
+        yym = yy[mask].astype(np.float64)
+        nxm = nx[mask].astype(np.float64)
+        nym = ny[mask].astype(np.float64)
 
-    if not np.any(mask):
-        return np.nan, np.nan, 0.0, 0.0
+        a11 = np.sum(wm * (1.0 - nxm * nxm))
+        a12 = np.sum(wm * (-nxm * nym))
+        a22 = np.sum(wm * (1.0 - nym * nym))
 
-    eps = 1e-12
-    inv = 1.0 / (gmag + eps)
-    nx = gx * inv
-    ny = gy * inv
+        b1 = np.sum(wm * ((1.0 - nxm * nxm) * xxm + (-nxm * nym) * yym))
+        b2 = np.sum(wm * ((-nxm * nym) * xxm + (1.0 - nym * nym) * yym))
 
-    wm = (gmag[mask].astype(np.float64) ** 2)
+        A = np.array([[a11, a12], [a12, a22]], dtype=np.float64)
+        b = np.array([b1, b2], dtype=np.float64)
 
-    yy, xx = np.mgrid[0:h, 0:w]
-    xxm = xx[mask].astype(np.float64)
-    yym = yy[mask].astype(np.float64)
-    nxm = nx[mask].astype(np.float64)
-    nym = ny[mask].astype(np.float64)
+        detA = float(np.linalg.det(A))
+        if abs(detA) < 1e-12:
+            return np.nan, np.nan, 0.0, 0.0
 
-    a11 = np.sum(wm * (1.0 - nxm * nxm))
-    a12 = np.sum(wm * (-nxm * nym))
-    a22 = np.sum(wm * (1.0 - nym * nym))
+        c = np.linalg.solve(A, b)
+        cx = float(np.clip(c[0], 0.0, float(w - 1)))
+        cy = float(np.clip(c[1], 0.0, float(h - 1)))
 
-    b1 = np.sum(wm * ((1.0 - nxm * nxm) * xxm + (-nxm * nym) * yym))
-    b2 = np.sum(wm * ((-nxm * nym) * xxm + (1.0 - nym * nym) * yym))
+        dx = cx - xxm
+        dy = cy - yym
+        ndotv = nxm * dx + nym * dy
+        rx = dx - nxm * ndotv
+        ry = dy - nym * ndotv
 
-    A = np.array([[a11, a12], [a12, a22]], dtype=np.float64)
-    b = np.array([b1, b2], dtype=np.float64)
+        r = np.sum(wm * (rx * rx + ry * ry)) + 1e-9
+        wsum = float(np.sum(wm) + 1e-12)
 
-    detA = float(np.linalg.det(A))
-    if abs(detA) < 1e-12:
-        return np.nan, np.nan, 0.0, 0.0
+        rr = np.sqrt(dx * dx + dy * dy) + 1e-12
+        ux = dx / rr
+        uy = dy / rr
+        cos_abs = np.abs(nxm * ux + nym * uy)
+        inlier = cos_abs >= 0.7
+        inlier_ratio = float(np.sum(inlier)) / float(len(cos_abs) + 1e-12)
 
-    c = np.linalg.solve(A, b)
-    cx = float(np.clip(c[0], 0.0, float(w - 1)))
-    cy = float(np.clip(c[1], 0.0, float(h - 1)))
+        quality = float((wsum / r) * (0.25 + 0.75 * inlier_ratio))
 
-    dx = cx - xxm
-    dy = cy - yym
-    ndotv = nxm * dx + nym * dy
-    rx = dx - nxm * ndotv
-    ry = dy - nym * ndotv
+        ix = int(round(cx))
+        iy = int(round(cy))
+        ix = max(0, min(w - 1, ix))
+        iy = max(0, min(h - 1, iy))
+        peak = float(gmag[iy, ix])  # polarity-invariant
 
-    r = np.sum(wm * (rx * rx + ry * ry)) + 1e-9
-    wsum = float(np.sum(wm) + 1e-12)
-
-    rr = np.sqrt(dx * dx + dy * dy) + 1e-12
-    ux = dx / rr
-    uy = dy / rr
-    cos_abs = np.abs(nxm * ux + nym * uy)
-    inlier = cos_abs >= 0.7
-    inlier_ratio = float(np.sum(inlier)) / float(len(cos_abs) + 1e-12)
-
-    quality = float((wsum / r) * (0.25 + 0.75 * inlier_ratio))
-
-    ix = int(round(cx))
-    iy = int(round(cy))
-    ix = max(0, min(w - 1, ix))
-    iy = max(0, min(h - 1, iy))
-    peak = float(gmag[iy, ix])  # polarity-invariant
-
-    return cx, cy, quality, peak
+        return cx, cy, quality, peak
 
 
 def _estimate_annulus_from_gradient_profile(
@@ -279,37 +282,38 @@ def _estimate_annulus_from_gradient_profile(
     center_xy: tuple[float, float],
     smooth_k: int = 3,
 ) -> tuple[float, float]:
-    h, w = gmag.shape
-    cx, cy = float(center_xy[0]), float(center_xy[1])
+    with ot_perf.record("tracking.annulus_profile.cpu"):
+        h, w = gmag.shape
+        cx, cy = float(center_xy[0]), float(center_xy[1])
 
-    yy, xx = np.mgrid[0:h, 0:w]
-    rr = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+        yy, xx = np.mgrid[0:h, 0:w]
+        rr = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
 
-    rmax = int(np.floor(min(h, w) * 0.5))
-    rmax = max(5, min(rmax, int(np.max(rr))))
+        rmax = int(np.floor(min(h, w) * 0.5))
+        rmax = max(5, min(rmax, int(np.max(rr))))
 
-    r_int = np.clip(rr.astype(np.int32), 0, rmax)
-    prof_sum = np.bincount(r_int.ravel(), weights=gmag.ravel().astype(np.float64), minlength=rmax + 1)
-    prof_cnt = np.bincount(r_int.ravel(), minlength=rmax + 1).astype(np.float64)
-    prof = prof_sum / np.maximum(1.0, prof_cnt)
+        r_int = np.clip(rr.astype(np.int32), 0, rmax)
+        prof_sum = np.bincount(r_int.ravel(), weights=gmag.ravel().astype(np.float64), minlength=rmax + 1)
+        prof_cnt = np.bincount(r_int.ravel(), minlength=rmax + 1).astype(np.float64)
+        prof = prof_sum / np.maximum(1.0, prof_cnt)
 
-    prof = _smooth_1d(prof, smooth_k)
+        prof = _smooth_1d(prof, smooth_k)
 
-    r0 = 3
-    r1 = rmax
-    if r1 <= r0 + 3:
-        return 2.0, float(rmax)
+        r0 = 3
+        r1 = rmax
+        if r1 <= r0 + 3:
+            return 2.0, float(rmax)
 
-    peak_r = int(np.argmax(prof[r0:r1]) + r0)
-    peak_r = max(3, min(rmax, peak_r))
+        peak_r = int(np.argmax(prof[r0:r1]) + r0)
+        peak_r = max(3, min(rmax, peak_r))
 
-    r_inner = 0.60 * float(peak_r)
-    r_outer = 1.40 * float(peak_r)
+        r_inner = 0.60 * float(peak_r)
+        r_outer = 1.40 * float(peak_r)
 
-    r_inner = float(np.clip(r_inner, 2.0, float(rmax - 2)))
-    r_outer = float(np.clip(r_outer, r_inner + 2.0, float(rmax)))
+        r_inner = float(np.clip(r_inner, 2.0, float(rmax - 2)))
+        r_outer = float(np.clip(r_outer, r_inner + 2.0, float(rmax)))
 
-    return r_inner, r_outer
+        return r_inner, r_outer
 
 
 def _detect_radial_symmetry_cpu_from_work(
@@ -321,55 +325,62 @@ def _detect_radial_symmetry_cpu_from_work(
     invert: bool,
     blur_sigma: float,
     radial_grad_threshold: float,
+    annulus_enabled: bool,
     annulus_r_inner_px: float | None,
     annulus_r_outer_px: float | None,
     annulus_auto: bool,
     annulus_profile_smooth: int,
 ) -> Detection:
-    gx, gy = _central_gradients(work)
-    gmag = np.sqrt(gx * gx + gy * gy).astype(np.float32)
+    with ot_perf.record("tracking.rs.cpu"):
+        gx, gy = _central_gradients(work)
+        gmag = np.sqrt(gx * gx + gy * gy).astype(np.float32)
 
-    h, w = gmag.shape
-    if h < 3 or w < 3:
-        return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
+        h, w = gmag.shape
+        if h < 3 or w < 3:
+            return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
 
-    cx0, cy0, q0, peak0 = _solve_rs_center_from_gradients(
-        gx, gy, gmag,
-        radial_grad_threshold=radial_grad_threshold,
-        annulus_r_inner=None,
-        annulus_r_outer=None,
-        center_hint_xy=None,
-    )
-    if not np.isfinite(cx0) or not np.isfinite(cy0) or q0 <= 0:
-        return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
-
-    r_in = annulus_r_inner_px
-    r_out = annulus_r_outer_px
-    if annulus_auto or (r_in is None or r_out is None):
-        r_in_est, r_out_est = _estimate_annulus_from_gradient_profile(
-            gmag, center_xy=(cx0, cy0), smooth_k=int(annulus_profile_smooth)
+        cx0, cy0, q0, peak0 = _solve_rs_center_from_gradients(
+            gx, gy, gmag,
+            radial_grad_threshold=radial_grad_threshold,
+            annulus_r_inner=None,
+            annulus_r_outer=None,
+            center_hint_xy=None,
         )
-        if r_in is None:
-            r_in = r_in_est
-        if r_out is None:
-            r_out = r_out_est
+        if not np.isfinite(cx0) or not np.isfinite(cy0) or q0 <= 0:
+            return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
 
-    cx1, cy1, q1, peak1 = _solve_rs_center_from_gradients(
-        gx, gy, gmag,
-        radial_grad_threshold=radial_grad_threshold,
-        annulus_r_inner=float(r_in) if r_in is not None else None,
-        annulus_r_outer=float(r_out) if r_out is not None else None,
-        center_hint_xy=(cx0, cy0),
-    )
+        if not annulus_enabled:
+            x = float(ox) + float(cx0)
+            y = float(oy) + float(cy0)
+            return Detection(x_px=x, y_px=y, quality=float(q0), peak=float(peak0))
 
-    if np.isfinite(cx1) and np.isfinite(cy1) and q1 > 0:
-        cx, cy, quality, peak = cx1, cy1, q1, peak1
-    else:
-        cx, cy, quality, peak = cx0, cy0, q0, peak0
+        r_in = annulus_r_inner_px
+        r_out = annulus_r_outer_px
+        if annulus_auto or (r_in is None or r_out is None):
+            r_in_est, r_out_est = _estimate_annulus_from_gradient_profile(
+                gmag, center_xy=(cx0, cy0), smooth_k=int(annulus_profile_smooth)
+            )
+            if r_in is None:
+                r_in = r_in_est
+            if r_out is None:
+                r_out = r_out_est
 
-    x = float(ox) + float(cx)
-    y = float(oy) + float(cy)
-    return Detection(x_px=x, y_px=y, quality=float(quality), peak=float(peak))
+        cx1, cy1, q1, peak1 = _solve_rs_center_from_gradients(
+            gx, gy, gmag,
+            radial_grad_threshold=radial_grad_threshold,
+            annulus_r_inner=float(r_in) if r_in is not None else None,
+            annulus_r_outer=float(r_out) if r_out is not None else None,
+            center_hint_xy=(cx0, cy0),
+        )
+
+        if np.isfinite(cx1) and np.isfinite(cy1) and q1 > 0:
+            cx, cy, quality, peak = cx1, cy1, q1, peak1
+        else:
+            cx, cy, quality, peak = cx0, cy0, q0, peak0
+
+        x = float(ox) + float(cx)
+        y = float(oy) + float(cy)
+        return Detection(x_px=x, y_px=y, quality=float(quality), peak=float(peak))
 
 
 def _to_cuda_tensor(work: np.ndarray):
@@ -420,68 +431,69 @@ def _solve_rs_center_from_gradients_torch(
 ) -> tuple[float, float, float, float]:
     import torch
 
-    h, w = gmag.shape
-    mask = gmag >= float(radial_grad_threshold)
+    with ot_perf.record("tracking.rs.solve.cuda"):
+        h, w = gmag.shape
+        mask = gmag >= float(radial_grad_threshold)
 
-    yy, xx = _get_torch_meshgrid(gmag.device, h, w)
+        yy, xx = _get_torch_meshgrid(gmag.device, h, w)
 
-    if center_hint_xy is not None and annulus_r_inner is not None and annulus_r_outer is not None:
-        cxh, cyh = float(center_hint_xy[0]), float(center_hint_xy[1])
-        rr = torch.sqrt((xx - cxh) ** 2 + (yy - cyh) ** 2)
-        mask = mask & (rr >= float(annulus_r_inner)) & (rr <= float(annulus_r_outer))
+        if center_hint_xy is not None and annulus_r_inner is not None and annulus_r_outer is not None:
+            cxh, cyh = float(center_hint_xy[0]), float(center_hint_xy[1])
+            rr = torch.sqrt((xx - cxh) ** 2 + (yy - cyh) ** 2)
+            mask = mask & (rr >= float(annulus_r_inner)) & (rr <= float(annulus_r_outer))
 
-    if int(mask.count_nonzero().item()) == 0:
-        return np.nan, np.nan, 0.0, 0.0
+        if int(mask.count_nonzero().item()) == 0:
+            return np.nan, np.nan, 0.0, 0.0
 
-    eps = 1e-12
-    inv = 1.0 / (gmag + eps)
-    nx = gx * inv
-    ny = gy * inv
+        eps = 1e-12
+        inv = 1.0 / (gmag + eps)
+        nx = gx * inv
+        ny = gy * inv
 
-    wm = gmag[mask].to(torch.float32) ** 2
-    xxm = xx[mask].to(torch.float32)
-    yym = yy[mask].to(torch.float32)
-    nxm = nx[mask].to(torch.float32)
-    nym = ny[mask].to(torch.float32)
+        wm = gmag[mask].to(torch.float32) ** 2
+        xxm = xx[mask].to(torch.float32)
+        yym = yy[mask].to(torch.float32)
+        nxm = nx[mask].to(torch.float32)
+        nym = ny[mask].to(torch.float32)
 
-    a11 = torch.sum(wm * (1.0 - nxm * nxm))
-    a12 = torch.sum(wm * (-nxm * nym))
-    a22 = torch.sum(wm * (1.0 - nym * nym))
+        a11 = torch.sum(wm * (1.0 - nxm * nxm))
+        a12 = torch.sum(wm * (-nxm * nym))
+        a22 = torch.sum(wm * (1.0 - nym * nym))
 
-    b1 = torch.sum(wm * ((1.0 - nxm * nxm) * xxm + (-nxm * nym) * yym))
-    b2 = torch.sum(wm * ((-nxm * nym) * xxm + (1.0 - nym * nym) * yym))
+        b1 = torch.sum(wm * ((1.0 - nxm * nxm) * xxm + (-nxm * nym) * yym))
+        b2 = torch.sum(wm * ((-nxm * nym) * xxm + (1.0 - nym * nym) * yym))
 
-    detA = a11 * a22 - a12 * a12
-    if bool((torch.abs(detA) < 1e-12).item()):
-        return np.nan, np.nan, 0.0, 0.0
+        detA = a11 * a22 - a12 * a12
+        if bool((torch.abs(detA) < 1e-12).item()):
+            return np.nan, np.nan, 0.0, 0.0
 
-    inv_det = 1.0 / detA
-    cx_t = torch.clamp((a22 * b1 - a12 * b2) * inv_det, 0.0, float(w - 1))
-    cy_t = torch.clamp((a11 * b2 - a12 * b1) * inv_det, 0.0, float(h - 1))
+        inv_det = 1.0 / detA
+        cx_t = torch.clamp((a22 * b1 - a12 * b2) * inv_det, 0.0, float(w - 1))
+        cy_t = torch.clamp((a11 * b2 - a12 * b1) * inv_det, 0.0, float(h - 1))
 
-    dx = cx_t - xxm
-    dy = cy_t - yym
-    ndotv = nxm * dx + nym * dy
-    rx = dx - nxm * ndotv
-    ry = dy - nym * ndotv
+        dx = cx_t - xxm
+        dy = cy_t - yym
+        ndotv = nxm * dx + nym * dy
+        rx = dx - nxm * ndotv
+        ry = dy - nym * ndotv
 
-    r_t = torch.sum(wm * (rx * rx + ry * ry)) + 1e-9
-    wsum_t = torch.sum(wm) + 1e-12
+        r_t = torch.sum(wm * (rx * rx + ry * ry)) + 1e-9
+        wsum_t = torch.sum(wm) + 1e-12
 
-    rr = torch.sqrt(dx * dx + dy * dy) + 1e-12
-    ux = dx / rr
-    uy = dy / rr
-    cos_abs = torch.abs(nxm * ux + nym * uy)
-    inlier = cos_abs >= 0.7
-    inlier_ratio_t = torch.sum(inlier.to(torch.float32)) / float(cos_abs.numel() + 1e-12)
+        rr = torch.sqrt(dx * dx + dy * dy) + 1e-12
+        ux = dx / rr
+        uy = dy / rr
+        cos_abs = torch.abs(nxm * ux + nym * uy)
+        inlier = cos_abs >= 0.7
+        inlier_ratio_t = torch.sum(inlier.to(torch.float32)) / float(cos_abs.numel() + 1e-12)
 
-    quality_t = (wsum_t / r_t) * (0.25 + 0.75 * inlier_ratio_t)
+        quality_t = (wsum_t / r_t) * (0.25 + 0.75 * inlier_ratio_t)
 
-    ix_t = torch.clamp(torch.round(cx_t).to(torch.int64), 0, w - 1)
-    iy_t = torch.clamp(torch.round(cy_t).to(torch.int64), 0, h - 1)
-    peak_t = gmag[iy_t, ix_t]
-    out = torch.stack([cx_t, cy_t, quality_t, peak_t]).detach().cpu().tolist()
-    return float(out[0]), float(out[1]), float(out[2]), float(out[3])
+        ix_t = torch.clamp(torch.round(cx_t).to(torch.int64), 0, w - 1)
+        iy_t = torch.clamp(torch.round(cy_t).to(torch.int64), 0, h - 1)
+        peak_t = gmag[iy_t, ix_t]
+        out = torch.stack([cx_t, cy_t, quality_t, peak_t]).detach().cpu().tolist()
+        return float(out[0]), float(out[1]), float(out[2]), float(out[3])
 
 
 def _estimate_annulus_from_gradient_profile_torch(
@@ -491,31 +503,32 @@ def _estimate_annulus_from_gradient_profile_torch(
 ) -> tuple[float, float]:
     import torch
 
-    h, w = gmag.shape
-    cx, cy = float(center_xy[0]), float(center_xy[1])
-    yy, xx = _get_torch_meshgrid(gmag.device, h, w)
-    rr = torch.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    with ot_perf.record("tracking.annulus_profile.cuda"):
+        h, w = gmag.shape
+        cx, cy = float(center_xy[0]), float(center_xy[1])
+        yy, xx = _get_torch_meshgrid(gmag.device, h, w)
+        rr = torch.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
 
-    rmax = int(np.floor(min(h, w) * 0.5))
-    rmax = max(5, min(rmax, int(torch.max(rr).item())))
+        rmax = int(np.floor(min(h, w) * 0.5))
+        rmax = max(5, min(rmax, int(torch.max(rr).item())))
 
-    r_int = torch.clamp(rr.to(torch.int64), 0, rmax)
-    prof_sum = torch.bincount(r_int.reshape(-1), weights=gmag.reshape(-1).to(torch.float32), minlength=rmax + 1)
-    prof_cnt = torch.bincount(r_int.reshape(-1), minlength=rmax + 1).to(torch.float32)
-    prof = prof_sum / torch.clamp(prof_cnt, min=1.0)
-    prof = _smooth_1d_torch(prof, smooth_k)
+        r_int = torch.clamp(rr.to(torch.int64), 0, rmax)
+        prof_sum = torch.bincount(r_int.reshape(-1), weights=gmag.reshape(-1).to(torch.float32), minlength=rmax + 1)
+        prof_cnt = torch.bincount(r_int.reshape(-1), minlength=rmax + 1).to(torch.float32)
+        prof = prof_sum / torch.clamp(prof_cnt, min=1.0)
+        prof = _smooth_1d_torch(prof, smooth_k)
 
-    r0 = 3
-    r1 = rmax
-    if r1 <= r0 + 3:
-        return 2.0, float(rmax)
+        r0 = 3
+        r1 = rmax
+        if r1 <= r0 + 3:
+            return 2.0, float(rmax)
 
-    peak_r = int(torch.argmax(prof[r0:r1]).item()) + r0
-    peak_r = max(3, min(rmax, peak_r))
+        peak_r = int(torch.argmax(prof[r0:r1]).item()) + r0
+        peak_r = max(3, min(rmax, peak_r))
 
-    r_inner = float(np.clip(0.60 * float(peak_r), 2.0, float(rmax - 2)))
-    r_outer = float(np.clip(1.40 * float(peak_r), r_inner + 2.0, float(rmax)))
-    return r_inner, r_outer
+        r_inner = float(np.clip(0.60 * float(peak_r), 2.0, float(rmax - 2)))
+        r_outer = float(np.clip(1.40 * float(peak_r), r_inner + 2.0, float(rmax)))
+        return r_inner, r_outer
 
 
 def _detect_radial_symmetry_cuda_from_work(
@@ -527,6 +540,7 @@ def _detect_radial_symmetry_cuda_from_work(
     invert: bool,
     blur_sigma: float,
     radial_grad_threshold: float,
+    annulus_enabled: bool,
     annulus_r_inner_px: float | None,
     annulus_r_outer_px: float | None,
     annulus_auto: bool,
@@ -534,61 +548,67 @@ def _detect_radial_symmetry_cuda_from_work(
 ) -> Detection:
     import torch
 
-    h, w = work.shape
-    if h < 3 or w < 3:
-        return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
+    with ot_perf.record("tracking.rs.cuda"):
+        h, w = work.shape
+        if h < 3 or w < 3:
+            return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
 
-    work_t = _to_cuda_tensor(work)
-    gx = torch.zeros_like(work_t, dtype=torch.float32)
-    gy = torch.zeros_like(work_t, dtype=torch.float32)
+        work_t = _to_cuda_tensor(work)
+        gx = torch.zeros_like(work_t, dtype=torch.float32)
+        gy = torch.zeros_like(work_t, dtype=torch.float32)
 
-    gx[:, 1:-1] = 0.5 * (work_t[:, 2:] - work_t[:, :-2])
-    gx[:, 0] = work_t[:, 1] - work_t[:, 0]
-    gx[:, -1] = work_t[:, -1] - work_t[:, -2]
+        gx[:, 1:-1] = 0.5 * (work_t[:, 2:] - work_t[:, :-2])
+        gx[:, 0] = work_t[:, 1] - work_t[:, 0]
+        gx[:, -1] = work_t[:, -1] - work_t[:, -2]
 
-    gy[1:-1, :] = 0.5 * (work_t[2:, :] - work_t[:-2, :])
-    gy[0, :] = work_t[1, :] - work_t[0, :]
-    gy[-1, :] = work_t[-1, :] - work_t[-2, :]
+        gy[1:-1, :] = 0.5 * (work_t[2:, :] - work_t[:-2, :])
+        gy[0, :] = work_t[1, :] - work_t[0, :]
+        gy[-1, :] = work_t[-1, :] - work_t[-2, :]
 
-    gmag = torch.sqrt(gx * gx + gy * gy).to(torch.float32)
+        gmag = torch.sqrt(gx * gx + gy * gy).to(torch.float32)
 
-    cx0, cy0, q0, peak0 = _solve_rs_center_from_gradients_torch(
-        gx, gy, gmag,
-        radial_grad_threshold=radial_grad_threshold,
-        annulus_r_inner=None,
-        annulus_r_outer=None,
-        center_hint_xy=None,
-    )
-    if not np.isfinite(cx0) or not np.isfinite(cy0) or q0 <= 0:
-        return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
-
-    r_in = annulus_r_inner_px
-    r_out = annulus_r_outer_px
-    if annulus_auto or (r_in is None or r_out is None):
-        r_in_est, r_out_est = _estimate_annulus_from_gradient_profile_torch(
-            gmag, center_xy=(cx0, cy0), smooth_k=int(annulus_profile_smooth)
+        cx0, cy0, q0, peak0 = _solve_rs_center_from_gradients_torch(
+            gx, gy, gmag,
+            radial_grad_threshold=radial_grad_threshold,
+            annulus_r_inner=None,
+            annulus_r_outer=None,
+            center_hint_xy=None,
         )
-        if r_in is None:
-            r_in = r_in_est
-        if r_out is None:
-            r_out = r_out_est
+        if not np.isfinite(cx0) or not np.isfinite(cy0) or q0 <= 0:
+            return detect_intensity_peak(image, roi, invert=invert, blur_sigma=blur_sigma)
 
-    cx1, cy1, q1, peak1 = _solve_rs_center_from_gradients_torch(
-        gx, gy, gmag,
-        radial_grad_threshold=radial_grad_threshold,
-        annulus_r_inner=float(r_in) if r_in is not None else None,
-        annulus_r_outer=float(r_out) if r_out is not None else None,
-        center_hint_xy=(cx0, cy0),
-    )
+        if not annulus_enabled:
+            x = float(ox) + float(cx0)
+            y = float(oy) + float(cy0)
+            return Detection(x_px=x, y_px=y, quality=float(q0), peak=float(peak0))
 
-    if np.isfinite(cx1) and np.isfinite(cy1) and q1 > 0:
-        cx, cy, quality, peak = cx1, cy1, q1, peak1
-    else:
-        cx, cy, quality, peak = cx0, cy0, q0, peak0
+        r_in = annulus_r_inner_px
+        r_out = annulus_r_outer_px
+        if annulus_auto or (r_in is None or r_out is None):
+            r_in_est, r_out_est = _estimate_annulus_from_gradient_profile_torch(
+                gmag, center_xy=(cx0, cy0), smooth_k=int(annulus_profile_smooth)
+            )
+            if r_in is None:
+                r_in = r_in_est
+            if r_out is None:
+                r_out = r_out_est
 
-    x = float(ox) + float(cx)
-    y = float(oy) + float(cy)
-    return Detection(x_px=x, y_px=y, quality=float(quality), peak=float(peak))
+        cx1, cy1, q1, peak1 = _solve_rs_center_from_gradients_torch(
+            gx, gy, gmag,
+            radial_grad_threshold=radial_grad_threshold,
+            annulus_r_inner=float(r_in) if r_in is not None else None,
+            annulus_r_outer=float(r_out) if r_out is not None else None,
+            center_hint_xy=(cx0, cy0),
+        )
+
+        if np.isfinite(cx1) and np.isfinite(cy1) and q1 > 0:
+            cx, cy, quality, peak = cx1, cy1, q1, peak1
+        else:
+            cx, cy, quality, peak = cx0, cy0, q0, peak0
+
+        x = float(ox) + float(cx)
+        y = float(oy) + float(cy)
+        return Detection(x_px=x, y_px=y, quality=float(quality), peak=float(peak))
 
 
 def detect_radial_symmetry(
@@ -597,50 +617,101 @@ def detect_radial_symmetry(
     invert: bool = True,
     blur_sigma: float = 1.2,
     radial_grad_threshold: float = 2.0,
+    annulus_enabled: bool = True,
     annulus_r_inner_px: float | None = None,
     annulus_r_outer_px: float | None = None,
     annulus_auto: bool = True,
     annulus_profile_smooth: int = 3,
     compute_device: str = "cpu",
 ) -> Detection:
-    gray = _to_gray_u8(image)
-    roi_u8, (ox, oy) = _clip_roi(gray, roi)
+    with ot_perf.record("tracking.detect_radial_symmetry"):
+        gray = _to_gray_u8(image)
+        roi_u8, (ox, oy) = _clip_roi(gray, roi)
 
-    work_u8 = (255 - roi_u8).astype(np.uint8) if invert else roi_u8
-    work = _gaussian_blur_u8(work_u8, sigma=blur_sigma)
-    if str(compute_device).strip().lower() == "cuda":
-        try:
-            return _detect_radial_symmetry_cuda_from_work(
-                image=image,
-                roi=roi,
-                work=work,
-                ox=ox,
-                oy=oy,
-                invert=invert,
+        work_u8 = (255 - roi_u8).astype(np.uint8) if invert else roi_u8
+        work = _gaussian_blur_u8(work_u8, sigma=blur_sigma)
+        if str(compute_device).strip().lower() == "cuda":
+            try:
+                return _detect_radial_symmetry_cuda_from_work(
+                    image=image,
+                    roi=roi,
+                    work=work,
+                    ox=ox,
+                    oy=oy,
+                    invert=invert,
+                    blur_sigma=blur_sigma,
+                    radial_grad_threshold=radial_grad_threshold,
+                    annulus_enabled=annulus_enabled,
+                    annulus_r_inner_px=annulus_r_inner_px,
+                    annulus_r_outer_px=annulus_r_outer_px,
+                    annulus_auto=annulus_auto,
+                    annulus_profile_smooth=annulus_profile_smooth,
+                )
+            except Exception:
+                pass
+
+        return _detect_radial_symmetry_cpu_from_work(
+            image=image,
+            roi=roi,
+            work=work,
+            ox=ox,
+            oy=oy,
+            invert=invert,
+            blur_sigma=blur_sigma,
+            radial_grad_threshold=radial_grad_threshold,
+            annulus_enabled=annulus_enabled,
+            annulus_r_inner_px=annulus_r_inner_px,
+            annulus_r_outer_px=annulus_r_outer_px,
+            annulus_auto=annulus_auto,
+            annulus_profile_smooth=annulus_profile_smooth,
+        )
+
+
+def choose_tracking_polarity(
+    image: np.ndarray,
+    roi: Optional[Roi],
+    method: TrackingMethod = TrackingMethod.RADIAL_SYMMETRY,
+    blur_sigma: float = 1.2,
+    radial_grad_threshold: float = 2.0,
+    annulus_enabled: bool = True,
+    annulus_r_inner_px: float | None = None,
+    annulus_r_outer_px: float | None = None,
+    annulus_auto: bool = True,
+    annulus_profile_smooth: int = 3,
+    compute_device: str = "cpu",
+) -> tuple[bool, Detection]:
+    with ot_perf.record("tracking.choose_polarity"):
+        if method == TrackingMethod.INTENSITY_PEAK:
+            d1 = detect_intensity_peak(image, roi, invert=True, blur_sigma=blur_sigma)
+            d2 = detect_intensity_peak(image, roi, invert=False, blur_sigma=blur_sigma)
+        else:
+            d1 = detect_radial_symmetry(
+                image,
+                roi,
+                invert=True,
                 blur_sigma=blur_sigma,
                 radial_grad_threshold=radial_grad_threshold,
+                annulus_enabled=annulus_enabled,
                 annulus_r_inner_px=annulus_r_inner_px,
                 annulus_r_outer_px=annulus_r_outer_px,
                 annulus_auto=annulus_auto,
                 annulus_profile_smooth=annulus_profile_smooth,
+                compute_device=compute_device,
             )
-        except Exception:
-            pass
-
-    return _detect_radial_symmetry_cpu_from_work(
-        image=image,
-        roi=roi,
-        work=work,
-        ox=ox,
-        oy=oy,
-        invert=invert,
-        blur_sigma=blur_sigma,
-        radial_grad_threshold=radial_grad_threshold,
-        annulus_r_inner_px=annulus_r_inner_px,
-        annulus_r_outer_px=annulus_r_outer_px,
-        annulus_auto=annulus_auto,
-        annulus_profile_smooth=annulus_profile_smooth,
-    )
+            d2 = detect_radial_symmetry(
+                image,
+                roi,
+                invert=False,
+                blur_sigma=blur_sigma,
+                radial_grad_threshold=radial_grad_threshold,
+                annulus_enabled=annulus_enabled,
+                annulus_r_inner_px=annulus_r_inner_px,
+                annulus_r_outer_px=annulus_r_outer_px,
+                annulus_auto=annulus_auto,
+                annulus_profile_smooth=annulus_profile_smooth,
+                compute_device=compute_device,
+            )
+        return (True, d1) if d1.quality >= d2.quality else (False, d2)
 
 
 def track_particle(
@@ -651,6 +722,7 @@ def track_particle(
     blur_sigma: float = 1.2,
     radial_grad_threshold: float = 2.0,
     auto_polarity: bool = True,
+    annulus_enabled: bool = True,
     annulus_r_inner_px: float | None = None,
     annulus_r_outer_px: float | None = None,
     annulus_auto: bool = True,
@@ -666,6 +738,7 @@ def track_particle(
             invert=invert_flag,
             blur_sigma=blur_sigma,
             radial_grad_threshold=radial_grad_threshold,
+            annulus_enabled=annulus_enabled,
             annulus_r_inner_px=annulus_r_inner_px,
             annulus_r_outer_px=annulus_r_outer_px,
             annulus_auto=annulus_auto,
@@ -673,9 +746,22 @@ def track_particle(
             compute_device=compute_device,
         )
 
-    if not auto_polarity:
-        return _run(bool(invert))
+    with ot_perf.record("tracking.track_particle"):
+        if not auto_polarity:
+            return _run(bool(invert))
 
-    d1 = _run(True)
-    d2 = _run(False)
-    return d1 if d1.quality >= d2.quality else d2
+        chosen_invert, chosen_det = choose_tracking_polarity(
+            image,
+            roi,
+            method=method,
+            blur_sigma=blur_sigma,
+            radial_grad_threshold=radial_grad_threshold,
+            annulus_enabled=annulus_enabled,
+            annulus_r_inner_px=annulus_r_inner_px,
+            annulus_r_outer_px=annulus_r_outer_px,
+            annulus_auto=annulus_auto,
+            annulus_profile_smooth=annulus_profile_smooth,
+            compute_device=compute_device,
+        )
+        _ = chosen_invert
+        return chosen_det

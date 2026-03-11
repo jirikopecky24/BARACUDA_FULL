@@ -603,9 +603,11 @@ class PipelinePanel(QWidget):
         self._compute_backend.addItems(["Auto", "CPU", "GPU"])
         self._compute_backend.setCurrentText("CPU")
         self._compute_backend.setToolTip(
-            "Select requested OT compute profile. "
-            "RADIAL_SYMMETRY tracking may use CUDA when available; "
-            "other OT processing still runs on CPU."
+            "Choose the requested OT tracking backend.\n"
+            "Auto: prefers GPU when CUDA RADIAL_SYMMETRY tracking is available.\n"
+            "CPU: usually the safest choice and often faster for very small ROI.\n"
+            "GPU: may help on larger ROI, but small ROI can be slower because of overhead.\n"
+            "Only RADIAL_SYMMETRY tracking may use CUDA; other OT processing still runs on CPU."
         )
         self._compute_backend_status = QLabel("")
         self._compute_backend_status.setWordWrap(True)
@@ -940,6 +942,13 @@ class PipelinePanel(QWidget):
         requested = str(resolved.get("requested_profile", "cpu")).upper()
         resolved_profile = str(resolved.get("resolved_profile", "cpu")).upper()
         lines = [f"Requested: {requested} | Resolved: {resolved_profile}"]
+
+        if requested == "AUTO":
+            lines.append("Auto prefers GPU when CUDA tracking is available.")
+        elif requested == "CPU":
+            lines.append("CPU is often faster for very small ROI.")
+        elif requested == "GPU":
+            lines.append("GPU may help on larger ROI, but small ROI can be slower.")
 
         if resolved.get("resolved_device") == "cuda":
             gpu_name = str(resolved.get("gpu_name", "unknown"))

@@ -9,10 +9,11 @@ from barakuda.core.video_reader import VideoReader
 from barakuda.core.calibration_store import load_dataset_scale
 
 # Pipeline
-from barakuda.devices.optical_tweezers.pipeline.tracking import track_particle, Roi, roi_follow_center, TrackingMethod
+from barakuda.devices.optical_tweezers.pipeline.tracking import choose_tracking_polarity, track_particle, Roi, roi_follow_center, TrackingMethod
 from barakuda.devices.optical_tweezers.pipeline.preprocess import preprocess_trajectory
 from barakuda.devices.optical_tweezers.pipeline.qc import compute_qc
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
+from barakuda.devices.optical_tweezers import perf as ot_perf
 
 # Strategies
 from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrategy
@@ -49,6 +50,8 @@ class OTPipeline:
         
         self.log_fn(f"[OTv2.1] Starting pipeline for {video_path}")
         start_time = time.time()
+        if ot_perf.enabled():
+            ot_perf.clear()
         progress_cb = run_config.get("progress_cb")
         log_progress = run_config.get("log_progress")
         should_stop = run_config.get("should_stop")
@@ -148,6 +151,7 @@ class OTPipeline:
         
         adaptive_roi = tc.get("adaptive_roi", True)
         method = TrackingMethod(tc.get("method", "RADIAL_SYMMETRY"))
+        annulus_enabled = bool(tc.get("annulus_enabled", True))
         
         t_s = []
         x_px = []
@@ -157,26 +161,47 @@ class OTPipeline:
         roi_x, roi_y, roi_w, roi_h = [], [], [], []
         total_frames = max(1, e - s + 1)
         last_heartbeat = time.monotonic()
+        locked_invert = bool(tc.get("invert", True))
+        locked_det = None
         
         try:
             for fi in range(s, e + 1):
                 if _stop_requested():
                     raise InterruptedError("OT shadow stopped by request.")
                 frame = reader.get_frame(fi)
-                det = track_particle(
-                    frame,
-                    roi_obj,
-                    method=method,
-                    compute_device=str(resolved_runtime.get("resolved_device", "cpu")),
-                    invert=tc.get("invert", True),
-                    blur_sigma=tc.get("blur_sigma", 1.2),
-                    radial_grad_threshold=tc.get("radial_grad_threshold", 2.0),
-                    auto_polarity=tc.get("auto_polarity", True),
-                    annulus_auto=tc.get("annulus_auto", True),
-                    annulus_r_inner_px=tc.get("annulus_r_inner_px", None),
-                    annulus_r_outer_px=tc.get("annulus_r_outer_px", None),
-                    annulus_profile_smooth=tc.get("annulus_profile_smooth", 3),
-                )
+                if locked_det is None:
+                    locked_invert, locked_det = choose_tracking_polarity(
+                        frame,
+                        roi_obj,
+                        method=method,
+                        blur_sigma=tc.get("blur_sigma", 1.2),
+                        radial_grad_threshold=tc.get("radial_grad_threshold", 2.0),
+                        annulus_enabled=annulus_enabled,
+                        annulus_auto=tc.get("annulus_auto", True) if annulus_enabled else False,
+                        annulus_r_inner_px=tc.get("annulus_r_inner_px", None),
+                        annulus_r_outer_px=tc.get("annulus_r_outer_px", None),
+                        annulus_profile_smooth=tc.get("annulus_profile_smooth", 3),
+                        compute_device=str(resolved_runtime.get("resolved_device", "cpu")),
+                    ) if bool(tc.get("auto_polarity", True)) else (bool(tc.get("invert", True)), None)
+                if fi == s and locked_det is not None:
+                    det = locked_det
+                    locked_det = None
+                else:
+                    det = track_particle(
+                        frame,
+                        roi_obj,
+                        method=method,
+                        compute_device=str(resolved_runtime.get("resolved_device", "cpu")),
+                        invert=locked_invert,
+                        blur_sigma=tc.get("blur_sigma", 1.2),
+                        radial_grad_threshold=tc.get("radial_grad_threshold", 2.0),
+                        auto_polarity=False,
+                        annulus_enabled=annulus_enabled,
+                        annulus_auto=tc.get("annulus_auto", True) if annulus_enabled else False,
+                        annulus_r_inner_px=tc.get("annulus_r_inner_px", None),
+                        annulus_r_outer_px=tc.get("annulus_r_outer_px", None),
+                        annulus_profile_smooth=tc.get("annulus_profile_smooth", 3),
+                    )
                 
                 t_s.append(fi / fps if fps > 0 else 0.0)
                 x_px.append(det.x_px)
@@ -261,6 +286,8 @@ class OTPipeline:
         
         elapsed = time.time() - start_time
         self.log_fn(f"[OTv2.1] Pipeline completed in {elapsed:.2f}s")
+        if ot_perf.enabled():
+            self.log_fn(f"[OT perf] orchestrator:{video_path}: {ot_perf.snapshot(reset=True)}")
         _emit_progress(100, "done")
         
         return result_dict

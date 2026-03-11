@@ -7,6 +7,8 @@ from typing import Optional
 import json as _json
 import numpy as np
 
+from barakuda.devices.optical_tweezers import perf as ot_perf
+
 
 @dataclass(frozen=True)
 class VideoMeta:
@@ -64,55 +66,56 @@ class VideoReader:
         return self._meta
 
     def get_frame(self, i: int) -> np.ndarray:
-        # --- RAW path ---
-        if self._raw_mmap is not None:
+        with ot_perf.record("video_reader.get_frame"):
+            # --- RAW path ---
+            if self._raw_mmap is not None:
+                meta = self.meta
+                if meta.frame_count > 0:
+                    i = max(0, min(int(i), meta.frame_count - 1))
+                else:
+                    i = max(0, int(i))
+                if self._last_i == i and self._last_rgb is not None:
+                    return self._last_rgb
+                gray = self._raw_mmap[i]
+                frame_rgb = np.stack([gray, gray, gray], axis=-1)
+                self._last_i = i
+                self._last_rgb = frame_rgb.astype(np.uint8, copy=False)
+                return self._last_rgb
+
+            # --- AVI / standard video path ---
+            if self._cap is None:
+                raise RuntimeError("VideoReader není otevřený (cap=None).")
+
+            import cv2
+
             meta = self.meta
             if meta.frame_count > 0:
                 i = max(0, min(int(i), meta.frame_count - 1))
             else:
                 i = max(0, int(i))
+
             if self._last_i == i and self._last_rgb is not None:
                 return self._last_rgb
-            gray = self._raw_mmap[i]
-            frame_rgb = np.stack([gray, gray, gray], axis=-1)
+
+            # rychlá cesta: sekvenční čtení
+            if self._last_i is not None and i == self._last_i + 1:
+                ok, frame_bgr = self._cap.read()
+                if not ok or frame_bgr is None:
+                    raise RuntimeError(f"Nelze načíst frame {i} (sekvenčně) z videa: {self.path}")
+            else:
+                # seek
+                ok = self._cap.set(cv2.CAP_PROP_POS_FRAMES, float(i))
+                if not ok:
+                    pass
+                ok, frame_bgr = self._cap.read()
+                if not ok or frame_bgr is None:
+                    raise RuntimeError(f"Nelze načíst frame {i} z videa: {self.path}")
+
+            frame_rgb = frame_bgr[:, :, ::-1].copy()
+
             self._last_i = i
             self._last_rgb = frame_rgb.astype(np.uint8, copy=False)
             return self._last_rgb
-
-        # --- AVI / standard video path ---
-        if self._cap is None:
-            raise RuntimeError("VideoReader není otevřený (cap=None).")
-
-        import cv2
-
-        meta = self.meta
-        if meta.frame_count > 0:
-            i = max(0, min(int(i), meta.frame_count - 1))
-        else:
-            i = max(0, int(i))
-
-        if self._last_i == i and self._last_rgb is not None:
-            return self._last_rgb
-
-        # rychlá cesta: sekvenční čtení
-        if self._last_i is not None and i == self._last_i + 1:
-            ok, frame_bgr = self._cap.read()
-            if not ok or frame_bgr is None:
-                raise RuntimeError(f"Nelze načíst frame {i} (sekvenčně) z videa: {self.path}")
-        else:
-            # seek
-            ok = self._cap.set(cv2.CAP_PROP_POS_FRAMES, float(i))
-            if not ok:
-                pass
-            ok, frame_bgr = self._cap.read()
-            if not ok or frame_bgr is None:
-                raise RuntimeError(f"Nelze načíst frame {i} z videa: {self.path}")
-
-        frame_rgb = frame_bgr[:, :, ::-1].copy()
-
-        self._last_i = i
-        self._last_rgb = frame_rgb.astype(np.uint8, copy=False)
-        return self._last_rgb
 
     def _open(self) -> None:
         # --- RAW binary format ---
