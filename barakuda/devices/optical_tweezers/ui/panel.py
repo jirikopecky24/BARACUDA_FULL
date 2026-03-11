@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
     QSizePolicy, QAbstractSpinBox, QTabWidget
 )
+from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
 
 class NoWheelValueChangeFilter(QObject):
     """Event filter that blocks mouse wheel from changing values in scrollable panels."""
@@ -601,22 +602,18 @@ class PipelinePanel(QWidget):
         self._compute_backend = QComboBox()
         self._compute_backend.addItems(["Auto", "CPU", "GPU"])
         self._compute_backend.setCurrentText("CPU")
-        self._compute_backend.setEnabled(False)
-        self._compute_backend.setToolTip("OT pipeline currently supports CPU only.")
-
-        # Advanced Master Toggle
-        self._master_advanced = QCheckBox("Advanced options")
-        self._master_advanced.setToolTip("Show experimental / advanced options across all tabs.")
-        self._master_advanced.setChecked(False)
-
-        def _on_master_advanced_toggled(checked: bool):
-            self._trk_advanced.setChecked(checked)
-            self._pp_advanced.setChecked(checked)
-
-        self._master_advanced.toggled.connect(_on_master_advanced_toggled)
+        self._compute_backend.setToolTip(
+            "Select requested OT compute profile. "
+            "This branch keeps OT execution safely on CPU, "
+            "but shows runtime resolution and detected GPU details."
+        )
+        self._compute_backend_status = QLabel("")
+        self._compute_backend_status.setWordWrap(True)
+        self._compute_backend_status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._compute_backend_status.setStyleSheet("color: #666; font-size: 11px;")
 
         settings_box_layout.addRow("Compute backend", self._compute_backend)
-        settings_box_layout.addRow("", self._master_advanced)
+        settings_box_layout.addRow("", self._compute_backend_status)
 
         scroll_set = QScrollArea()
         scroll_set.setWidgetResizable(True)
@@ -650,6 +647,8 @@ class PipelinePanel(QWidget):
         # so _wire_value_changed_signals cannot destroy them.
         self._trk_advanced.toggled.connect(_on_trk_advanced_toggled)
         self._pp_advanced.toggled.connect(_on_advanced_toggled)
+        self.value_changed.connect(self._refresh_compute_backend_status)
+        self._refresh_compute_backend_status()
 
     def apply_ot_defaults(self) -> None:
         """Apply requested sensible defaults to the OT user parameters."""
@@ -702,10 +701,11 @@ class PipelinePanel(QWidget):
         self._bead_diameter_um.setValue(1.0)
 
         # Settings Defaults
-        if hasattr(self, '_master_advanced'):
-            self._master_advanced.setChecked(False)
+        self._trk_advanced.setChecked(False)
+        self._pp_advanced.setChecked(False)
         if hasattr(self, '_compute_backend'):
             self._compute_backend.setCurrentText("CPU")
+        self._refresh_compute_backend_status()
         
         self._wire_value_changed_signals()
 
@@ -808,6 +808,11 @@ class PipelinePanel(QWidget):
         self._annulus_r_outer.setValue(tp.get("annulus_r_outer_px") or 0.0)
         self._annulus_profile_smooth.setValue(tp.get("annulus_profile_smooth", 3))
         self._fps_override.setValue(tp.get("fps_override", 0.0))
+        _cp = str(tp.get("compute_profile", "cpu")).strip().lower()
+        _cp_text = {"auto": "Auto", "cpu": "CPU", "gpu": "GPU"}.get(_cp, "CPU")
+        _cp_idx = self._compute_backend.findText(_cp_text)
+        if _cp_idx >= 0:
+            self._compute_backend.setCurrentIndex(_cp_idx)
 
         pp = d.get("postprocess", {})
         self._pp_enabled.setChecked(pp.get("enabled", True))
@@ -900,7 +905,7 @@ class PipelinePanel(QWidget):
             
         pms = {
             "method": "RADIAL_SYMMETRY",
-            "compute_profile": "auto",
+            "compute_profile": self.get_compute_profile(),
             "roi_margin": float(self._roi_margin.value()),
             "adaptive_roi": bool(self._adaptive_roi.isChecked()),
             "invert": bool(self._invert.isChecked()),
@@ -924,9 +929,31 @@ class PipelinePanel(QWidget):
 
         return pms
 
+    def get_compute_profile(self) -> str:
+        txt = str(self._compute_backend.currentText()).strip().lower()
+        if txt in {"auto", "cpu", "gpu"}:
+            return txt
+        return "cpu"
+
+    def _refresh_compute_backend_status(self) -> None:
+        resolved = resolve_compute_profile(self.get_compute_profile())
+        requested = str(resolved.get("requested_profile", "cpu")).upper()
+        resolved_profile = str(resolved.get("resolved_profile", "cpu")).upper()
+        lines = [f"Requested: {requested} | Resolved: {resolved_profile}"]
+
+        if bool(resolved.get("cuda_available")):
+            gpu_name = str(resolved.get("gpu_name", "unknown"))
+            lines.append(f"Detected CUDA GPU: {gpu_name}")
+
+        fallback_reason = str(resolved.get("fallback_reason", "")).strip()
+        if fallback_reason:
+            lines.append(fallback_reason)
+
+        self._compute_backend_status.setText("\n".join(lines))
+
     def get_postprocess_params(self) -> dict:
         mode = getattr(self, "_calibration_mode", "Brownian")
-        is_adv = bool(self._master_advanced.isChecked()) if hasattr(self, '_master_advanced') else False
+        is_adv = bool(self._pp_advanced.isChecked())
         
         params = {
             "enabled": bool(self._pp_enabled.isChecked()),

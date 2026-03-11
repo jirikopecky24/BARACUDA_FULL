@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Callable
 
 import csv
 import json
+import os
 import re
 import shutil
 import time
@@ -23,6 +24,7 @@ from barakuda.core.export_xlsx import export_ot_results_xlsx
 from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams
 from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, kappa_from_fc_n_per_m
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
+from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
 
 from barakuda.core.tracking import track_particle, Roi, TrackingMethod, roi_follow_center
 
@@ -150,6 +152,42 @@ class BatchController:
         """Request cooperative stop of the running batch."""
         self._stop_requested = True
         self._log("STOP requested: batch will stop at the next safe checkpoint.")
+
+    def _resolve_ot_runtime(self, tracking_params: dict[str, Any]) -> dict[str, Any]:
+        method_str = str(tracking_params.get("method", "RADIAL_SYMMETRY"))
+        profile = str(tracking_params.get("compute_profile", "cpu"))
+        return resolve_compute_profile(profile, method_str)
+
+    def _get_ot_shadow_mode(self) -> str:
+        shadow_mode = str(os.getenv("BARAKUDA_OT_SHADOW_MODE", "off")).strip().lower()
+        if shadow_mode not in {"off", "full"}:
+            shadow_mode = "off"
+        return shadow_mode
+
+    @staticmethod
+    def _shadow_progress_span() -> tuple[int, int]:
+        return (0, 25)
+
+    @staticmethod
+    def _main_progress_span() -> tuple[int, int]:
+        return (25, 100)
+
+    def _emit_main_progress(
+        self,
+        progress_fn: Callable[[int, int, str, int], None],
+        done: int,
+        total: int,
+        filename: str,
+        pct: int,
+        shadow_mode: str,
+    ) -> None:
+        if str(shadow_mode).lower() == "full":
+            base, end = self._main_progress_span()
+        else:
+            base, end = (0, 100)
+        pct = max(0, min(100, int(pct)))
+        mapped = base + int((end - base) * (pct / 100.0))
+        progress_fn(done, total, filename, mapped)
 
     # ---------------- Preview Gate ----------------
 
@@ -372,6 +410,16 @@ class BatchController:
                 results.append(PreviewResult(str(p), False, "FAIL", f"Cannot read tracking params: {e}", details))
                 QApplication.processEvents()
                 continue
+
+            ot_runtime = self._resolve_ot_runtime(params)
+            details["compute_runtime"] = {
+                "requested_profile": ot_runtime.get("requested_profile"),
+                "resolved_profile": ot_runtime.get("resolved_profile"),
+                "resolved_device": ot_runtime.get("resolved_device"),
+                "fallback_reason": ot_runtime.get("fallback_reason"),
+                "cuda_available": ot_runtime.get("cuda_available"),
+                "gpu_name": ot_runtime.get("gpu_name"),
+            }
 
             samples: list[Dict[str, Any]] = []
             pass_count = 0
@@ -646,6 +694,8 @@ class BatchController:
             post_params = device_panel.get_postprocess_params()
             post_params.setdefault("temperature_c", 25.0)
             post_params.setdefault("bead_diameter_um", 1.0)
+            ot_runtime = self._resolve_ot_runtime(tracking_params)
+            shadow_mode = self._get_ot_shadow_mode()
             
             scale_params = device_panel.get_scale_params()
             start_frame, end_frame = device_panel.get_frame_range()
@@ -751,6 +801,7 @@ class BatchController:
                     "device": {"id": "optical_tweezers"},
                     "tracking": {
                         "method": method.value,
+                        "compute_profile": str(tracking_params.get("compute_profile", "cpu")),
                         "auto_polarity": auto_pol,
                         "invert": invert,
                         "blur_sigma": blur_sigma,
@@ -785,6 +836,20 @@ class BatchController:
                         "bead_diameter_um": float(pp.bead_diameter_um),
                     },
                 }
+
+                self._log(
+                    "[OT runtime] requested="
+                    f"{str(ot_runtime.get('requested_profile', 'cpu')).upper()} "
+                    "resolved="
+                    f"{str(ot_runtime.get('resolved_profile', 'cpu')).upper()} "
+                    f"device={ot_runtime.get('resolved_device', 'cpu')}"
+                )
+                if bool(ot_runtime.get("cuda_available")):
+                    self._log(f"[OT runtime] detected CUDA GPU: {ot_runtime.get('gpu_name', 'unknown')}")
+                fallback_reason = str(ot_runtime.get("fallback_reason", "")).strip()
+                if fallback_reason:
+                    self._log(f"[OT runtime] {fallback_reason}")
+                self._log(f"[OT shadow] mode={shadow_mode}")
 
                 stem = Path(file_path).stem
 
@@ -848,7 +913,7 @@ class BatchController:
                         (run_dir / _d).mkdir(parents=True, exist_ok=True)
                 
                 # --- OT Pipeline v2.1 Shadow Run ---
-                if True:
+                if shadow_mode == "full":
                     def _trace(msg: str) -> None:
                         try:
                             with open("ot_shadow_trace.log", "a", encoding="utf-8") as f:
@@ -897,13 +962,27 @@ class BatchController:
                                 "q_min": float(post_params.get("q_min", 0.0)),
                                 "jump_max_px": float(post_params.get("jump_max_px", 50.0))
                             },
-                            "strategy_params": post_params
+                            "strategy_params": post_params,
+                            "runtime": ot_runtime,
+                            "progress_cb": lambda pct: progress_fn(
+                                done,
+                                len(ok_paths),
+                                file_path.name,
+                                self._shadow_progress_span()[0]
+                                + int((self._shadow_progress_span()[1] - self._shadow_progress_span()[0]) * (max(0, min(100, int(pct))) / 100.0)),
+                            ),
+                            "log_progress": True,
+                            "should_stop": lambda: self._stop_requested,
                         }
                         
                         pipeline.run(str(file_path), shadow_config)
                         
                         _trace("EXIT shadow OK")
                         self._log(f"[OT shadow] OTPipeline finished successfully for {file_path.name}.")
+                    except InterruptedError:
+                        _trace("EXIT shadow STOP")
+                        self._stop_requested = True
+                        self._log(f"[OT shadow] OTPipeline stopped for {file_path.name}.")
                     except Exception as err:
                         _trace(f"EXIT shadow FAIL: {err!r}")
                         import traceback
@@ -959,7 +1038,7 @@ class BatchController:
                         frame_idx = fi - s
                         if frame_idx % 10 == 0 or fi == e:
                             pct = int(100 * frame_idx / total_frames)
-                            progress_fn(done, len(ok_paths), file_path.name, pct)
+                            self._emit_main_progress(progress_fn, done, len(ok_paths), file_path.name, pct, shadow_mode)
 
                         frame = reader.get_frame(fi)
                         roi_obj = current_roi
