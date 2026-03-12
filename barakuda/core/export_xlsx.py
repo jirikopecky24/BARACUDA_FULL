@@ -107,6 +107,7 @@ def export_ot_results_xlsx(
 
     try:
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment
         from openpyxl.chart import BarChart, Reference, ScatterChart, Series
         from openpyxl.utils import get_column_letter
     except Exception as e:
@@ -373,6 +374,9 @@ def export_ot_results_xlsx(
     ws_summary.append(["Group", "Metric", "Value", "Unit", "Notes"])
     for group, metric, value, unit, notes in build_ot_summary_rows(summary_payload):
         ws_summary.append([group, metric, value, unit, notes])
+    for row in ws_summary.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
     _format_sheet(ws_summary)
     sheet_by_key["summary"] = ws_summary
 

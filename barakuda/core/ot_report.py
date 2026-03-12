@@ -536,18 +536,28 @@ def _build_image_entry(label: str, path_value: str | None) -> tuple[str, Path] |
 
 def _style_table(table, body_font_size: int = 9, header_font_size: int = 10) -> None:
     table.auto_set_font_size(False)
+    row_line_counts: dict[int, int] = {}
     for (row_idx, _col_idx), cell in table.get_celld().items():
+        text_obj = cell.get_text()
+        text_obj.set_wrap(True)
+        text_obj.set_ha("left")
+        text_obj.set_va("center")
+        line_count = max(1, str(text_obj.get_text() or "").count("\n") + 1)
+        row_line_counts[row_idx] = max(row_line_counts.get(row_idx, 1), line_count)
         cell.set_linewidth(0.6)
         cell.set_edgecolor(LINE_COLOR)
         if row_idx == 0:
             cell.set_facecolor(BRAND_COLOR)
-            cell.get_text().set_color("white")
-            cell.get_text().set_fontsize(header_font_size)
-            cell.get_text().set_fontweight("bold")
+            text_obj.set_color("white")
+            text_obj.set_fontsize(header_font_size)
+            text_obj.set_fontweight("bold")
         else:
             cell.set_facecolor(LIGHT_BG if row_idx % 2 == 0 else "white")
-            cell.get_text().set_fontsize(body_font_size)
-            cell.get_text().set_color(TEXT_COLOR)
+            text_obj.set_fontsize(body_font_size)
+            text_obj.set_color(TEXT_COLOR)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        base_height = 0.055 if row_idx == 0 else 0.048
+        cell.set_height(base_height * row_line_counts.get(row_idx, 1))
 
 
 def _add_brand_header(fig, title: str, subtitle: str | None = None, page_note: str | None = None) -> None:
