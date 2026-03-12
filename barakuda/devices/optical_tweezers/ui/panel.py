@@ -224,11 +224,11 @@ class PipelinePanel(QWidget):
         self._default_run_output_root = Path(__file__).resolve().parents[4] / "runs" / "ot"
         self._run_output_root = QLineEdit(str(self._default_run_output_root))
         self._run_output_root.setToolTip(
-            "Base folder for new non-dataset OT batch runs. "
-            "Dataset-mode runs still write into the existing dataset."
+            "Root folder where all OT analyses are saved. "
+            "Each run creates an OT batch/item layout under this location."
         )
         self._btn_browse_run_output_root = QPushButton("…")
-        self._btn_browse_run_output_root.setToolTip("Choose Output Root for new non-dataset OT runs.")
+        self._btn_browse_run_output_root.setToolTip("Choose where OT saves all analysis outputs.")
         self._btn_browse_run_output_root.setFixedWidth(32)
         self._btn_browse_run_output_root.clicked.connect(self._on_browse_run_output_root)
 
@@ -1194,7 +1194,7 @@ class PipelinePanel(QWidget):
             self._export_status_lbl.setText("\n".join(lines))
             self._export_files_lbl.setText("")
 
-            artifacts = discover_analysis_artifacts(m.item_root)
+            artifacts = discover_analysis_artifacts(m.item_root, analysis_dir=m.analysis_dir)
             self._export_artifacts = artifacts
             self._refresh_export_artifact_checkboxes(artifacts)
 
@@ -1241,6 +1241,7 @@ class PipelinePanel(QWidget):
     def _on_export_all_clicked(self) -> None:
         from pathlib import Path as _Path
         import shutil as _shutil
+        from barakuda.devices.optical_tweezers.manifest import load_item_manifest
 
         paths_to_export = (
             self._export_paths
@@ -1273,6 +1274,7 @@ class PipelinePanel(QWidget):
                     continue
 
                 item_root = item_json.parent
+                manifest = load_item_manifest(item_json)
                 # Collect selected artifacts that exist for this dataset
                 to_copy: list[tuple[str, dict]] = []
                 for aid, cb in self._export_artifact_checkboxes.items():
@@ -1281,7 +1283,11 @@ class PipelinePanel(QWidget):
                     art = art_by_id.get(aid)
                     if not art:
                         continue
-                    src = item_root / art["path"]
+                    analysis_rel_path = art.get("analysis_rel_path")
+                    if analysis_rel_path and manifest.analysis_dir is not None:
+                        src = manifest.analysis_dir / analysis_rel_path
+                    else:
+                        src = item_root / art["path"]
                     if not src.is_file():
                         continue
                     to_copy.append((aid, art))
@@ -1292,7 +1298,11 @@ class PipelinePanel(QWidget):
                 exports_dir = item_root / "exports"
                 exports_dir.mkdir(parents=True, exist_ok=True)
                 for aid, art in to_copy:
-                    src = item_root / art["path"]
+                    analysis_rel_path = art.get("analysis_rel_path")
+                    if analysis_rel_path and manifest.analysis_dir is not None:
+                        src = manifest.analysis_dir / analysis_rel_path
+                    else:
+                        src = item_root / art["path"]
                     dst = exports_dir / _Path(art["path"]).name
                     _shutil.copy2(src, dst)
                     total_copied += 1

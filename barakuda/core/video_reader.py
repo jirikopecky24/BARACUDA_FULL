@@ -181,11 +181,16 @@ class VideoReader:
 
     def _open_raw(self) -> None:
         """Open a .raw recording using memmap + sibling _meta.json."""
-        meta_path = self.path.parent / (self.path.stem + "_meta.json")
-        if not meta_path.exists():
+        meta_candidates = [
+            self.path.parent / (self.path.stem + "_meta.json"),
+            self.path.parent / "video_meta.json",
+            self.path.parent / (self.path.name + "_meta.json"),
+        ]
+        meta_path = next((p for p in meta_candidates if p.exists()), None)
+        if meta_path is None:
             raise RuntimeError(
-                f"RAW meta not found: {meta_path}\n"
-                "Expected <basename>_meta.json next to the .raw file."
+                "RAW meta not found next to the .raw file.\n"
+                f"Tried: {', '.join(str(p) for p in meta_candidates)}"
             )
 
         with open(meta_path, "r", encoding="utf-8") as f:

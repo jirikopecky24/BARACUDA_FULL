@@ -489,6 +489,7 @@ class BaslerCamera(AbstractCamera):
         self.stop_preview()
 
         # Snap ROI
+        req_w, req_h, req_ox, req_oy = roi
         w, h, ox, oy = self.snap_roi(*roi)
 
         # Apply camera settings
@@ -611,6 +612,7 @@ class BaslerCamera(AbstractCamera):
             "gain": actual_gain,
             "full_frame_w": self._sensor_w,
             "full_frame_h": self._sensor_h,
+            "requested_roi": {"x": req_ox, "y": req_oy, "w": req_w, "h": req_h},
             "record_roi": {"x": ox, "y": oy, "w": w, "h": h},
             "pixel_format": pixel_format,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -732,6 +734,7 @@ class BaslerCamera(AbstractCamera):
         self._require_connected()
         self.stop_preview()
 
+        req_w, req_h, req_ox, req_oy = roi
         w, h, ox, oy = self.snap_roi(*roi)
         self._apply_roi(w, h, ox, oy)
         self._set_exposure(exposure_us)
@@ -840,6 +843,7 @@ class BaslerCamera(AbstractCamera):
             "gain": actual_gain,
             "full_frame_w": self._sensor_w,
             "full_frame_h": self._sensor_h,
+            "requested_roi": {"x": req_ox, "y": req_oy, "w": req_w, "h": req_h},
             "record_roi": {"x": ox, "y": oy, "w": w, "h": h},
             "pixel_format": pixel_format,
             "frame_bytes": frame_bytes,
