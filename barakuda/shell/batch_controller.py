@@ -21,12 +21,18 @@ from barakuda.core.video_io import is_video_file
 from barakuda.core.run_manager import RunManager
 from barakuda.core.calibration_store import load_dataset_scale
 from barakuda.core.export_xlsx import export_ot_results_xlsx
+from barakuda.core.ot_report import (
+    build_ot_item_summary,
+    export_ot_batch_pdf,
+    export_ot_item_pdf,
+)
 from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams
 from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, kappa_from_fc_n_per_m
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
 from barakuda.core.tracking import Detection, choose_tracking_polarity, track_particle, Roi, TrackingMethod, roi_follow_center
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
+from barakuda.devices.optical_tweezers.manifest import resolve_ot_input_path
 from barakuda.devices.optical_tweezers import perf as ot_perf
 
 
@@ -38,6 +44,14 @@ class PreviewResult:
     status: str
     message: str
     details: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class OTBatchInput:
+    original_path: Path
+    resolved_video_path: Optional[Path]
+    item_json_path: Optional[Path] = None
+    item_root: Optional[Path] = None
 
 
 class BatchController:
@@ -118,6 +132,22 @@ class BatchController:
 
         tagged.sort(key=lambda x: (x[0], x[1], x[2]))
         return [Path(s) for _, _, s in tagged]
+
+    def _pairing_sort_key(self, p: Path) -> tuple[str, float, str]:
+        t = self._parse_capture_tokens(p)
+        if t.get("ok"):
+            return (str(t["key"]), float(t["speed"]), str(p))
+        return ("~", 1e99, str(p))
+
+    @staticmethod
+    def _normalize_ot_input(path: Path | str) -> OTBatchInput:
+        resolved = resolve_ot_input_path(path)
+        return OTBatchInput(
+            original_path=Path(path),
+            resolved_video_path=resolved.video_path,
+            item_json_path=resolved.item_json_path,
+            item_root=resolved.item_root,
+        )
 
     def _mean_axis_um(self, trajectory_csv: Path, axis: str, um_per_px: float, fraction: float, tail: bool) -> float:
         """
@@ -336,31 +366,32 @@ class BatchController:
                 results.append(PreviewResult(str(p), False, "FAIL", "File not found", {}))
                 continue
 
-            # OT dataset manifest: resolve item.json → acquisition video path.
-            # The resolved video path is used for all subsequent gate operations.
-            # PreviewResult stores the resolved video path so run_batch receives it.
-            if device_id == "optical_tweezers" and p.name == "item.json":
+            original_input_path = p
+            resolved_item_root: Optional[Path] = None
+            resolved_item_json: Optional[Path] = None
+            if device_id == "optical_tweezers":
                 try:
-                    from barakuda.devices.optical_tweezers.manifest import load_item_manifest
-                    _mf = load_item_manifest(p)
-                    if _mf.video_path is not None:
-                        p = _mf.video_path
-                    else:
+                    normalized = self._normalize_ot_input(p)
+                    resolved_item_root = normalized.item_root
+                    resolved_item_json = normalized.item_json_path
+                    if normalized.resolved_video_path is not None and normalized.resolved_video_path.exists():
+                        p = normalized.resolved_video_path
+                    elif normalized.item_json_path is not None or normalized.item_root is not None:
                         results.append(PreviewResult(
-                            str(p), False, "FAIL",
-                            "item.json: no acquisition video found", {}
+                            str(original_input_path), False, "FAIL",
+                            "dataset item: no acquisition video found", {}
                         ))
                         continue
                 except Exception as _mf_err:
                     results.append(PreviewResult(
-                        str(p), False, "FAIL",
-                        f"item.json load error: {_mf_err!r}", {}
+                        str(original_input_path), False, "FAIL",
+                        f"dataset item load error: {_mf_err!r}", {}
                     ))
                     continue
 
             if device_id == "optical_tweezers":
                 if not is_video_file(p):
-                    results.append(PreviewResult(str(p), False, "FAIL", "Not a video file", {}))
+                    results.append(PreviewResult(str(original_input_path), False, "FAIL", "Not a video file", {}))
                     continue
 
             # --- read metadata ---
@@ -373,6 +404,10 @@ class BatchController:
                 h = int(getattr(meta, "height", 0) or 0)
 
                 details: Dict[str, Any] = {
+                    "original_input_path": str(original_input_path),
+                    "resolved_video_path": str(p),
+                    "item_json_path": (str(resolved_item_json) if resolved_item_json is not None else None),
+                    "dataset_item_root": (str(resolved_item_root) if resolved_item_root is not None else None),
                     "frame_count": frame_count,
                     "fps": fps,
                     "width": w,
@@ -388,7 +423,7 @@ class BatchController:
                 details["preview_frame_indices"] = list(frame_indices)
 
             except Exception as e:
-                results.append(PreviewResult(str(p), False, "FAIL", f"Cannot read video metadata: {e}", {}))
+                results.append(PreviewResult(str(original_input_path), False, "FAIL", f"Cannot read video metadata: {e}", {}))
                 continue
 
             if device_id != "optical_tweezers":
@@ -396,7 +431,7 @@ class BatchController:
                     vr.close()
                 except Exception:
                     pass
-                results.append(PreviewResult(str(p), True, "OK", "Preview metadata OK", details))
+                results.append(PreviewResult(str(original_input_path), True, "OK", "Preview metadata OK", details))
                 QApplication.processEvents()
                 continue
 
@@ -432,7 +467,7 @@ class BatchController:
                     vr.close()
                 except Exception:
                     pass
-                results.append(PreviewResult(str(p), False, "FAIL", "ROI not set (required for OT preview)", details))
+                results.append(PreviewResult(str(original_input_path), False, "FAIL", "ROI not set (required for OT preview)", details))
                 QApplication.processEvents()
                 continue
 
@@ -459,7 +494,7 @@ class BatchController:
                     vr.close()
                 except Exception:
                     pass
-                results.append(PreviewResult(str(p), False, "FAIL", f"Cannot read tracking params: {e}", details))
+                results.append(PreviewResult(str(original_input_path), False, "FAIL", f"Cannot read tracking params: {e}", details))
                 QApplication.processEvents()
                 continue
 
@@ -605,13 +640,13 @@ class BatchController:
             })
 
             if ok_overall:
-                results.append(PreviewResult(str(p), True, "OK", f"OT gate PASS ({pass_count}/{n})", details))
+                results.append(PreviewResult(str(original_input_path), True, "OK", f"OT gate PASS ({pass_count}/{n})", details))
             else:
                 msg = f"OT gate FAIL ({pass_count}/{n})"
                 fr = details.get("fail_reason", "")
                 if fr:
                     msg += f" — {fr}"
-                results.append(PreviewResult(str(p), False, "FAIL", msg, details))
+                results.append(PreviewResult(str(original_input_path), False, "FAIL", msg, details))
 
             QApplication.processEvents()
 
@@ -695,20 +730,34 @@ class BatchController:
             self._log("Run Batch blocked: Preview Gate has not passed.")
             return
 
-        ok_paths = [Path(r.path) for r in self._last_preview_results if r.ok]
+        ok_inputs: list[OTBatchInput] = []
+        for r in self._last_preview_results:
+            if not r.ok:
+                continue
+            resolved_video = Path(r.details.get("resolved_video_path") or r.path)
+            item_json_path = r.details.get("item_json_path")
+            item_root = r.details.get("dataset_item_root")
+            ok_inputs.append(
+                OTBatchInput(
+                    original_path=Path(r.path),
+                    resolved_video_path=resolved_video,
+                    item_json_path=(Path(item_json_path) if item_json_path else None),
+                    item_root=(Path(item_root) if item_root else None),
+                )
+            )
         if checked_paths is not None:
             cset = {str(Path(p)) for p in checked_paths}
-            ok_paths = [p for p in ok_paths if str(p) in cset]
+            ok_inputs = [entry for entry in ok_inputs if str(entry.original_path) in cset]
 
-        if not ok_paths:
+        if not ok_inputs:
             self._log("Run Batch: nothing to run (0 checked PASS items).")
             return
 
-        self._log(f"Run Batch start: PASS items={len(ok_paths)}")
+        self._log(f"Run Batch start: PASS items={len(ok_inputs)}")
         self._stop_requested = False
         self.last_ot_overlay_video_path = None
         self.last_ot_overlay_trajectory_path = None
-        progress_fn(0, len(ok_paths), "", 0)
+        progress_fn(0, len(ok_inputs), "", 0)
 
         if device_id != "optical_tweezers":
             self._log(f"Run Batch: device '{device_id}' not implemented yet.")
@@ -719,16 +768,17 @@ class BatchController:
         
         base_roi = Roi(*roi_rect)
 
-        ok_paths = [Path(p) for p in ok_paths]
-        ok_paths = self._reorder_for_pairing(ok_paths)
+        ok_inputs = sorted(ok_inputs, key=lambda entry: self._pairing_sort_key(entry.resolved_video_path or entry.original_path))
         preview_result_by_path = {Path(r.path): r for r in self._last_preview_results}
 
         _ot_mirror_root: Path | None = None
         _ot_items_root: Path | None = None
+        _ot_output_root: Path | None = None
         _ot_batch_id: str | None = None
         _ot_batch_created_at: str | None = None
         _ot_batch_items: list[dict] = []
         _ot_batch_preview_report_written = False
+        _ot_report_items: list[dict[str, Any]] = []
         if device_id == "optical_tweezers":
             _ot_output_root = self.run_manager.runs_folder / "ot"
             try:
@@ -750,10 +800,15 @@ class BatchController:
         baseline_by_key: dict[str, dict[str, Any]] = {}
 
         done = 0
-        for file_path in ok_paths:
+        for batch_input in ok_inputs:
             if self._stop_requested:
                 self._log("Batch stopped before processing next file.")
                 break
+            run_dir: Path | None = None
+            dir_audit: Path | None = None
+            dir_results: Path | None = None
+            dir_csv: Path | None = None
+            run_id: str | None = None
             self._clear_perf()
             file_started = time.perf_counter()
             auto_roi_reused = False
@@ -761,12 +816,13 @@ class BatchController:
             postprocess_elapsed_ms: float | None = None
             locked_invert = False
 
-            file_path = Path(file_path)
-            dataset_set_status_fn(file_path, "running")
+            original_input_path = Path(batch_input.original_path)
+            file_path = Path(batch_input.resolved_video_path)
+            dataset_set_status_fn(original_input_path, "running")
             
             # Inform the mock panel of the current file being processed
             if hasattr(device_panel, "set_current_path"):
-                device_panel.set_current_path(str(file_path))
+                device_panel.set_current_path(str(original_input_path))
                 
             tracking_params = device_panel.get_tracking_params()
             post_params = device_panel.get_postprocess_params()
@@ -856,7 +912,7 @@ class BatchController:
                     
                 if is_auto_roi_on_load:
                     try:
-                        preview_result = preview_result_by_path.get(file_path)
+                        preview_result = preview_result_by_path.get(original_input_path)
                         preview_roi = preview_result.details.get("resolved_roi") if preview_result is not None else None
                         if isinstance(preview_roi, list) and len(preview_roi) == 4:
                             file_roi_rect = tuple(int(v) for v in preview_roi)
@@ -948,20 +1004,18 @@ class BatchController:
                 stem = Path(file_path).stem
 
                 # Detect whether this video lives inside an existing dataset item folder.
-                _dataset_item_root = self._detect_dataset_item_root(file_path)
+                _dataset_item_root = batch_input.item_root or self._detect_dataset_item_root(file_path)
+                _source_item_json_path = (
+                    batch_input.item_json_path
+                    or ((_dataset_item_root / "item.json") if _dataset_item_root is not None else None)
+                )
 
                 # STEP A: select output root
-                if _dataset_item_root is not None:
-                    # Dataset mode: write analysis directly into existing item home.
-                    # No new batch item directory is created.
-                    _item_root_for_run = _dataset_item_root
-                    run_dir = _item_root_for_run / "analysis"
-                    _item_id_for_run = _item_root_for_run.name
-                    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + stem
-                elif _ot_items_root is not None and _ot_batch_id is not None:
-                    # New-batch mode: create a fresh item directory under current batch.
+                if _ot_items_root is not None and _ot_batch_id is not None:
+                    # All OT runs write into the selected Output Root, including dataset inputs.
                     _ot_items_root.mkdir(parents=True, exist_ok=True)  # lazy creation
-                    _base = re.sub(r"[^A-Za-z0-9._\-]", "_", stem)
+                    _base_name = _dataset_item_root.name if _dataset_item_root is not None else stem
+                    _base = re.sub(r"[^A-Za-z0-9._\-]", "_", _base_name)
                     _item_id_for_run = _base
                     _n_coll = 1
                     while (_ot_items_root / _item_id_for_run).exists():
@@ -1014,7 +1068,7 @@ class BatchController:
 
                 def _emit_main_progress(raw_pct: int) -> None:
                     pct = int(round(_main_progress_base + (_main_progress_span * max(0, min(100, raw_pct)) / 100.0)))
-                    progress_fn(done, len(ok_paths), file_path.name, max(0, min(100, pct)))
+                    progress_fn(done, len(ok_inputs), file_path.name, max(0, min(100, pct)))
                 
                 # --- OT Pipeline v2.1 Shadow Run ---
                 if shadow_mode == "full":
@@ -1058,7 +1112,7 @@ class BatchController:
                             "calibration": config["calibration"],
                             "progress_cb": lambda pct, msg="": progress_fn(
                                 done,
-                                len(ok_paths),
+                                len(ok_inputs),
                                 file_path.name,
                                 int(round((_shadow_progress_span * max(0, min(100, pct))) / 100.0)),
                             ),
@@ -1195,22 +1249,31 @@ class BatchController:
                 tracking_elapsed_ms = round((time.perf_counter() - tracking_started) * 1000.0, 3)
 
                 if self._stop_requested:
-                    dataset_set_status_fn(file_path, "stopped")
+                    _ot_report_items.append(
+                        build_ot_item_summary(
+                            run_dir=run_dir,
+                            base_name=stem,
+                            item_id=_item_id_for_run or (_dataset_item_root.name if _dataset_item_root is not None else stem),
+                            source_input_path=str(original_input_path),
+                            original_input_path=str(original_input_path),
+                            resolved_video_path=str(file_path),
+                            status="stopped",
+                            run_id=run_id,
+                            batch_id=_ot_batch_id,
+                            output_root=(str(_ot_output_root) if _ot_output_root is not None else None),
+                            error="Run stopped by user.",
+                            file_name=file_path.name,
+                        )
+                    )
+                    dataset_set_status_fn(original_input_path, "stopped")
                     done += 1
-                    progress_fn(done, len(ok_paths), file_path.name, 100)
+                    progress_fn(done, len(ok_inputs), file_path.name, 100)
                     break
 
                 # Finalize preview report placement (never crash the run)
                 try:
                     if self._preview_report_json:
-                        if _dataset_item_root is not None:
-                            preview_report_path = dir_audit / "preview_report.json"
-                            preview_report_path.write_text(
-                                self._preview_report_json,
-                                encoding="utf-8",
-                            )
-                            self._preview_report_path = preview_report_path
-                        elif _ot_mirror_root is not None and not _ot_batch_preview_report_written:
+                        if _ot_mirror_root is not None and not _ot_batch_preview_report_written:
                             _ot_mirror_root.mkdir(parents=True, exist_ok=True)
                             preview_report_path = _ot_mirror_root / "preview_report.json"
                             preview_report_path.write_text(
@@ -1219,6 +1282,13 @@ class BatchController:
                             )
                             self._preview_report_path = preview_report_path
                             _ot_batch_preview_report_written = True
+                        elif _item_root_for_run is not None:
+                            preview_report_path = dir_audit / "preview_report.json"
+                            preview_report_path.write_text(
+                                self._preview_report_json,
+                                encoding="utf-8",
+                            )
+                            self._preview_report_path = preview_report_path
                 except Exception as e:
                     self._log(f"WARN: preview report finalization failed ({file_path.name}): {e!r}")
 
@@ -1523,70 +1593,82 @@ class BatchController:
                 except Exception as e:
                     self._log(f"WARN: results export/organization failed ({file_path.name}): {e!r}")
 
+                item_summary = build_ot_item_summary(
+                    run_dir=run_dir,
+                    base_name=stem,
+                    item_id=_item_id_for_run or (_dataset_item_root.name if _dataset_item_root is not None else stem),
+                    source_input_path=str(original_input_path),
+                    original_input_path=str(original_input_path),
+                    resolved_video_path=str(file_path),
+                    status="success",
+                    run_id=run_id,
+                    batch_id=_ot_batch_id,
+                    output_root=(str(_ot_output_root) if _ot_output_root is not None else None),
+                    file_name=file_path.name,
+                )
+                try:
+                    if dir_results is not None:
+                        item_pdf_path = dir_results / f"{stem}_summary.pdf"
+                        export_ot_item_pdf(item_pdf_path, item_summary)
+                        item_summary.setdefault("artifacts", {})["item_pdf"] = str(item_pdf_path)
+                except Exception as e:
+                    self._log(f"WARN: item report export failed ({file_path.name}): {e!r}")
+                _ot_report_items.append(item_summary)
+
                 # --- OT canonical metadata (item.json + batch.json) ---
                 try:
-                    if _dataset_item_root is not None:
-                        # Dataset mode: update existing item.json with canonical fields.
-                        from barakuda.devices.optical_tweezers.manifest import (
-                            build_item_manifest_payload,
-                        )
-                        _item_json_path = _dataset_item_root / "item.json"
-                        try:
-                            _existing_item = json.loads(_item_json_path.read_text(encoding="utf-8"))
-                        except Exception:
-                            _existing_item = {}
-                        _updated = build_item_manifest_payload(
-                            item_root=_dataset_item_root,
-                            item_id=_dataset_item_root.name,
-                            fps=fps,
-                            width_px=_reader_w,
-                            height_px=_reader_h,
-                            frame_count=fc,
-                            roi=list(file_roi_rect) if file_roi_rect else None,
-                            analysis_dir=run_dir,
-                            um_per_px=um_per_px if um_per_px else None,
-                            um_per_px_source=um_src if um_src else None,
-                            status="analyzed",
-                            existing_payload=_existing_item,
-                        )
-                        _item_json_path.write_text(
-                            json.dumps(_updated, indent=2, ensure_ascii=False),
-                            encoding="utf-8",
-                        )
-                    elif _ot_items_root is not None and _ot_batch_id is not None and _item_root_for_run is not None:
+                    if _ot_items_root is not None and _ot_batch_id is not None and _item_root_for_run is not None:
                         _item_id = _item_id_for_run
                         _item_root = _item_root_for_run
                         _src_video = Path(file_path)
 
-                        # C) copy raw video into item_root/raw/
+                        # C) copy source video into item_root/raw/
                         _dst_video = _item_root / "raw" / _src_video.name
                         if not _dst_video.exists() or _dst_video.stat().st_size != _src_video.stat().st_size:
                             shutil.copy2(_src_video, _dst_video)
 
-                        # D) copy acquisition meta if present next to source video
+                        def _first_existing_path(*candidates: Path) -> Path | None:
+                            for _candidate in candidates:
+                                try:
+                                    if _candidate is not None and _candidate.exists():
+                                        return _candidate
+                                except Exception:
+                                    continue
+                            return None
+
+                        # D) copy acquisition meta / timestamps if available
                         _meta_src: Path | None = None
-                        for _mc in (
-                            _src_video.parent / f"{_src_video.stem}_meta.json",
-                            _src_video.parent / f"{_src_video.name}_meta.json",
-                        ):
-                            if _mc.exists():
-                                _meta_src = _mc
-                                break
+                        _ts_src: Path | None = None
+                        if _dataset_item_root is not None:
+                            _meta_src = _first_existing_path(
+                                _dataset_item_root / "acquisition" / "video_meta.json",
+                                _dataset_item_root / "raw" / "video_meta.json",
+                            )
+                            _ts_src = _first_existing_path(
+                                _dataset_item_root / "acquisition" / "video_timestamps.csv",
+                                _dataset_item_root / "raw" / "video_timestamps.csv",
+                            )
+                        if _meta_src is None:
+                            _meta_src = _first_existing_path(
+                                _src_video.parent / f"{_src_video.stem}_meta.json",
+                                _src_video.parent / f"{_src_video.name}_meta.json",
+                                _src_video.parent / "video_meta.json",
+                            )
+                        if _ts_src is None:
+                            _ts_src = _first_existing_path(
+                                _src_video.parent / f"{_src_video.stem}_timestamps.csv",
+                                _src_video.parent / f"{_src_video.name}_timestamps.csv",
+                                _src_video.parent / "video_timestamps.csv",
+                            )
+
                         _archived_meta: str | None = None
+                        _archived_ts: str | None = None
                         if _meta_src is not None:
                             shutil.copy2(_meta_src, _item_root / "raw" / "video_meta.json")
                             _archived_meta = "raw/video_meta.json"
-
-                        # E) run_dir IS item_root/module/ot/ — no copy required (STEP A)
-
-                        # F) artifacts inventory (recursive under item_root)
-                        _inv: list[str] = []
-                        for _ap in _item_root.rglob("*"):
-                            if _ap.is_file():
-                                try:
-                                    _inv.append(str(_ap.relative_to(_item_root)).replace("\\", "/"))
-                                except Exception:
-                                    pass
+                        if _ts_src is not None:
+                            shutil.copy2(_ts_src, _item_root / "raw" / "video_timestamps.csv")
+                            _archived_ts = "raw/video_timestamps.csv"
 
                         from barakuda.devices.optical_tweezers.manifest import (
                             build_item_manifest_payload,
@@ -1595,9 +1677,10 @@ class BatchController:
                             item_root=_item_root,
                             item_id=_item_id,
                             batch_id=_ot_batch_id,
-                            source_input_path=str(file_path),
+                            source_input_path=str(original_input_path),
                             acquisition_video=_dst_video,
                             acquisition_meta=(_item_root / "raw" / "video_meta.json") if _archived_meta else None,
+                            acquisition_timestamps=(_item_root / "raw" / "video_timestamps.csv") if _archived_ts else None,
                             fps=fps,
                             width_px=_reader_w,
                             height_px=_reader_h,
@@ -1613,7 +1696,30 @@ class BatchController:
                             encoding="utf-8",
                         )
 
-                        # G) write/update batch.json
+                        # E) Write lightweight link back into the source dataset item.
+                        if _dataset_item_root is not None and _source_item_json_path is not None and _source_item_json_path.exists():
+                            try:
+                                _source_existing = json.loads(_source_item_json_path.read_text(encoding="utf-8"))
+                            except Exception:
+                                _source_existing = {}
+                            _source_status = str(_source_existing.get("status", "acquired") or "acquired")
+                            _source_updated = build_item_manifest_payload(
+                                item_root=_dataset_item_root,
+                                item_id=_dataset_item_root.name,
+                                analysis_dir=run_dir,
+                                status=_source_status,
+                                existing_payload=_source_existing,
+                            )
+                            _source_analysis = dict(_source_updated.get("analysis") or {})
+                            _source_analysis["ot_last_output_item"] = str(_item_root)
+                            _source_analysis["ot_last_output_dir"] = str(run_dir)
+                            _source_updated["analysis"] = _source_analysis
+                            _source_item_json_path.write_text(
+                                json.dumps(_source_updated, indent=2, ensure_ascii=False),
+                                encoding="utf-8",
+                            )
+
+                        # F) write/update batch.json
                         _batch_json_path = _ot_mirror_root / "batch.json"
                         _batch_items_entry = {
                             "item_id": _item_id,
@@ -1645,7 +1751,7 @@ class BatchController:
                 except Exception as _mirror_err:
                     self._log(f"WARN: OT canonical metadata failed ({file_path.name}): {_mirror_err!r}")
 
-                dataset_set_status_fn(file_path, "done")
+                dataset_set_status_fn(original_input_path, "done")
                 self._log(f"OK: {file_path.name} -> {run_id}")
                 self._log_perf_summary(
                     f"run_batch:{file_path.name}",
@@ -1657,7 +1763,23 @@ class BatchController:
                 )
 
             except Exception as e:
-                dataset_set_status_fn(file_path, "failed")
+                _ot_report_items.append(
+                    build_ot_item_summary(
+                        run_dir=run_dir,
+                        base_name=(Path(file_path).stem if 'file_path' in locals() else original_input_path.stem),
+                        item_id=_item_id_for_run or (_dataset_item_root.name if '_dataset_item_root' in locals() and _dataset_item_root is not None else original_input_path.stem),
+                        source_input_path=str(original_input_path),
+                        original_input_path=str(original_input_path),
+                        resolved_video_path=(str(file_path) if 'file_path' in locals() else None),
+                        status="failed",
+                        run_id=run_id,
+                        batch_id=_ot_batch_id,
+                        output_root=(str(_ot_output_root) if _ot_output_root is not None else None),
+                        error=str(e),
+                        file_name=(file_path.name if 'file_path' in locals() else original_input_path.name),
+                    )
+                )
+                dataset_set_status_fn(original_input_path, "failed")
                 self._log(f"ERROR: {file_path.name}: {e!r}")
                 self._log_perf_summary(
                     f"run_batch:{file_path.name}:failed",
@@ -1665,7 +1787,22 @@ class BatchController:
                 )
 
             done += 1
-            progress_fn(done, len(ok_paths), file_path.name, 100)
+            progress_fn(done, len(ok_inputs), file_path.name, 100)
+
+        if _ot_mirror_root is not None and _ot_report_items:
+            try:
+                _ot_mirror_root.mkdir(parents=True, exist_ok=True)
+                export_ot_batch_pdf(
+                    _ot_mirror_root / "batch_summary.pdf",
+                    {
+                        "batch_id": _ot_batch_id,
+                        "output_root": str(_ot_output_root) if _ot_output_root is not None else "",
+                        "batch_root": str(_ot_mirror_root),
+                        "items": _ot_report_items,
+                    },
+                )
+            except Exception as e:
+                self._log(f"WARN: batch PDF export failed: {e!r}")
 
         self._log("Run Batch done ✅")
 

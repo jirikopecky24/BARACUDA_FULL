@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from barakuda.core.ot_report import build_ot_item_summary, build_ot_summary_rows
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
 
@@ -358,6 +359,22 @@ def export_ot_results_xlsx(
         )
         for tag in ("x", "y", "r")
     }
+
+    summary_payload = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name=base_name,
+        item_id=run_dir.parent.name if run_dir.parent != run_dir else base_name,
+        source_input_path=None,
+        status="success",
+    )
+    summary_payload.setdefault("artifacts", {})["xlsx"] = str(out_path)
+
+    ws_summary = _new_sheet("Summary")
+    ws_summary.append(["Group", "Metric", "Value", "Unit", "Notes"])
+    for group, metric, value, unit, notes in build_ot_summary_rows(summary_payload):
+        ws_summary.append([group, metric, value, unit, notes])
+    _format_sheet(ws_summary)
+    sheet_by_key["summary"] = ws_summary
 
     core_specs = [
         ("trajectory", "Trajectory", _first_existing(trajectory_csv_path, run_dir / "csv" / trajectory_name, run_dir / "tracking" / trajectory_name), True),
