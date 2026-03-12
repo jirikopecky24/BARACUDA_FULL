@@ -5,6 +5,7 @@ import json
 import math
 import textwrap
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,29 @@ REPORT_NAME = "Optical Tweezers Analysis Report"
 BRAND_COLOR = "#0F3D5E"
 ACCENT_COLOR = "#1F6AA5"
 LIGHT_BG = "#F4F7FA"
+PANEL_BG = "#F8FBFD"
+CARD_BG = "#FFFFFF"
 TEXT_COLOR = "#162534"
 MUTED_COLOR = "#586574"
 LINE_COLOR = "#CAD5E0"
 PLOT_COLOR = "#1F6AA5"
+
+
+def _branding_asset_path(file_name: str) -> Path:
+    return Path(__file__).resolve().parents[2] / "assets" / "branding" / "barakuda" / file_name
+
+
+@lru_cache(maxsize=1)
+def _load_header_logo() -> Any | None:
+    logo_path = _branding_asset_path("logo_dark.png")
+    if not logo_path.is_file():
+        return None
+    try:
+        import matplotlib.image as mpimg
+
+        return mpimg.imread(logo_path)
+    except Exception:
+        return None
 
 
 def _load_json(path: Path | None) -> dict[str, Any] | None:
@@ -118,6 +138,107 @@ def _display_path(path_value: Any, width: int = 72) -> str:
     return textwrap.fill(str(path_value), width=width, break_long_words=False, break_on_hyphens=False)
 
 
+def _split_display_path(path_value: Any) -> tuple[str, list[str]]:
+    text = str(path_value or "").strip().replace("\\", "/")
+    if not text:
+        return "", []
+
+    prefix = ""
+    body = text
+    if text.startswith("//"):
+        prefix = "//"
+        body = text[2:]
+    elif len(text) >= 3 and text[1] == ":" and text[2] == "/":
+        prefix = text[:3]
+        body = text[3:]
+    elif len(text) >= 2 and text[1] == ":":
+        prefix = text[:2] + "/"
+        body = text[2:].lstrip("/")
+    elif text.startswith("/"):
+        prefix = "/"
+        body = text[1:]
+
+    parts = [part for part in body.split("/") if part]
+    return prefix, parts
+
+
+def _join_display_path(prefix: str, parts: list[str]) -> str:
+    if prefix in ("//", "/"):
+        return prefix + "/".join(parts)
+    if prefix.endswith("/"):
+        return prefix + "/".join(parts)
+    if prefix:
+        return prefix + ("/" + "/".join(parts) if parts else "")
+    return "/".join(parts)
+
+
+def _short_path(path_value: Any, *, anchor: Any | None = None, keep_parts: int = 4) -> str:
+    text = str(path_value or "").strip()
+    if not text:
+        return "n/a"
+
+    try:
+        path = Path(text)
+        if anchor:
+            anchor_path = Path(str(anchor))
+            try:
+                return str(path.relative_to(anchor_path)).replace("\\", "/")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    prefix, parts = _split_display_path(text)
+    if not parts:
+        return prefix or "n/a"
+    if len(parts) <= keep_parts:
+        return _join_display_path(prefix, parts)
+    return ".../" + "/".join(parts[-keep_parts:])
+
+
+def _wrap_path_segments(path_value: Any, width: int = 88) -> list[str]:
+    prefix, parts = _split_display_path(path_value)
+    if not parts and not prefix:
+        return ["n/a"]
+
+    lines: list[str] = []
+    current = prefix if prefix else ""
+
+    def _flush() -> None:
+        nonlocal current
+        if current:
+            lines.append(current)
+            current = ""
+
+    for idx, part in enumerate(parts):
+        segment = part
+        if idx < len(parts) - 1:
+            segment += "/"
+        candidate = current + segment
+        if current and len(candidate) > width:
+            _flush()
+            candidate = segment
+        if len(candidate) <= width:
+            current = candidate
+            continue
+        wrapped_segment = textwrap.wrap(
+            segment,
+            width=width,
+            break_long_words=True,
+            break_on_hyphens=True,
+        ) or [segment]
+        if current:
+            _flush()
+        for wrapped_idx, chunk in enumerate(wrapped_segment):
+            if wrapped_idx < len(wrapped_segment) - 1:
+                lines.append(chunk)
+            else:
+                current = chunk
+
+    _flush()
+    return lines or ["n/a"]
+
+
 def _presentation_key(key: str) -> str:
     mapping = {
         "item_id": "Item ID",
@@ -177,9 +298,9 @@ def _existing_artifact_rows(summary: dict[str, Any]) -> list[list[str]]:
             try:
                 display = str(path.relative_to(analysis_dir)).replace("\\", "/")
             except Exception:
-                display = str(path)
+                display = _short_path(path, keep_parts=5)
         else:
-            display = str(path)
+            display = _short_path(path, keep_parts=5)
         rows.append([_presentation_key(key), _wrap(display, width=62)])
     return rows
 
@@ -220,12 +341,20 @@ def build_ot_item_summary(
     tracking_cfg = cfg.get("tracking") or {}
     post_cfg = cfg.get("postprocess") or {}
     cal_cfg = cfg.get("calibration") or {}
+    calibration_bead_diameter_um = _parse_float((calibration_json or {}).get("bead_diameter_um"))
+    calibration_bead_radius_um = _parse_float((calibration_json or {}).get("bead_radius_um"))
 
     metrics["fps"] = _parse_float(tracking_cfg.get("fps"))
     metrics["um_per_px"] = _parse_float(cal_cfg.get("um_per_px"))
     metrics["temperature_c"] = _parse_float(post_cfg.get("temperature_c"))
     metrics["bead_diameter_um"] = _parse_float(post_cfg.get("bead_diameter_um"))
-    metrics["bead_radius_um"] = _parse_float(post_cfg.get("bead_radius_um"))
+    if metrics["bead_diameter_um"] is None:
+        metrics["bead_diameter_um"] = calibration_bead_diameter_um
+    metrics["bead_radius_um"] = calibration_bead_radius_um
+    if metrics["bead_radius_um"] is None:
+        metrics["bead_radius_um"] = _parse_float(post_cfg.get("bead_radius_um"))
+    if metrics["bead_radius_um"] is None and metrics["bead_diameter_um"] is not None:
+        metrics["bead_radius_um"] = float(metrics["bead_diameter_um"]) * 0.5
     metrics["mode"] = str(post_cfg.get("physics_mode") or derived_mean.get("mode") or "")
     metrics["drag_axis"] = str(post_cfg.get("drag_axis") or "")
     metrics["stage_speed_um_s"] = _parse_float(post_cfg.get("stage_speed_um_s"))
@@ -393,14 +522,15 @@ def _identity_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Run ID", _wrap(summary.get("run_id"), 56)],
         ["Batch ID", _wrap(summary.get("batch_id"), 56)],
         ["Generated", _wrap(summary.get("created_at") or datetime.now().isoformat(timespec="seconds"), 56)],
+        ["Source file", _wrap(Path(str(summary.get("source_input_path") or "")).name if summary.get("source_input_path") else "n/a", 56)],
     ]
 
 
-def _identity_path_rows(summary: dict[str, Any]) -> list[list[str]]:
+def _path_entries_for_item(summary: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return [
-        ["Source input", _display_path(summary.get("source_input_path"), 110)],
-        ["Output root", _display_path(summary.get("output_root"), 110)],
-        ["Analysis directory", _display_path(summary.get("analysis_dir"), 110)],
+        ("Source input", _wrap_path_segments(summary.get("source_input_path"), 88)),
+        ("Output root", _wrap_path_segments(summary.get("output_root"), 88)),
+        ("Analysis directory", _wrap_path_segments(summary.get("analysis_dir"), 88)),
     ]
 
 
@@ -448,15 +578,15 @@ def _batch_overview_rows(batch_summary: dict[str, Any], items: list[dict[str, An
     return [
         ["Batch ID", _wrap(batch_summary.get("batch_id"), 58)],
         ["Items total", str(len(items))],
-        ["Successful items", str(len(successes))],
-        ["Failed or stopped items", str(len(failures))],
+        ["Successful", str(len(successes))],
+        ["Failed / stopped", str(len(failures))],
     ]
 
 
-def _batch_path_rows(batch_summary: dict[str, Any]) -> list[list[str]]:
+def _path_entries_for_batch(batch_summary: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return [
-        ["Output root", _display_path(batch_summary.get("output_root"), 110)],
-        ["Batch root", _display_path(batch_summary.get("batch_root"), 110)],
+        ("Output root", _wrap_path_segments(batch_summary.get("output_root"), 88)),
+        ("Batch root", _wrap_path_segments(batch_summary.get("batch_root"), 88)),
     ]
 
 
@@ -549,12 +679,13 @@ def _style_table(table, body_font_size: int = 9, header_font_size: int = 10) -> 
     row_line_counts: dict[int, int] = {}
     for (row_idx, _col_idx), cell in table.get_celld().items():
         text_obj = cell.get_text()
+        cell.PAD = 0.14
         text_obj.set_wrap(True)
         text_obj.set_ha("left")
         text_obj.set_va("center")
         line_count = max(1, str(text_obj.get_text() or "").count("\n") + 1)
         row_line_counts[row_idx] = max(row_line_counts.get(row_idx, 1), line_count)
-        cell.set_linewidth(0.6)
+        cell.set_linewidth(0.45)
         cell.set_edgecolor(LINE_COLOR)
         if row_idx == 0:
             cell.set_facecolor(BRAND_COLOR)
@@ -562,25 +693,162 @@ def _style_table(table, body_font_size: int = 9, header_font_size: int = 10) -> 
             text_obj.set_fontsize(header_font_size)
             text_obj.set_fontweight("bold")
         else:
-            cell.set_facecolor(LIGHT_BG if row_idx % 2 == 0 else "white")
+            cell.set_facecolor(PANEL_BG if row_idx % 2 == 0 else CARD_BG)
             text_obj.set_fontsize(body_font_size)
             text_obj.set_color(TEXT_COLOR)
+            if _col_idx == 0:
+                text_obj.set_fontweight("bold")
     for (row_idx, _col_idx), cell in table.get_celld().items():
-        base_height = 0.055 if row_idx == 0 else 0.048
+        base_height = 0.062 if row_idx == 0 else 0.052
         cell.set_height(base_height * row_line_counts.get(row_idx, 1))
 
 
-def _add_brand_header(fig, title: str, subtitle: str | None = None, page_note: str | None = None) -> None:
+def _wrap_lines(value: Any, width: int) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return ["n/a"]
+    return textwrap.wrap(text, width=width, break_long_words=False, break_on_hyphens=False) or [text]
+
+
+def _add_panel(fig, bounds: tuple[float, float, float, float], *, facecolor: str = CARD_BG) -> None:
+    from matplotlib.patches import FancyBboxPatch
+
+    x, y, width, height = bounds
+    panel = FancyBboxPatch(
+        (x, y),
+        width,
+        height,
+        boxstyle="round,pad=0.010,rounding_size=0.018",
+        transform=fig.transFigure,
+        facecolor=facecolor,
+        edgecolor=LINE_COLOR,
+        linewidth=0.9,
+        zorder=-5,
+    )
+    fig.add_artist(panel)
+
+
+def _cover_table_col_width(rows: list[list[str]], *, min_fraction: float = 0.30, max_fraction: float = 0.46) -> float:
+    label_len = max((len(str(row[0])) for row in rows if row), default=12)
+    value_len = max((len(str(row[1])) for row in rows if len(row) > 1), default=24)
+    total = max(1, label_len + value_len)
+    estimate = (label_len + 4) / (total + 6)
+    return max(min_fraction, min(max_fraction, estimate))
+
+
+def _render_cover_card(
+    fig,
+    bounds: tuple[float, float, float, float],
+    title: str,
+    rows: list[list[str]],
+    *,
+    facecolor: str,
+    header_label: str,
+    label_wrap: int,
+    value_wrap: int,
+    min_label_fraction: float = 0.30,
+    max_label_fraction: float = 0.46,
+) -> None:
+    x, y, width, height = bounds
+    _add_panel(fig, bounds, facecolor=facecolor)
+    fig.text(x + (width * 0.5), y + height - 0.035, title, fontsize=12.5, fontweight="bold", color=TEXT_COLOR, ha="center")
+
+    wrapped_rows = [
+        [
+            _wrap(str(row[0] if len(row) > 0 else ""), width=label_wrap),
+            _wrap(str(row[1] if len(row) > 1 else ""), width=value_wrap),
+        ]
+        for row in rows
+    ]
+    label_width = _cover_table_col_width(wrapped_rows, min_fraction=min_label_fraction, max_fraction=max_label_fraction)
+
+    ax = fig.add_axes([x + 0.018, y + 0.028, width - 0.036, height - 0.095])
+    ax.axis("off")
+    table = ax.table(
+        cellText=wrapped_rows,
+        colLabels=[header_label, "Value"],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[label_width, 1.0 - label_width],
+        bbox=[0.0, 0.0, 1.0, 1.0],
+    )
+    table.auto_set_font_size(False)
+    row_line_counts: dict[int, int] = {}
+    for (row_idx, col_idx), cell in table.get_celld().items():
+        text_obj = cell.get_text()
+        cell.PAD = 0.12
+        text_obj.set_wrap(True)
+        text_obj.set_ha("left")
+        text_obj.set_va("center")
+        line_count = max(1, str(text_obj.get_text() or "").count("\n") + 1)
+        row_line_counts[row_idx] = max(row_line_counts.get(row_idx, 1), line_count)
+        cell.set_linewidth(0.45)
+        cell.set_edgecolor(LINE_COLOR)
+        if row_idx == 0:
+            cell.set_facecolor(BRAND_COLOR)
+            text_obj.set_color("white")
+            text_obj.set_fontsize(10)
+            text_obj.set_fontweight("bold")
+        else:
+            cell.set_facecolor(PANEL_BG if row_idx % 2 == 0 else CARD_BG)
+            text_obj.set_color(TEXT_COLOR)
+            text_obj.set_fontsize(9.2)
+            if col_idx == 0:
+                text_obj.set_fontweight("bold")
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        base_height = 0.088 if row_idx == 0 else 0.078
+        cell.set_height(base_height * row_line_counts.get(row_idx, 1))
+
+
+def _cover_key_result_rows(summary_rows: list[list[str]]) -> list[list[str]]:
+    label_map = {
+        "Diffusion coefficient": "Diffusion coeff.",
+        "Corner frequency X": "Corner freq. X",
+        "Corner frequency Y": "Corner freq. Y",
+        "Trap stiffness X": "Trap stiffness X",
+        "Trap stiffness Y": "Trap stiffness Y",
+    }
+    out: list[list[str]] = []
+    for label, value in summary_rows:
+        out.append([label_map.get(str(label), str(label)), str(value)])
+    return out
+
+
+def _batch_cover_key_rows(batch_summary: dict[str, Any]) -> list[list[str]]:
+    return [
+        ["Report generated", _wrap(datetime.now().isoformat(timespec="seconds"), 22)],
+        ["Comparison focus", _wrap("Viscosity, diffusion, stiffness, corner frequency", 24)],
+        ["Primary outputs", _wrap("Summary tables, grouped QC, PSD, histogram curves", 24)],
+    ]
+
+
+def _add_brand_header(
+    fig,
+    title: str | None = None,
+    subtitle: str | None = None,
+    page_note: str | None = None,
+    *,
+    cover: bool = False,
+) -> None:
     from matplotlib.lines import Line2D
 
-    fig.text(0.07, 0.972, BRAND_NAME, fontsize=20, fontweight="bold", color=BRAND_COLOR)
-    fig.text(0.07, 0.948, REPORT_NAME, fontsize=10.5, color=MUTED_COLOR)
-    fig.text(0.07, 0.914, title, fontsize=18, fontweight="bold", color=TEXT_COLOR)
-    if subtitle:
-        fig.text(0.07, 0.892, subtitle, fontsize=10, color=MUTED_COLOR)
+    center_x = 0.50
+    logo_image = _load_header_logo()
+    if logo_image is not None:
+        logo_ax = fig.add_axes([0.07, 0.916, 0.23, 0.055], anchor="NW")
+        logo_ax.imshow(logo_image)
+        logo_ax.axis("off")
+    else:
+        fig.text(0.07, 0.955, BRAND_NAME, fontsize=18, fontweight="bold", color=BRAND_COLOR)
+
+    fig.text(center_x, 0.952, REPORT_NAME, fontsize=10.5, color=MUTED_COLOR, ha="center")
+    if not cover and title:
+        fig.text(center_x, 0.916, title, fontsize=19, fontweight="bold", color=TEXT_COLOR, ha="center")
+    if not cover and subtitle:
+        fig.text(center_x, 0.890, subtitle, fontsize=10.2, color=MUTED_COLOR, ha="center")
     if page_note:
-        fig.text(0.93, 0.972, page_note, fontsize=9, color=MUTED_COLOR, ha="right")
-    fig.add_artist(Line2D([0.07, 0.93], [0.882, 0.882], transform=fig.transFigure, color=LINE_COLOR, linewidth=1.2))
+        fig.text(0.93, 0.955, page_note, fontsize=9, color=MUTED_COLOR, ha="right")
+    fig.add_artist(Line2D([0.06, 0.94], [0.875, 0.875], transform=fig.transFigure, color=ACCENT_COLOR, linewidth=1.4))
 
 
 def _render_cover_page(
@@ -590,60 +858,111 @@ def _render_cover_page(
     left_rows: list[list[str]],
     right_rows: list[list[str]],
     *,
-    bottom_rows: list[list[str]] | None = None,
-    bottom_title: str = "Paths and locations",
+    eyebrow: str = "Scientific Summary",
 ) -> None:
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=PAGE_SIZE)
-    _add_brand_header(fig, title, subtitle=subtitle)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, page_note=None, cover=True)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.axis("off")
-    ax.text(0.07, 0.82, title, fontsize=24, fontweight="bold", color=TEXT_COLOR)
-    ax.text(0.07, 0.785, subtitle, fontsize=11, color=MUTED_COLOR)
-    ax.text(0.07, 0.735, "Prepared for direct scientific review and client-facing delivery.", fontsize=10.5, color=TEXT_COLOR)
-
-    ax_left = fig.add_axes([0.07, 0.30, 0.39, 0.36])
-    ax_left.axis("off")
-    left_table = ax_left.table(
-        cellText=left_rows,
-        colLabels=["Report details", "Value"],
-        cellLoc="left",
-        colLoc="left",
-        bbox=[0.0, 0.0, 1.0, 1.0],
+    ax.text(0.50, 0.812, eyebrow, fontsize=10.5, color=ACCENT_COLOR, fontweight="bold", ha="center")
+    ax.text(0.50, 0.768, title, fontsize=24, fontweight="bold", color=TEXT_COLOR, ha="center")
+    ax.text(0.50, 0.729, subtitle, fontsize=11.2, color=MUTED_COLOR, ha="center")
+    ax.text(
+        0.50,
+        0.688,
+        "Prepared for scientific review and external sharing.",
+        fontsize=10.4,
+        color=TEXT_COLOR,
+        ha="center",
+        wrap=True,
     )
-    _style_table(left_table, body_font_size=9, header_font_size=10)
 
-    ax_right = fig.add_axes([0.52, 0.33, 0.38, 0.33])
-    ax_right.axis("off")
-    right_table = ax_right.table(
-        cellText=right_rows,
-        colLabels=["Key result", "Value"],
-        cellLoc="left",
-        colLoc="left",
-        bbox=[0.0, 0.0, 1.0, 1.0],
+    _render_cover_card(
+        fig,
+        (0.05, 0.225, 0.43, 0.37),
+        "Report details",
+        left_rows,
+        facecolor=CARD_BG,
+        header_label="Report detail",
+        label_wrap=16,
+        value_wrap=34,
+        min_label_fraction=0.31,
+        max_label_fraction=0.40,
     )
-    _style_table(right_table, body_font_size=9, header_font_size=10)
+    _render_cover_card(
+        fig,
+        (0.52, 0.225, 0.43, 0.37),
+        "Key results",
+        _cover_key_result_rows(right_rows),
+        facecolor=PANEL_BG,
+        header_label="Key result",
+        label_wrap=20,
+        value_wrap=24,
+        min_label_fraction=0.36,
+        max_label_fraction=0.48,
+    )
 
-    if bottom_rows:
-        ax_bottom_title = fig.add_axes([0.07, 0.245, 0.86, 0.04])
-        ax_bottom_title.axis("off")
-        ax_bottom_title.text(0.0, 0.5, bottom_title, fontsize=12, fontweight="bold", color=TEXT_COLOR, va="center")
-
-        ax_bottom = fig.add_axes([0.07, 0.11, 0.83, 0.12])
-        ax_bottom.axis("off")
-        bottom_table = ax_bottom.table(
-            cellText=bottom_rows,
-            colLabels=["Field", "Value"],
-            cellLoc="left",
-            colLoc="left",
-            bbox=[0.0, 0.0, 1.0, 1.0],
-        )
-        _style_table(bottom_table, body_font_size=8, header_font_size=10)
-
-    fig.text(0.07, 0.12, "Branding note: text-only BARAKUDA header is used for now and can be replaced later with a final logo asset.", fontsize=9, color=MUTED_COLOR)
+    fig.text(
+        0.50,
+        0.12,
+        "The sections that follow retain the same measurements, QC outputs, plots, and exported artifacts as the analysis pipeline.",
+        fontsize=9.2,
+        color=MUTED_COLOR,
+        ha="center",
+    )
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
+
+
+def _render_path_block_pages(
+    pdf,
+    title: str,
+    entries: list[tuple[str, list[str]]],
+    *,
+    subtitle: str | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    if not entries:
+        return
+
+    idx = 0
+    page_no = 1
+    while idx < len(entries):
+        fig = plt.figure(figsize=PAGE_SIZE)
+        _add_brand_header(fig, title, subtitle=subtitle, page_note=f"Page {page_no}")
+        ax = fig.add_axes([0.07, 0.08, 0.86, 0.78])
+        ax.axis("off")
+
+        y = 0.98
+        while idx < len(entries):
+            label, lines = entries[idx]
+            block_height = 0.05 + (0.030 * max(1, len(lines)))
+            if y - block_height < 0.06:
+                break
+
+            ax.text(0.0, y, label, fontsize=11, fontweight="bold", color=TEXT_COLOR, va="top")
+            y -= 0.038
+            ax.text(
+                0.02,
+                y,
+                "\n".join(lines),
+                fontsize=8.6,
+                color=TEXT_COLOR,
+                va="top",
+                family="monospace",
+                linespacing=1.25,
+            )
+            y -= (0.030 * max(1, len(lines))) + 0.03
+            ax.hlines(y + 0.012, 0.0, 0.98, colors=LINE_COLOR, linewidth=0.8, transform=ax.transAxes)
+            idx += 1
+
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+        page_no += 1
 
 
 def _render_paginated_table(
@@ -690,13 +1009,17 @@ def _render_dual_table_page(
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
     _add_brand_header(fig, title)
 
-    ax_top_title = fig.add_axes([0.07, 0.79, 0.86, 0.05])
+    _add_panel(fig, (0.06, 0.46, 0.88, 0.31), facecolor=CARD_BG)
+    _add_panel(fig, (0.06, 0.09, 0.88, 0.29), facecolor=PANEL_BG)
+
+    ax_top_title = fig.add_axes([0.08, 0.74, 0.84, 0.05])
     ax_top_title.axis("off")
     ax_top_title.text(0.0, 0.5, top_title, fontsize=12, fontweight="bold", color=TEXT_COLOR, va="center")
 
-    ax_top = fig.add_axes([0.07, 0.48, 0.86, 0.29])
+    ax_top = fig.add_axes([0.08, 0.495, 0.84, 0.23])
     ax_top.axis("off")
     top_table = ax_top.table(
         cellText=top_rows,
@@ -707,11 +1030,11 @@ def _render_dual_table_page(
     )
     _style_table(top_table)
 
-    ax_bottom_title = fig.add_axes([0.07, 0.40, 0.86, 0.05])
+    ax_bottom_title = fig.add_axes([0.08, 0.34, 0.84, 0.05])
     ax_bottom_title.axis("off")
     ax_bottom_title.text(0.0, 0.5, bottom_title, fontsize=12, fontweight="bold", color=TEXT_COLOR, va="center")
 
-    ax_bottom = fig.add_axes([0.07, 0.10, 0.86, 0.28])
+    ax_bottom = fig.add_axes([0.08, 0.125, 0.84, 0.19])
     ax_bottom.axis("off")
     bottom_table = ax_bottom.table(
         cellText=bottom_rows,
@@ -747,8 +1070,9 @@ def _render_plot_pages(
             ncols = 1
             nrows = len(chunk)
         fig, axes = plt.subplots(nrows, ncols, figsize=PAGE_SIZE)
+        fig.patch.set_facecolor("white")
         _add_brand_header(fig, title, page_note=(f"Page {idx}/{len(chunks)}" if len(chunks) > 1 else None))
-        fig.subplots_adjust(top=0.84, left=0.10, right=0.95, bottom=0.08, hspace=0.38, wspace=0.25)
+        fig.subplots_adjust(top=0.81, left=0.10, right=0.95, bottom=0.09, hspace=0.46, wspace=0.28)
         flat_axes = list(axes.flatten()) if hasattr(axes, "flatten") else [axes]
         for ax in flat_axes:
             ax.axis("off")
@@ -760,12 +1084,13 @@ def _render_plot_pages(
                 continue
             xs, ys, _, _ = parsed
             ax.axis("on")
+            ax.set_facecolor(PANEL_BG)
             ax.plot(xs, ys, linewidth=1.6, color=PLOT_COLOR)
             if log_x:
                 ax.set_xscale("log")
             if log_y:
                 ax.set_yscale("log")
-            ax.set_title(label, fontsize=11, fontweight="bold", color=TEXT_COLOR)
+            ax.set_title(label, fontsize=11.5, fontweight="bold", color=TEXT_COLOR, pad=10)
             ax.set_xlabel(x_title, fontsize=9)
             ax.set_ylabel(y_title, fontsize=9)
             ax.tick_params(labelsize=8)
@@ -798,16 +1123,18 @@ def _render_image_pages(
             ncols = 1
             nrows = len(chunk)
         fig, axes = plt.subplots(nrows, ncols, figsize=PAGE_SIZE)
+        fig.patch.set_facecolor("white")
         _add_brand_header(fig, title, page_note=(f"Page {idx}/{len(chunks)}" if len(chunks) > 1 else None))
-        fig.subplots_adjust(top=0.84, left=0.08, right=0.95, bottom=0.08, hspace=0.30, wspace=0.20)
+        fig.subplots_adjust(top=0.81, left=0.08, right=0.95, bottom=0.08, hspace=0.34, wspace=0.20)
         flat_axes = list(axes.flatten()) if hasattr(axes, "flatten") else [axes]
         for ax in flat_axes:
             ax.axis("off")
         for ax, (label, path) in zip(flat_axes, chunk):
             try:
                 image = mpimg.imread(path)
+                ax.set_facecolor(PANEL_BG)
                 ax.imshow(image)
-                ax.set_title(label, fontsize=11, fontweight="bold", color=TEXT_COLOR)
+                ax.set_title(label, fontsize=11.5, fontweight="bold", color=TEXT_COLOR, pad=10)
                 ax.axis("off")
             except Exception:
                 ax.axis("off")
@@ -868,11 +1195,10 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
         _render_cover_page(
             pdf,
             title=f"Item Report: {summary.get('item_id')}",
-            subtitle=f"{REPORT_NAME} | Item-level summary",
+            subtitle="Item-level summary",
             left_rows=_identity_rows(summary),
             right_rows=_key_result_rows(summary),
-            bottom_rows=_identity_path_rows(summary),
-            bottom_title="Paths and locations",
+            eyebrow="Scientific Summary",
         )
         _render_dual_table_page(
             pdf,
@@ -912,17 +1238,10 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
         _render_cover_page(
             pdf,
             title=f"Batch Report: {batch_summary.get('batch_id') or 'OT batch'}",
-            subtitle=f"{REPORT_NAME} | Batch comparison summary",
+            subtitle="Batch comparison summary",
             left_rows=_batch_overview_rows(batch_summary, items, successes, failures),
-            right_rows=[
-                ["Successful items", str(len(successes))],
-                ["Failed or stopped", str(len(failures))],
-                ["Report generated", datetime.now().isoformat(timespec="seconds")],
-                ["Comparison focus", "Viscosity, diffusion, stiffness, corner frequency"],
-                ["Branding", "BARAKUDA text header (logo-ready placeholder)"],
-            ],
-            bottom_rows=_batch_path_rows(batch_summary),
-            bottom_title="Batch locations",
+            right_rows=_batch_cover_key_rows(batch_summary),
+            eyebrow="Batch Summary",
         )
 
         summary_rows = _batch_summary_rows(items)

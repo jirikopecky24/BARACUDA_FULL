@@ -19,6 +19,17 @@ from PyQt6.QtWidgets import (
 
 from barakuda.core.models import DatasetItem
 
+_DIRECT_IMPORT_FILTER = (
+    "Data files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.csv *.txt *.mp4 *.avi *.mov *.mkv *.m4v *.spm *.raw *.json);;"
+    "All files (*.*)"
+)
+_RECURSIVE_IMPORT_EXTS = {
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp",
+    ".csv", ".txt",
+    ".mp4", ".avi", ".mov", ".mkv", ".m4v",
+    ".spm", ".raw",
+}
+
 
 class DatasetPanel(QWidget):
     item_selected = pyqtSignal(Path)
@@ -37,6 +48,9 @@ class DatasetPanel(QWidget):
         self._btn_import = QPushButton("Import Files…")
         self._btn_import.clicked.connect(self._on_import)
 
+        self._btn_import_folder = QPushButton("Import Folder…")
+        self._btn_import_folder.clicked.connect(self._on_import_folder)
+
         self._btn_select_all = QPushButton("Select All")
         self._btn_select_all.clicked.connect(self.select_all)
 
@@ -52,6 +66,7 @@ class DatasetPanel(QWidget):
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(self._btn_import)
+        header.addWidget(self._btn_import_folder)
         header.addWidget(self._btn_select_all)
         header.addWidget(self._btn_remove_selected)
         header.addWidget(self._btn_clear_list)
@@ -72,22 +87,37 @@ class DatasetPanel(QWidget):
             self,
             "Select data files",
             "",
-            "Data files (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.csv *.txt *.mp4 *.avi *.spm);;All files (*.*)",
+            _DIRECT_IMPORT_FILTER,
         )
         if not files:
             return
 
-        for f in files:
-            p = Path(f)
-            key = str(p)
+        self._add_paths([Path(f) for f in files])
 
-            # zabrání duplicitám
+    def _on_import_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select folder to import", "")
+        if not folder:
+            return
+        root = Path(folder)
+        item_jsons = sorted(root.rglob("item.json"))
+        if item_jsons:
+            self._add_paths(item_jsons)
+            return
+        files = [
+            p for p in sorted(root.rglob("*"))
+            if p.is_file() and p.suffix.lower() in _RECURSIVE_IMPORT_EXTS
+        ]
+        self._add_paths(files)
+
+    def _add_paths(self, paths: List[Path]) -> None:
+        for p in paths:
+            key = str(Path(p))
             if key in self._path_to_item:
                 continue
 
-            self._items.append(DatasetItem(path=p))
+            self._items.append(DatasetItem(path=Path(p)))
 
-            item = QListWidgetItem(self._format_label(p.name, "idle"))
+            item = QListWidgetItem(self._format_label(Path(p).name, "idle"))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, key)

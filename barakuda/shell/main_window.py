@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
     QHBoxLayout, QDockWidget, QStackedWidget, QSplitter
@@ -27,6 +28,7 @@ class ShellMainWindow(QMainWindow):
 
         self.setWindowTitle("BARAKUDA Analysis Suite — Modular")
         self.resize(1400, 860)
+        self._set_window_icon_if_available()
 
         self.dataset = DatasetPanel()
         self._afm_preview = PreviewPanel(device_kind="AFM")
@@ -138,6 +140,18 @@ class ShellMainWindow(QMainWindow):
         
         self._first_show = True
         self._manual_roi_edited_paths = set()
+        self._last_ot_bead_diameter_um: Optional[float] = None
+
+    def _set_window_icon_if_available(self) -> None:
+        icon_path = Path(__file__).resolve().parents[2] / "assets" / "branding" / "barakuda" / "app_icon.png"
+        if not icon_path.is_file():
+            return
+        try:
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
+                self.setWindowIcon(icon)
+        except Exception:
+            pass
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -187,20 +201,20 @@ class ShellMainWindow(QMainWindow):
     def _on_item_selected(self, path: Path) -> None:
         self.log_panel.log(f"Selected: {path}")
 
-        # OT dataset manifest: resolve item.json → video path for all downstream use
-        # (scale loading, end-frame, params key).  PreviewPanel handles its own resolution too.
+        # OT dataset inputs: resolve item.json / item root / item video for all downstream use
+        # (scale loading, end-frame, params key). PreviewPanel handles the same resolution too.
         _ot_resolved_path = path
-        if self._active_device_id == "optical_tweezers" and path.name == "item.json":
+        if self._active_device_id == "optical_tweezers":
             try:
-                from barakuda.devices.optical_tweezers.manifest import load_item_manifest
-                _m = load_item_manifest(path)
-                if _m.video_path is not None:
-                    _ot_resolved_path = _m.video_path
+                from barakuda.devices.optical_tweezers.manifest import resolve_ot_input_path
+                _resolved = resolve_ot_input_path(path)
+                if _resolved.video_path is not None:
+                    _ot_resolved_path = _resolved.video_path
                     self.log_panel.log(
-                        f"Dataset manifest resolved: {_m.video_path.name}"
+                        f"Dataset input resolved: {_resolved.video_path.name}"
                     )
             except Exception as _e:
-                self.log_panel.log(f"WARN: item.json resolve failed: {_e!r}")
+                self.log_panel.log(f"WARN: dataset input resolve failed: {_e!r}")
 
         try:
             self.preview.show_file(str(path))
@@ -272,6 +286,7 @@ class ShellMainWindow(QMainWindow):
                         self.dataset.set_item_params(path, self._device_panel.dump_ot_params())
                 except Exception as e:
                     self.log_panel.log(f"WARN: OT per-video load failed: {e!r}")
+            self._sync_ot_bead_diameter_state()
 
     def _on_ot_panel_value_changed(self) -> None:
         """When an OT control changes, save the new params to the currently active dataset item."""
@@ -289,6 +304,20 @@ class ShellMainWindow(QMainWindow):
             self.dataset.set_item_params(active_path, pms)
         except Exception as e:
             self.log_panel.log(f"WARN: Failed to save OT params to dataset item: {e!r}")
+
+        current_bead_diameter = self._get_current_ot_bead_diameter_um()
+        previous_bead_diameter = self._last_ot_bead_diameter_um
+        self._last_ot_bead_diameter_um = current_bead_diameter
+        if (
+            current_bead_diameter is not None
+            and previous_bead_diameter is not None
+            and abs(current_bead_diameter - previous_bead_diameter) > 1e-9
+            and self._ot_preview.get_before_image() is not None
+        ):
+            self.log_panel.log(
+                f"Auto ROI: bead diameter changed to {current_bead_diameter:.3f} µm, recalculating."
+            )
+            self._on_auto_roi()
 
     # ---------------- device switching ----------------
 
@@ -338,6 +367,7 @@ class ShellMainWindow(QMainWindow):
                 
                 # Fetch profiles and populate UI
                 self._update_ot_profile_list()
+                self._sync_ot_bead_diameter_state()
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
@@ -428,6 +458,24 @@ class ShellMainWindow(QMainWindow):
             if not hasattr(self, "_manual_roi_edited_paths"):
                 self._manual_roi_edited_paths = set()
             self._manual_roi_edited_paths.add(str(paths[0]))
+
+    def _get_current_ot_bead_diameter_um(self) -> Optional[float]:
+        if self._active_device_id != "optical_tweezers" or self._device_panel is None:
+            return None
+        try:
+            if hasattr(self._device_panel, "get_postprocess_params"):
+                return float(self._device_panel.get_postprocess_params().get("bead_diameter_um", 1.0))
+        except Exception:
+            pass
+        try:
+            if hasattr(self._device_panel, "_bead_diameter_um"):
+                return float(self._device_panel._bead_diameter_um.value())
+        except Exception:
+            pass
+        return None
+
+    def _sync_ot_bead_diameter_state(self) -> None:
+        self._last_ot_bead_diameter_um = self._get_current_ot_bead_diameter_um()
 
     # ---------------- OT helpers ----------------
 

@@ -45,6 +45,19 @@ class OTItemManifest:
     raw: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class OTInputResolution:
+    """Normalized OT input reference for preview/run/export flows."""
+
+    original_path: Path
+    resolved_input_path: Path
+    item_json_path: Optional[Path] = None
+    item_root: Optional[Path] = None
+    video_path: Optional[Path] = None
+    meta_path: Optional[Path] = None
+    timestamps_path: Optional[Path] = None
+
+
 def load_item_manifest(item_json_path: Path) -> OTItemManifest:
     """
     Load and resolve an OT dataset item from item.json.
@@ -127,6 +140,42 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
         m.exports_dir = exp
 
     return m
+
+
+def resolve_ot_input_path(path: Path | str) -> OTInputResolution:
+    """
+    Normalize an OT input path to a canonical tuple.
+
+    Accepted inputs:
+      - item.json
+      - dataset item root
+      - acquisition/raw video path inside the item
+      - standalone video path
+    """
+    original_path = Path(path)
+    resolved_input_path = _safe_resolve(original_path)
+    item_json_path = _resolve_item_json_from_input(resolved_input_path)
+    if item_json_path is not None and item_json_path.is_file():
+        manifest = load_item_manifest(item_json_path)
+        video_path = manifest.video_path
+        return OTInputResolution(
+            original_path=original_path,
+            resolved_input_path=(video_path or item_json_path),
+            item_json_path=item_json_path,
+            item_root=manifest.item_root,
+            video_path=video_path,
+            meta_path=manifest.meta_path,
+            timestamps_path=manifest.timestamps_path,
+        )
+
+    item_root = _detect_item_root_from_video_path(resolved_input_path)
+    return OTInputResolution(
+        original_path=original_path,
+        resolved_input_path=resolved_input_path,
+        item_json_path=(item_root / "item.json") if item_root is not None else None,
+        item_root=item_root,
+        video_path=resolved_input_path if resolved_input_path.exists() else None,
+    )
 
 
 # ── internal helpers ────────────────────────────────────────────────────────
@@ -215,24 +264,44 @@ def _resolve_meta(
 
 def _resolve_analysis_dir(item_root: Path, raw: dict) -> Optional[Path]:
     """Resolve the analysis output directory."""
-    # 0. Canonical analysis.dir field (new schema, relative to item_root)
+    analysis_payload = raw.get("analysis", {}) or {}
+
+    # 0. Explicit external OT output link (preferred for acquisition items)
+    ot_last_output_dir = analysis_payload.get("ot_last_output_dir")
+    if ot_last_output_dir:
+        p = Path(ot_last_output_dir)
+        if p.is_dir():
+            return p
+
+    ot_last_output_item = analysis_payload.get("ot_last_output_item")
+    if ot_last_output_item:
+        p = Path(ot_last_output_item)
+        if p.is_dir():
+            for candidate in (
+                p / "analysis",
+                p / "module" / "ot",
+            ):
+                if candidate.is_dir():
+                    return candidate
+
+    # 1. Canonical analysis.dir field (supports both relative and absolute paths)
     an_dir = raw.get("analysis", {}).get("dir")
     if an_dir:
         p = item_root / an_dir
         if p.is_dir():
             return p
 
-    # 1. Canonical analysis/ folder
+    # 2. Canonical analysis/ folder
     p = item_root / "analysis"
     if p.is_dir():
         return p
 
-    # 2. Legacy module/ot/ (current batch_controller layout)
+    # 3. Legacy module/ot/ (current batch_controller layout)
     p = item_root / "module" / "ot"
     if p.is_dir():
         return p
 
-    # 3. Absolute run_dir recorded in the manifest
+    # 4. Absolute run_dir recorded in the manifest
     run_dir_str = raw.get("run_dir")
     if run_dir_str:
         p = Path(run_dir_str)
@@ -247,6 +316,40 @@ def _first_existing(base: Path, rel_paths: list[str]) -> Optional[Path]:
         p = (base / rel).resolve()
         if p.exists():
             return p
+    return None
+
+
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return Path(path).resolve()
+    except Exception:
+        return Path(path)
+
+
+def _resolve_item_json_from_input(path: Path) -> Optional[Path]:
+    candidates: list[Path] = []
+    if path.name == "item.json":
+        candidates.append(path)
+    if path.is_dir():
+        candidates.append(path / "item.json")
+        if path.name in {"acquisition", "raw"}:
+            candidates.append(path.parent / "item.json")
+    else:
+        candidates.append(path.parent / "item.json")
+        candidates.append(path.parent.parent / "item.json")
+    for candidate in candidates:
+        candidate = _safe_resolve(candidate)
+        if is_item_json(candidate):
+            return candidate
+    return None
+
+
+def _detect_item_root_from_video_path(video_path: Path) -> Optional[Path]:
+    parent = video_path.parent
+    if parent.name in {"acquisition", "raw"}:
+        item_root = parent.parent
+        if (item_root / "item.json").is_file():
+            return item_root
     return None
 
 

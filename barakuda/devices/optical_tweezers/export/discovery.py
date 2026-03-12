@@ -20,7 +20,10 @@ def _analysis_roots(root: Path) -> list[Path]:
     return [p for p in candidates if p.is_dir()]
 
 
-def discover_analysis_artifacts(dataset_root: Path | str) -> list[dict[str, Any]]:
+def discover_analysis_artifacts(
+    dataset_root: Path | str,
+    analysis_dir: Path | str | None = None,
+) -> list[dict[str, Any]]:
     """
     Discover all analysis files under dataset_root for Export.
 
@@ -30,13 +33,18 @@ def discover_analysis_artifacts(dataset_root: Path | str) -> list[dict[str, Any]
 
     Input:
         dataset_root: path to dataset root (item root, e.g. runs/.../item_id/).
+        analysis_dir: optional resolved analysis directory. Can point outside
+            dataset_root when a source dataset links to an OT output elsewhere.
 
     Returns:
-        List of dicts with keys: id, label, path.
-        path is relative to dataset_root. Only existing files are included.
+        List of dicts with keys: id, label, path, analysis_rel_path.
+        path is the display/export path. Only existing files are included.
     """
     root = Path(dataset_root).resolve()
-    analysis_roots = _analysis_roots(root)
+    if analysis_dir is not None:
+        analysis_roots = [Path(analysis_dir).resolve()]
+    else:
+        analysis_roots = _analysis_roots(root)
     if not analysis_roots:
         return []
 
@@ -44,18 +52,17 @@ def discover_analysis_artifacts(dataset_root: Path | str) -> list[dict[str, Any]
     seen_paths: set[str] = set()
 
     for analysis_dir in analysis_roots:
-        try:
-            analysis_dir.relative_to(root)
-        except ValueError:
-            continue
-
         for f in sorted(analysis_dir.rglob("*")):
             if not f.is_file():
                 continue
             try:
-                path_str = str(f.relative_to(root)).replace("\\", "/")
+                rel_analysis = str(f.relative_to(analysis_dir)).replace("\\", "/")
             except ValueError:
                 continue
+            try:
+                path_str = str(f.relative_to(root)).replace("\\", "/")
+            except ValueError:
+                path_str = f"analysis/{rel_analysis}"
             if path_str in seen_paths:
                 continue
             seen_paths.add(path_str)
@@ -63,6 +70,7 @@ def discover_analysis_artifacts(dataset_root: Path | str) -> list[dict[str, Any]
                 "id": path_str,
                 "label": path_str,
                 "path": path_str,
+                "analysis_rel_path": rel_analysis,
             })
 
     result.sort(key=lambda r: r["path"])

@@ -81,6 +81,15 @@ class BatchController:
             return mode
         return "off"
 
+    def _normalize_ot_postprocess_params(self, post_params: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(post_params)
+        diameter_um = float(normalized.get("bead_diameter_um", 1.0))
+        if not np.isfinite(diameter_um) or diameter_um <= 0:
+            raise ValueError("bead_diameter_um must be > 0")
+        normalized["bead_diameter_um"] = float(diameter_um)
+        normalized["bead_radius_um"] = float(diameter_um * 0.5)
+        return normalized
+
     def _parse_capture_tokens(self, p: Path) -> dict[str, Any]:
         """
         Expected filename (stem) format:
@@ -825,9 +834,8 @@ class BatchController:
                 device_panel.set_current_path(str(original_input_path))
                 
             tracking_params = device_panel.get_tracking_params()
-            post_params = device_panel.get_postprocess_params()
+            post_params = self._normalize_ot_postprocess_params(device_panel.get_postprocess_params())
             post_params.setdefault("temperature_c", 25.0)
-            post_params.setdefault("bead_diameter_um", 1.0)
             ot_runtime = self._resolve_ot_runtime(tracking_params)
             shadow_mode = self._get_ot_shadow_mode()
             ot_runtime["shadow_mode"] = shadow_mode
@@ -947,7 +955,7 @@ class BatchController:
 
                 # Scale policy (audit-first):
                 # 1) If dataset sidecar exists and enabled → use it.
-                # 2) Otherwise fall back to UI value (default should be 0.066528 µm/px).
+                # 2) Otherwise fall back to UI value (default should be 0.060420 µm/px).
                 # This prevents silent "um_per_px=None" causing calibration exports to disappear.
                 if use_dataset_scale:
                     info = load_dataset_scale(file_path)

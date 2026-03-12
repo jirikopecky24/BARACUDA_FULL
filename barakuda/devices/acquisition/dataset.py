@@ -58,7 +58,7 @@ def create_acquisition_dataset_home(
     Returns item_root (the directory containing item.json).
     """
     runs_root = Path(runs_root)
-    item_root = runs_root / "acquisition" / item_id
+    item_id, item_root = _reserve_item_root(runs_root, item_id)
     acq_dir = item_root / "acquisition"
     acq_dir.mkdir(parents=True, exist_ok=True)
 
@@ -147,3 +147,16 @@ def _copy_to_acq(
     if not dest.exists():
         shutil.copy2(str(src), str(dest))
     return dest
+
+
+def _reserve_item_root(runs_root: Path, item_id: str) -> tuple[str, Path]:
+    base_root = runs_root / "acquisition"
+    base_name = str(item_id).strip() or "acquisition_item"
+    candidate_id = base_name
+    candidate_root = base_root / candidate_id
+    suffix = 1
+    while candidate_root.exists():
+        candidate_id = f"{base_name}_{suffix:02d}"
+        candidate_root = base_root / candidate_id
+        suffix += 1
+    return candidate_id, candidate_root

@@ -289,6 +289,7 @@ class AcquisitionPanel(QWidget):
         self._image_view.ui.roiBtn.hide()
         self._image_view.ui.menuBtn.hide()
         self._image_view.ui.histogram.hide()
+        self._image_view.getView().invertY(True)
         left_layout.addWidget(self._image_view)
 
         # ROI overlay
@@ -956,7 +957,8 @@ class AcquisitionPanel(QWidget):
     def _on_test_fps(self) -> None:
         if not self._camera.is_connected:
             return
-        roi = self._get_roi_tuple()
+        requested_roi = self._get_roi_tuple()
+        roi = self._sync_roi_to_camera(requested_roi)
         self._lbl_test_fps_result.setText("Measuring…")
         self._btn_test_fps.setEnabled(False)
 
@@ -984,7 +986,8 @@ class AcquisitionPanel(QWidget):
     def _on_benchmark(self) -> None:
         if not self._camera.is_connected:
             return
-        roi = self._get_roi_tuple()
+        requested_roi = self._get_roi_tuple()
+        roi = self._sync_roi_to_camera(requested_roi)
         self._lbl_test_fps_result.setText("Benchmarking (5s)…")
         self._btn_benchmark.setEnabled(False)
         self._btn_test_fps.setEnabled(False)
@@ -1039,7 +1042,8 @@ class AcquisitionPanel(QWidget):
         if not self._camera.is_connected:
             return
 
-        roi = self._get_roi_tuple()
+        requested_roi = self._get_roi_tuple()
+        roi = self._sync_roi_to_camera(requested_roi)
         gain = self._spin_gain.value() if self._spin_gain.isEnabled() else None
 
         self._btn_record.setEnabled(False)
@@ -1056,7 +1060,8 @@ class AcquisitionPanel(QWidget):
         bn = self._edit_basename.text()
         self._log(
             f"Recording requested — format={rec_fmt}  duration={dur_str}  "
-            f"ROI={roi[0]}×{roi[1]}+{roi[2]}+{roi[3]}  fps_hint={fps_h:.0f}  "
+            f"requestedROI={requested_roi[0]}×{requested_roi[1]}+{requested_roi[2]}+{requested_roi[3]}  "
+            f"recordROI={roi[0]}×{roi[1]}+{roi[2]}+{roi[3]}  fps_hint={fps_h:.0f}  "
             f"out={out_path}\\{bn}"
         )
         if rec_fmt == "AVI" and fps_h > self._AVI_FPS_WARN_THRESHOLD:
@@ -1214,16 +1219,34 @@ class AcquisitionPanel(QWidget):
         fps_str = (
             f"{result.fps_effective:.1f}" if result.fps_effective else "N/A"
         )
+        meta = result.meta or {}
+        req_roi = self._roi_from_meta(meta.get("requested_roi"))
+        rec_roi = self._roi_from_meta(meta.get("record_roi"))
+        roi_line = ""
+        if req_roi is not None and rec_roi is not None:
+            roi_line = (
+                f"\nRequested ROI: {req_roi[0]}×{req_roi[1]}+{req_roi[2]}+{req_roi[3]}"
+                f"\nRecorded ROI:  {rec_roi[0]}×{rec_roi[1]}+{rec_roi[2]}+{rec_roi[3]}"
+            )
+        elif rec_roi is not None:
+            roi_line = f"\nRecorded ROI:  {rec_roi[0]}×{rec_roi[1]}+{rec_roi[2]}+{rec_roi[3]}"
         self._status.setText(
             f"✅ Record done — {result.frames_written} frames, "
             f"fps_eff={fps_str}, dropped={result.dropped}\n"
             f"Video: {result.video_path}\n"
             f"Meta:  {result.meta_path}"
+            f"{roi_line}"
         )
         self._log(
             f"Recording done — frames={result.frames_written}  fps_eff={fps_str}"
             f"  dropped={result.dropped}  video={result.video_path}"
         )
+        if req_roi is not None and rec_roi is not None:
+            self._log(
+                "Recording ROI chain — "
+                f"requested={req_roi[0]}x{req_roi[1]}+{req_roi[2]}+{req_roi[3]} "
+                f"recorded={rec_roi[0]}x{rec_roi[1]}+{rec_roi[2]}+{rec_roi[3]}"
+            )
         self._last_record_result = result
 
         # --- Write qc.json ---
@@ -1328,6 +1351,56 @@ class AcquisitionPanel(QWidget):
         oy = self._roi_spins["roi_oy"].value()
         return w, h, ox, oy
 
+    def _sync_roi_to_camera(self, roi: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        """Snap ROI using the same current constraints as the camera-facing UI controls."""
+        w = self._snap_down(int(roi[0]), self._w_inc, self._w_min, self._sensor_w)
+        h = self._snap_down(int(roi[1]), self._h_inc, self._h_min, self._sensor_h)
+        ox = self._snap_down(int(roi[2]), self._ox_inc, 0, self._sensor_w - w)
+        oy = self._snap_down(int(roi[3]), self._oy_inc, 0, self._sensor_h - h)
+        snapped = (w, h, ox, oy)
+
+        self._set_roi_tuple(snapped)
+        if snapped != roi:
+            self._log(
+                "ROI snapped for record — "
+                f"requested={roi[0]}x{roi[1]}+{roi[2]}+{roi[3]} "
+                f"snapped={snapped[0]}x{snapped[1]}+{snapped[2]}+{snapped[3]}"
+            )
+        self._update_status_line()
+        self._render_info_text()
+        return snapped
+
+    def _set_roi_tuple(self, roi: tuple[int, int, int, int]) -> None:
+        w, h, ox, oy = roi
+        self._roi_sync_lock = True
+        try:
+            for key, val in [("roi_w", w), ("roi_h", h), ("roi_ox", ox), ("roi_oy", oy)]:
+                self._roi_spins[key].blockSignals(True)
+                self._roi_spins[key].setValue(int(val))
+                self._roi_spins[key].blockSignals(False)
+                self._roi_sliders[key].blockSignals(True)
+                self._roi_sliders[key].setValue(int(val))
+                self._roi_sliders[key].blockSignals(False)
+            self._snap_and_clamp_roi_controls()
+            self._sync_slider_from_spin("roi_w")
+            self._apply_roi_overlay_from_controls()
+        finally:
+            self._roi_sync_lock = False
+
+    @staticmethod
+    def _roi_from_meta(payload) -> tuple[int, int, int, int] | None:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            return (
+                int(payload["w"]),
+                int(payload["h"]),
+                int(payload["x"]),
+                int(payload["y"]),
+            )
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------ #
     #  Status line
     # ------------------------------------------------------------------ #
@@ -1393,6 +1466,13 @@ class AcquisitionPanel(QWidget):
             lines.append(f"Last rec: {rr.frames_written}fr  fps_eff={fps_e}  drop={rr.dropped}")
             lines.append(f"  video: {rr.video_path}")
             lines.append(f"  meta : {rr.meta_path}")
+            meta = rr.meta or {}
+            req_roi = self._roi_from_meta(meta.get("requested_roi"))
+            rec_roi = self._roi_from_meta(meta.get("record_roi"))
+            if req_roi is not None:
+                lines.append(f"  reqROI: {req_roi[0]}x{req_roi[1]}+{req_roi[2]}+{req_roi[3]}")
+            if rec_roi is not None:
+                lines.append(f"  recROI: {rec_roi[0]}x{rec_roi[1]}+{rec_roi[2]}+{rec_roi[3]}")
 
         self._info_text.setPlainText("\n".join(lines))
 
