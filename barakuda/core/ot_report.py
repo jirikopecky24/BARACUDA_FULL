@@ -5,6 +5,7 @@ import json
 import math
 import textwrap
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,23 @@ TEXT_COLOR = "#162534"
 MUTED_COLOR = "#586574"
 LINE_COLOR = "#CAD5E0"
 PLOT_COLOR = "#1F6AA5"
+
+
+def _branding_asset_path(file_name: str) -> Path:
+    return Path(__file__).resolve().parents[2] / "assets" / "branding" / "barakuda" / file_name
+
+
+@lru_cache(maxsize=1)
+def _load_header_logo() -> Any | None:
+    logo_path = _branding_asset_path("logo_dark.png")
+    if not logo_path.is_file():
+        return None
+    try:
+        import matplotlib.image as mpimg
+
+        return mpimg.imread(logo_path)
+    except Exception:
+        return None
 
 
 def _load_json(path: Path | None) -> dict[str, Any] | None:
@@ -116,6 +134,60 @@ def _display_path(path_value: Any, width: int = 72) -> str:
     if not path_value:
         return "n/a"
     return textwrap.fill(str(path_value), width=width, break_long_words=False, break_on_hyphens=False)
+
+
+def _wrap_path_segments(path_value: Any, width: int = 88) -> list[str]:
+    text = str(path_value or "").strip()
+    if not text:
+        return ["n/a"]
+
+    normalized = text.replace("\\", "/")
+    raw_parts = normalized.split("/")
+    parts = [part for part in raw_parts if part]
+    prefix = ""
+    if normalized.startswith("//"):
+        prefix = "//"
+    elif len(text) >= 2 and text[1] == ":":
+        prefix = text[:2]
+    elif text.startswith("/"):
+        prefix = "/"
+
+    lines: list[str] = []
+    current = prefix if prefix else ""
+
+    def _flush() -> None:
+        nonlocal current
+        if current:
+            lines.append(current)
+            current = ""
+
+    for idx, part in enumerate(parts):
+        segment = part
+        if idx < len(parts) - 1:
+            segment += "/"
+        candidate = current + segment
+        if current and len(candidate) > width:
+            _flush()
+            candidate = segment
+        if len(candidate) <= width:
+            current = candidate
+            continue
+        wrapped_segment = textwrap.wrap(
+            segment,
+            width=width,
+            break_long_words=True,
+            break_on_hyphens=True,
+        ) or [segment]
+        if current:
+            _flush()
+        for wrapped_idx, chunk in enumerate(wrapped_segment):
+            if wrapped_idx < len(wrapped_segment) - 1:
+                lines.append(chunk)
+            else:
+                current = chunk
+
+    _flush()
+    return lines or ["n/a"]
 
 
 def _presentation_key(key: str) -> str:
@@ -393,14 +465,15 @@ def _identity_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Run ID", _wrap(summary.get("run_id"), 56)],
         ["Batch ID", _wrap(summary.get("batch_id"), 56)],
         ["Generated", _wrap(summary.get("created_at") or datetime.now().isoformat(timespec="seconds"), 56)],
+        ["Source file", _wrap(Path(str(summary.get("source_input_path") or "")).name if summary.get("source_input_path") else "n/a", 56)],
     ]
 
 
-def _identity_path_rows(summary: dict[str, Any]) -> list[list[str]]:
+def _path_entries_for_item(summary: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return [
-        ["Source input", _display_path(summary.get("source_input_path"), 110)],
-        ["Output root", _display_path(summary.get("output_root"), 110)],
-        ["Analysis directory", _display_path(summary.get("analysis_dir"), 110)],
+        ("Source input", _wrap_path_segments(summary.get("source_input_path"), 88)),
+        ("Output root", _wrap_path_segments(summary.get("output_root"), 88)),
+        ("Analysis directory", _wrap_path_segments(summary.get("analysis_dir"), 88)),
     ]
 
 
@@ -453,10 +526,10 @@ def _batch_overview_rows(batch_summary: dict[str, Any], items: list[dict[str, An
     ]
 
 
-def _batch_path_rows(batch_summary: dict[str, Any]) -> list[list[str]]:
+def _path_entries_for_batch(batch_summary: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return [
-        ["Output root", _display_path(batch_summary.get("output_root"), 110)],
-        ["Batch root", _display_path(batch_summary.get("batch_root"), 110)],
+        ("Output root", _wrap_path_segments(batch_summary.get("output_root"), 88)),
+        ("Batch root", _wrap_path_segments(batch_summary.get("batch_root"), 88)),
     ]
 
 
@@ -573,11 +646,20 @@ def _style_table(table, body_font_size: int = 9, header_font_size: int = 10) -> 
 def _add_brand_header(fig, title: str, subtitle: str | None = None, page_note: str | None = None) -> None:
     from matplotlib.lines import Line2D
 
-    fig.text(0.07, 0.972, BRAND_NAME, fontsize=20, fontweight="bold", color=BRAND_COLOR)
-    fig.text(0.07, 0.948, REPORT_NAME, fontsize=10.5, color=MUTED_COLOR)
-    fig.text(0.07, 0.914, title, fontsize=18, fontweight="bold", color=TEXT_COLOR)
+    title_x = 0.07
+    logo_image = _load_header_logo()
+    if logo_image is not None:
+        logo_ax = fig.add_axes([0.07, 0.905, 0.20, 0.08], anchor="NW")
+        logo_ax.imshow(logo_image)
+        logo_ax.axis("off")
+        title_x = 0.29
+    else:
+        fig.text(0.07, 0.972, BRAND_NAME, fontsize=20, fontweight="bold", color=BRAND_COLOR)
+
+    fig.text(title_x, 0.948, REPORT_NAME, fontsize=10.5, color=MUTED_COLOR)
+    fig.text(title_x, 0.914, title, fontsize=18, fontweight="bold", color=TEXT_COLOR)
     if subtitle:
-        fig.text(0.07, 0.892, subtitle, fontsize=10, color=MUTED_COLOR)
+        fig.text(title_x, 0.892, subtitle, fontsize=10, color=MUTED_COLOR)
     if page_note:
         fig.text(0.93, 0.972, page_note, fontsize=9, color=MUTED_COLOR, ha="right")
     fig.add_artist(Line2D([0.07, 0.93], [0.882, 0.882], transform=fig.transFigure, color=LINE_COLOR, linewidth=1.2))
@@ -589,9 +671,6 @@ def _render_cover_page(
     subtitle: str,
     left_rows: list[list[str]],
     right_rows: list[list[str]],
-    *,
-    bottom_rows: list[list[str]] | None = None,
-    bottom_title: str = "Paths and locations",
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -625,25 +704,57 @@ def _render_cover_page(
     )
     _style_table(right_table, body_font_size=9, header_font_size=10)
 
-    if bottom_rows:
-        ax_bottom_title = fig.add_axes([0.07, 0.245, 0.86, 0.04])
-        ax_bottom_title.axis("off")
-        ax_bottom_title.text(0.0, 0.5, bottom_title, fontsize=12, fontweight="bold", color=TEXT_COLOR, va="center")
-
-        ax_bottom = fig.add_axes([0.07, 0.11, 0.83, 0.12])
-        ax_bottom.axis("off")
-        bottom_table = ax_bottom.table(
-            cellText=bottom_rows,
-            colLabels=["Field", "Value"],
-            cellLoc="left",
-            colLoc="left",
-            bbox=[0.0, 0.0, 1.0, 1.0],
-        )
-        _style_table(bottom_table, body_font_size=8, header_font_size=10)
-
-    fig.text(0.07, 0.12, "Branding note: text-only BARAKUDA header is used for now and can be replaced later with a final logo asset.", fontsize=9, color=MUTED_COLOR)
+    fig.text(0.07, 0.12, "Branding note: bundled BARAKUDA logo assets are used when available and fall back to text branding if missing.", fontsize=9, color=MUTED_COLOR)
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
+
+
+def _render_path_block_pages(
+    pdf,
+    title: str,
+    entries: list[tuple[str, list[str]]],
+    *,
+    subtitle: str | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    if not entries:
+        return
+
+    idx = 0
+    page_no = 1
+    while idx < len(entries):
+        fig = plt.figure(figsize=PAGE_SIZE)
+        _add_brand_header(fig, title, subtitle=subtitle, page_note=f"Page {page_no}")
+        ax = fig.add_axes([0.07, 0.08, 0.86, 0.78])
+        ax.axis("off")
+
+        y = 0.98
+        while idx < len(entries):
+            label, lines = entries[idx]
+            block_height = 0.05 + (0.030 * max(1, len(lines)))
+            if y - block_height < 0.06:
+                break
+
+            ax.text(0.0, y, label, fontsize=11, fontweight="bold", color=TEXT_COLOR, va="top")
+            y -= 0.038
+            ax.text(
+                0.02,
+                y,
+                "\n".join(lines),
+                fontsize=8.6,
+                color=TEXT_COLOR,
+                va="top",
+                family="monospace",
+                linespacing=1.25,
+            )
+            y -= (0.030 * max(1, len(lines))) + 0.03
+            ax.hlines(y + 0.012, 0.0, 0.98, colors=LINE_COLOR, linewidth=0.8, transform=ax.transAxes)
+            idx += 1
+
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+        page_no += 1
 
 
 def _render_paginated_table(
@@ -871,8 +982,12 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             subtitle=f"{REPORT_NAME} | Item-level summary",
             left_rows=_identity_rows(summary),
             right_rows=_key_result_rows(summary),
-            bottom_rows=_identity_path_rows(summary),
-            bottom_title="Paths and locations",
+        )
+        _render_path_block_pages(
+            pdf,
+            "Paths Appendix",
+            _path_entries_for_item(summary),
+            subtitle="Full item paths rendered outside summary tables for stability",
         )
         _render_dual_table_page(
             pdf,
@@ -919,10 +1034,14 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
                 ["Failed or stopped", str(len(failures))],
                 ["Report generated", datetime.now().isoformat(timespec="seconds")],
                 ["Comparison focus", "Viscosity, diffusion, stiffness, corner frequency"],
-                ["Branding", "BARAKUDA text header (logo-ready placeholder)"],
+                ["Branding", "Bundled BARAKUDA logo with text fallback"],
             ],
-            bottom_rows=_batch_path_rows(batch_summary),
-            bottom_title="Batch locations",
+        )
+        _render_path_block_pages(
+            pdf,
+            "Batch Paths Appendix",
+            _path_entries_for_batch(batch_summary),
+            subtitle="Full batch paths rendered in a dedicated appendix section",
         )
 
         summary_rows = _batch_summary_rows(items)

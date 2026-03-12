@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
     QHBoxLayout, QDockWidget, QStackedWidget, QSplitter
@@ -27,6 +28,7 @@ class ShellMainWindow(QMainWindow):
 
         self.setWindowTitle("BARAKUDA Analysis Suite — Modular")
         self.resize(1400, 860)
+        self._set_window_icon_if_available()
 
         self.dataset = DatasetPanel()
         self._afm_preview = PreviewPanel(device_kind="AFM")
@@ -139,6 +141,17 @@ class ShellMainWindow(QMainWindow):
         self._first_show = True
         self._manual_roi_edited_paths = set()
 
+    def _set_window_icon_if_available(self) -> None:
+        icon_path = Path(__file__).resolve().parents[2] / "assets" / "branding" / "barakuda" / "app_icon.png"
+        if not icon_path.is_file():
+            return
+        try:
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
+                self.setWindowIcon(icon)
+        except Exception:
+            pass
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         
@@ -187,20 +200,20 @@ class ShellMainWindow(QMainWindow):
     def _on_item_selected(self, path: Path) -> None:
         self.log_panel.log(f"Selected: {path}")
 
-        # OT dataset manifest: resolve item.json → video path for all downstream use
-        # (scale loading, end-frame, params key).  PreviewPanel handles its own resolution too.
+        # OT dataset inputs: resolve item.json / item root / item video for all downstream use
+        # (scale loading, end-frame, params key). PreviewPanel handles the same resolution too.
         _ot_resolved_path = path
-        if self._active_device_id == "optical_tweezers" and path.name == "item.json":
+        if self._active_device_id == "optical_tweezers":
             try:
-                from barakuda.devices.optical_tweezers.manifest import load_item_manifest
-                _m = load_item_manifest(path)
-                if _m.video_path is not None:
-                    _ot_resolved_path = _m.video_path
+                from barakuda.devices.optical_tweezers.manifest import resolve_ot_input_path
+                _resolved = resolve_ot_input_path(path)
+                if _resolved.video_path is not None:
+                    _ot_resolved_path = _resolved.video_path
                     self.log_panel.log(
-                        f"Dataset manifest resolved: {_m.video_path.name}"
+                        f"Dataset input resolved: {_resolved.video_path.name}"
                     )
             except Exception as _e:
-                self.log_panel.log(f"WARN: item.json resolve failed: {_e!r}")
+                self.log_panel.log(f"WARN: dataset input resolve failed: {_e!r}")
 
         try:
             self.preview.show_file(str(path))
