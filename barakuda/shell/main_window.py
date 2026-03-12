@@ -238,7 +238,7 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.set_scale_status(txt)   # type: ignore[attr-defined]
                 else:
                     # Default OT scale (user requirement) for convenience; saved scale still wins.
-                    um = 0.066528
+                    um = 0.060420
                     txt = f"Scale: {um:.6f} µm/px (px default)"
                     self.preview.set_scale_display(txt)
                     self._device_panel.set_um_per_px(um)      # type: ignore[attr-defined]

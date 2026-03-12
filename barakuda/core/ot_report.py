@@ -393,9 +393,14 @@ def _identity_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Run ID", _wrap(summary.get("run_id"), 56)],
         ["Batch ID", _wrap(summary.get("batch_id"), 56)],
         ["Generated", _wrap(summary.get("created_at") or datetime.now().isoformat(timespec="seconds"), 56)],
-        ["Source input", _display_path(summary.get("source_input_path"), 58)],
-        ["Output root", _display_path(summary.get("output_root"), 58)],
-        ["Analysis directory", _display_path(summary.get("analysis_dir"), 58)],
+    ]
+
+
+def _identity_path_rows(summary: dict[str, Any]) -> list[list[str]]:
+    return [
+        ["Source input", _display_path(summary.get("source_input_path"), 110)],
+        ["Output root", _display_path(summary.get("output_root"), 110)],
+        ["Analysis directory", _display_path(summary.get("analysis_dir"), 110)],
     ]
 
 
@@ -442,11 +447,16 @@ def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
 def _batch_overview_rows(batch_summary: dict[str, Any], items: list[dict[str, Any]], successes: list[dict[str, Any]], failures: list[dict[str, Any]]) -> list[list[str]]:
     return [
         ["Batch ID", _wrap(batch_summary.get("batch_id"), 58)],
-        ["Output root", _display_path(batch_summary.get("output_root"), 58)],
-        ["Batch root", _display_path(batch_summary.get("batch_root"), 58)],
         ["Items total", str(len(items))],
         ["Successful items", str(len(successes))],
         ["Failed or stopped items", str(len(failures))],
+    ]
+
+
+def _batch_path_rows(batch_summary: dict[str, Any]) -> list[list[str]]:
+    return [
+        ["Output root", _display_path(batch_summary.get("output_root"), 110)],
+        ["Batch root", _display_path(batch_summary.get("batch_root"), 110)],
     ]
 
 
@@ -573,7 +583,16 @@ def _add_brand_header(fig, title: str, subtitle: str | None = None, page_note: s
     fig.add_artist(Line2D([0.07, 0.93], [0.882, 0.882], transform=fig.transFigure, color=LINE_COLOR, linewidth=1.2))
 
 
-def _render_cover_page(pdf, title: str, subtitle: str, left_rows: list[list[str]], right_rows: list[list[str]]) -> None:
+def _render_cover_page(
+    pdf,
+    title: str,
+    subtitle: str,
+    left_rows: list[list[str]],
+    right_rows: list[list[str]],
+    *,
+    bottom_rows: list[list[str]] | None = None,
+    bottom_title: str = "Paths and locations",
+) -> None:
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=PAGE_SIZE)
@@ -584,7 +603,7 @@ def _render_cover_page(pdf, title: str, subtitle: str, left_rows: list[list[str]
     ax.text(0.07, 0.785, subtitle, fontsize=11, color=MUTED_COLOR)
     ax.text(0.07, 0.735, "Prepared for direct scientific review and client-facing delivery.", fontsize=10.5, color=TEXT_COLOR)
 
-    ax_left = fig.add_axes([0.07, 0.19, 0.39, 0.47])
+    ax_left = fig.add_axes([0.07, 0.30, 0.39, 0.36])
     ax_left.axis("off")
     left_table = ax_left.table(
         cellText=left_rows,
@@ -595,7 +614,7 @@ def _render_cover_page(pdf, title: str, subtitle: str, left_rows: list[list[str]
     )
     _style_table(left_table, body_font_size=9, header_font_size=10)
 
-    ax_right = fig.add_axes([0.52, 0.25, 0.38, 0.40])
+    ax_right = fig.add_axes([0.52, 0.33, 0.38, 0.33])
     ax_right.axis("off")
     right_table = ax_right.table(
         cellText=right_rows,
@@ -605,6 +624,22 @@ def _render_cover_page(pdf, title: str, subtitle: str, left_rows: list[list[str]
         bbox=[0.0, 0.0, 1.0, 1.0],
     )
     _style_table(right_table, body_font_size=9, header_font_size=10)
+
+    if bottom_rows:
+        ax_bottom_title = fig.add_axes([0.07, 0.245, 0.86, 0.04])
+        ax_bottom_title.axis("off")
+        ax_bottom_title.text(0.0, 0.5, bottom_title, fontsize=12, fontweight="bold", color=TEXT_COLOR, va="center")
+
+        ax_bottom = fig.add_axes([0.07, 0.11, 0.83, 0.12])
+        ax_bottom.axis("off")
+        bottom_table = ax_bottom.table(
+            cellText=bottom_rows,
+            colLabels=["Field", "Value"],
+            cellLoc="left",
+            colLoc="left",
+            bbox=[0.0, 0.0, 1.0, 1.0],
+        )
+        _style_table(bottom_table, body_font_size=8, header_font_size=10)
 
     fig.text(0.07, 0.12, "Branding note: text-only BARAKUDA header is used for now and can be replaced later with a final logo asset.", fontsize=9, color=MUTED_COLOR)
     pdf.savefig(fig, bbox_inches="tight")
@@ -836,6 +871,8 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             subtitle=f"{REPORT_NAME} | Item-level summary",
             left_rows=_identity_rows(summary),
             right_rows=_key_result_rows(summary),
+            bottom_rows=_identity_path_rows(summary),
+            bottom_title="Paths and locations",
         )
         _render_dual_table_page(
             pdf,
@@ -884,6 +921,8 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
                 ["Comparison focus", "Viscosity, diffusion, stiffness, corner frequency"],
                 ["Branding", "BARAKUDA text header (logo-ready placeholder)"],
             ],
+            bottom_rows=_batch_path_rows(batch_summary),
+            bottom_title="Batch locations",
         )
 
         summary_rows = _batch_summary_rows(items)

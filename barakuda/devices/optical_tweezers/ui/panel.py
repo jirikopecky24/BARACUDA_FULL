@@ -249,7 +249,7 @@ class PipelinePanel(QWidget):
         self._um_per_px.setDecimals(6)
         self._um_per_px.setSingleStep(0.000001)
         # Default scale for OT (µm/px) — requested baseline.
-        self._um_per_px.setValue(0.066528)
+        self._um_per_px.setValue(0.060420)
         self._um_per_px.setToolTip("Manual pixel scale in micrometers per pixel.")
 
         self._scale_status = QLabel("Scale: not set (px only)")
@@ -682,7 +682,7 @@ class PipelinePanel(QWidget):
         
         # Scale Defaults
         self._use_dataset_scale.setChecked(True)
-        self._um_per_px.setValue(0.066528)
+        self._um_per_px.setValue(0.060420)
         self._run_output_root.setText(str(self._default_run_output_root))
         
         # Postprocess Defaults
@@ -839,7 +839,7 @@ class PipelinePanel(QWidget):
 
         sp = d.get("scale", {})
         self._use_dataset_scale.setChecked(sp.get("use_dataset_scale", True))
-        self._um_per_px.setValue(sp.get("um_per_px", 0.066528))
+        self._um_per_px.setValue(sp.get("um_per_px", 0.060420))
         
         fr = d.get("frame_range", [0, 0])
         self._start_frame.setValue(fr[0])
