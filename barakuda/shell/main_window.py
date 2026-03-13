@@ -204,6 +204,8 @@ class ShellMainWindow(QMainWindow):
         # OT dataset inputs: resolve item.json / item root / item video for all downstream use
         # (scale loading, end-frame, params key). PreviewPanel handles the same resolution too.
         _ot_resolved_path = path
+        _afm_resolved_path = path
+        _afm_manifest_params = None
         if self._active_device_id == "optical_tweezers":
             try:
                 from barakuda.devices.optical_tweezers.manifest import resolve_ot_input_path
@@ -215,10 +217,31 @@ class ShellMainWindow(QMainWindow):
                     )
             except Exception as _e:
                 self.log_panel.log(f"WARN: dataset input resolve failed: {_e!r}")
+        elif self._active_device_id == "afm":
+            try:
+                from barakuda.devices.afm.manifest import load_item_manifest, resolve_afm_input_path
+
+                _resolved = resolve_afm_input_path(path)
+                if _resolved.image_path is not None:
+                    _afm_resolved_path = _resolved.image_path
+                    self.log_panel.log(
+                        f"Dataset input resolved: {_resolved.image_path.name}"
+                    )
+                _afm_manifest_params = None
+                if _resolved.item_json_path is not None and _resolved.item_json_path.exists():
+                    try:
+                        _afm_manifest = load_item_manifest(_resolved.item_json_path)
+                        _afm_manifest_params = ((_afm_manifest.raw.get("afm") or {}).get("params"))
+                    except Exception:
+                        _afm_manifest_params = None
+            except Exception as _e:
+                self.log_panel.log(f"WARN: AFM dataset input resolve failed: {_e!r}")
+                _afm_manifest_params = None
 
         try:
             self.preview.show_file(str(path))
-            self.log_panel.log("Preview: video loaded." if is_video_file(_ot_resolved_path) else "Preview: file loaded.")
+            active_preview_path = _ot_resolved_path if self._active_device_id == "optical_tweezers" else _afm_resolved_path
+            self.log_panel.log("Preview: video loaded." if is_video_file(active_preview_path) else "Preview: file loaded.")
         except Exception as e:
             self.log_panel.log(f"Preview ERROR: {e!r}")
 
@@ -265,14 +288,27 @@ class ShellMainWindow(QMainWindow):
             # Disarm auto-preview on new dataset item (re-armed on first manual Preview)
             if hasattr(self._device_panel, "disarm_auto_preview"):
                 self._device_panel.disarm_auto_preview()  # type: ignore[attr-defined]
-            if str(path).lower().endswith(".spm"):
+            if str(_afm_resolved_path).lower().endswith(".spm"):
                 try:
                     from barakuda.devices.afm.io.afmreader_loader import load_spm_height
-                    _, loader_meta = load_spm_height(str(path))
+                    _, loader_meta = load_spm_height(str(_afm_resolved_path))
                     if hasattr(self._device_panel, "update_loader_info"):
                         self._device_panel.update_loader_info(loader_meta)  # type: ignore[attr-defined]
                 except Exception as e:
                     self.log_panel.log(f"WARN: AFM scale auto-load failed: {e!r}")
+            if hasattr(self._device_panel, "load_afm_params") and hasattr(self._device_panel, "get_afm_params"):
+                try:
+                    pms = self.dataset.get_item_params(path)
+                    if pms is not None:
+                        self._device_panel.load_afm_params(pms)  # type: ignore[attr-defined]
+                    elif _afm_manifest_params is not None:
+                        self._device_panel.load_afm_params(_afm_manifest_params)  # type: ignore[attr-defined]
+                        self.dataset.set_item_params(path, _afm_manifest_params)
+                    else:
+                        self.dataset.set_item_params(path, self._device_panel.get_afm_params())  # type: ignore[attr-defined]
+                    self._sync_afm_method_selector_from_panel()
+                except Exception as e:
+                    self.log_panel.log(f"WARN: AFM per-item load failed: {e!r}")
 
         # OT: Load per-video parameters if available, else save current as defaults for this video
         if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
@@ -318,6 +354,21 @@ class ShellMainWindow(QMainWindow):
                 f"Auto ROI: bead diameter changed to {current_bead_diameter:.3f} µm, recalculating."
             )
             self._on_auto_roi()
+
+    def _on_afm_panel_value_changed(self) -> None:
+        if self._active_device_id != "afm" or self._device_panel is None:
+            return
+
+        paths = self.dataset.get_selected_paths()
+        if not paths:
+            return
+
+        active_path = paths[0]
+        try:
+            params = self._device_panel.get_afm_params()
+            self.dataset.set_item_params(active_path, params)
+        except Exception as e:
+            self.log_panel.log(f"WARN: Failed to save AFM params to dataset item: {e!r}")
 
     # ---------------- device switching ----------------
 
@@ -382,6 +433,8 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.btn_cancel.clicked.connect(self._on_afm_preview_cancel_clicked)  # type: ignore[attr-defined]
                 if hasattr(self._device_panel, "auto_preview_requested"):
                     self._device_panel.auto_preview_requested.connect(self._on_afm_preview)  # type: ignore[attr-defined]
+                if hasattr(self._device_panel, "value_changed"):
+                    self._device_panel.value_changed.connect(self._on_afm_panel_value_changed)  # type: ignore[attr-defined]
             except Exception as e:
                 self.log_panel.log(f"WARN: AFM panel signals not wired: {e!r}")
 
@@ -407,6 +460,11 @@ class ShellMainWindow(QMainWindow):
                 self._preview_stack.setCurrentWidget(self._ot_preview)
 
         # Top-bar method selector (device-specific)
+        try:
+            self.method_combo.currentIndexChanged.disconnect()
+        except Exception:
+            pass
+
         if self._active_device_id == "optical_tweezers":
             self.method_combo.blockSignals(True)
             try:
@@ -416,11 +474,7 @@ class ShellMainWindow(QMainWindow):
                 self.method_combo.addItem("Microrheology (Coming later)", "Rheology")
                 
                 # Disable the rheology item
-                model = self.method_combo.model()
-                if hasattr(model, "item"):
-                    item = model.item(self.method_combo.count() - 1)
-                    if item:
-                        item.setEnabled(False)
+                self._set_method_combo_item_enabled(self.method_combo.count() - 1, False)
                         
                 self.method_combo.setCurrentIndex(0)
                 self.method_combo.setVisible(True)
@@ -435,14 +489,41 @@ class ShellMainWindow(QMainWindow):
                     mid = str(self.method_combo.currentData())
                     if hasattr(self._device_panel, "set_calibration_mode"):
                         self._device_panel.set_calibration_mode(mid)
-
-                # avoid duplicate connections
-                try:
-                    self.method_combo.currentIndexChanged.disconnect()
-                except Exception:
-                    pass
                 self.method_combo.currentIndexChanged.connect(_on_method_changed)
 
+            finally:
+                self.method_combo.blockSignals(False)
+        elif self._active_device_id == "afm":
+            self.method_combo.blockSignals(True)
+            try:
+                self.method_combo.clear()
+                methods = []
+                if hasattr(self._device_panel, "available_afm_methods"):
+                    methods = list(self._device_panel.available_afm_methods())  # type: ignore[attr-defined]
+                if not methods:
+                    methods = [("Rod Bacteria (Cellpose + Rod Fit)", "rod_bacteria", True)]
+
+                for label, method_id, _enabled in methods:
+                    self.method_combo.addItem(label, method_id)
+                for idx, (_label, _method_id, enabled) in enumerate(methods):
+                    self._set_method_combo_item_enabled(idx, enabled)
+
+                self.method_label.setText("Method:")
+                self.method_label.setVisible(True)
+                self.method_combo.setVisible(True)
+
+                current_method = "rod_bacteria"
+                if hasattr(self._device_panel, "get_afm_method"):
+                    current_method = str(self._device_panel.get_afm_method())  # type: ignore[attr-defined]
+                method_index = self.method_combo.findData(current_method)
+                self.method_combo.setCurrentIndex(method_index if method_index >= 0 else 0)
+
+                def _on_afm_method_changed(_idx: int) -> None:
+                    method_id = str(self.method_combo.currentData() or "rod_bacteria")
+                    if hasattr(self._device_panel, "set_afm_method"):
+                        self._device_panel.set_afm_method(method_id)  # type: ignore[attr-defined]
+
+                self.method_combo.currentIndexChanged.connect(_on_afm_method_changed)
             finally:
                 self.method_combo.blockSignals(False)
         else:
@@ -476,6 +557,28 @@ class ShellMainWindow(QMainWindow):
 
     def _sync_ot_bead_diameter_state(self) -> None:
         self._last_ot_bead_diameter_um = self._get_current_ot_bead_diameter_um()
+
+    def _set_method_combo_item_enabled(self, index: int, enabled: bool) -> None:
+        model = self.method_combo.model()
+        if hasattr(model, "item"):
+            item = model.item(index)
+            if item:
+                item.setEnabled(enabled)
+
+    def _sync_afm_method_selector_from_panel(self) -> None:
+        if self._active_device_id != "afm" or self._device_panel is None:
+            return
+        if not hasattr(self._device_panel, "get_afm_method"):
+            return
+        method_id = str(self._device_panel.get_afm_method())  # type: ignore[attr-defined]
+        idx = self.method_combo.findData(method_id)
+        if idx < 0:
+            return
+        was_blocked = self.method_combo.blockSignals(True)
+        try:
+            self.method_combo.setCurrentIndex(idx)
+        finally:
+            self.method_combo.blockSignals(was_blocked)
 
     # ---------------- OT helpers ----------------
 
@@ -1053,14 +1156,28 @@ class ShellMainWindow(QMainWindow):
             self._device_panel.set_preview_progress(pct, msg)  # type: ignore[attr-defined]
 
     def _on_afm_preview_cancel_clicked(self) -> None:
+        """Cancel AFM preview or batch run, whichever is active."""
+        cancelled_something = False
+
         if hasattr(self, "_afm_preview_timer"):
             self._afm_preview_timer.stop()
-            
+
         if self._afm_preview_worker:
             self._afm_preview_worker.cancel()
             self.log_panel.log("Preview AFM: Cancelling...")
-            if hasattr(self._device_panel, "set_status_message"):
-                self._device_panel.set_status_message("Cancelling...", is_error=True)  # type: ignore[attr-defined]
+            cancelled_something = True
+
+        if hasattr(self, "_afm_run_timer"):
+            self._afm_run_timer.stop()
+
+        if self._afm_run_worker is not None:
+            self._afm_run_worker.cancel()
+            self.batch.stop()
+            self.log_panel.log("AFM RUN: Stop requested...")
+            cancelled_something = True
+
+        if cancelled_something and hasattr(self._device_panel, "set_status_message"):
+            self._device_panel.set_status_message("Cancelling...", is_error=True)  # type: ignore[attr-defined]
 
     def _cleanup_afm_preview_thread(self) -> None:
         if self._afm_preview_thread is not None:

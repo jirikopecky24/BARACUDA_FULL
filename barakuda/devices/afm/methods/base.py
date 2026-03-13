@@ -22,16 +22,24 @@ class AfmMethodBase(ABC):
     DISPLAY_NAME: str = ""
 
     @abstractmethod
+    def build_runtime_params(self, raw_params: dict[str, Any]) -> Any:
+        """Convert raw UI params into a method-specific runtime params object."""
+        ...
+
+    @abstractmethod
     def compute(
         self,
         image: np.ndarray,
         params: Any,
+        *,
+        um_per_px: float = 0.0,
     ) -> dict:
         """Run the analysis pipeline.
 
         Args:
             image: Input image (2D float or uint8).
             params: Method-specific parameter object.
+            um_per_px: Physical scale in micrometers per pixel if available.
 
         Returns:
             Result dict (labels, rod_table, audit, etc.)

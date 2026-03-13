@@ -22,6 +22,11 @@
 - no "also changed"
 - if another file is needed -> STOP and report it
 
+## 3.1. AUTHORITATIVE RUNTIME ENVIRONMENT
+- The canonical BARAKUDA Python environment is `C:/Users/jirik/anaconda3/envs/barakuda/python.exe`
+- All pip installs, smoke tests, and application launches must target this interpreter
+- Do not assume shell context matches app runtime; always verify against this env when diagnosing dependencies
+
 ## 4. CURRENT WORKFLOW DECISIONS
 - RUN is the primary output mechanism
 - for Optical Tweezers, new non-dataset runs are moving toward using a selected Output Root
@@ -70,6 +75,28 @@
 - then human review/testing
 - only then merge to `main`
 
-## 10. HOW FUTURE PROMPTS SHOULD REFERENCE THIS NOTE
+## 10. AFM ROD BACTERIA - KNOWN ISSUES / BACKLOG
+
+Následující problémy byly identifikovány a čekají na opravu:
+
+### 10.1. Vzhled panelu
+- AFM panel stále nevypadá úplně jako OT panel
+- Problém: `_make_card()` funkce používala CSS selektor `QFrame {...}` který se propagoval na vnitřní widgety (SpinBox, ComboBox)
+- Částečně opraveno (OT-style přístup bez fancy karet), ale vizuální konzistence s OT není 100%
+
+### 10.2. Progress bar při analýze
+- Progress bar se zasekává na 79% během AFM batch analýzy
+- V terminálu se vypisuje průběh správně, ale UI progress bar se neaktualizuje
+- Příčina: pravděpodobně chybí signál/slot propojení mezi worker a UI pro progress update během batch běhu
+- Soubory k prověření:
+  - `barakuda/shell/workers/afm_run_worker.py`
+  - `barakuda/shell/main_window.py` (AFM batch progress handling)
+  - `barakuda/devices/afm/device.py` (pb_preview widget)
+
+### 10.3. Budoucí práce
+- Až se vrátíme k AFM Rod Bacteria, opravit tyto issues před dalším rozšiřováním
+- Reference pro OT-style UI: `barakuda/devices/optical_tweezers/ui/panel.py`
+
+## 11. HOW FUTURE PROMPTS SHOULD REFERENCE THIS NOTE
 - read `AGENT_BARAKUDA_WORKFLOW_NOTE.md` first
 - follow it unless the current prompt explicitly overrides a point

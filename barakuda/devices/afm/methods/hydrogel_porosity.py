@@ -18,10 +18,15 @@ class HydrogelPorosityMethod(AfmMethodBase):
     METHOD_ID = "hydrogel_porosity"
     DISPLAY_NAME = "Hydrogel Porosity (coming soon)"
 
+    def build_runtime_params(self, raw_params: dict[str, Any]) -> Any:
+        return dict(raw_params)
+
     def compute(
         self,
         image: np.ndarray,
         params: Any,
+        *,
+        um_per_px: float = 0.0,
     ) -> dict:
         raise NotImplementedError(
             "Hydrogel Porosity method is not yet implemented."

@@ -1824,43 +1824,94 @@ class BatchController:
     ) -> None:
         import csv
         import json
+        import math
         import numpy as np
         import imageio.v3 as iio
 
-        from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
+        from barakuda.core.afm_report import (
+            build_afm_item_summary,
+            export_afm_batch_pdf,
+            export_afm_item_pdf,
+        )
         from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
+        from barakuda.devices.afm.manifest import (
+            build_item_manifest_payload,
+            resolve_afm_input_path,
+        )
+        from barakuda.devices.afm.methods import get_afm_method
 
         total = len(file_paths)
         progress_fn(0, total, "", 0)
-
-        # ROI
         x, y, w, h = roi_rect
+        method_id = str(afm_params.get("afm_method", "rod_bacteria") or "rod_bacteria")
+        method = get_afm_method(method_id)
+        output_root = self.run_manager.runs_folder / "afm"
+        batch_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        batch_root = output_root / batch_id
+        items_root = batch_root / "items"
+        items_root.mkdir(parents=True, exist_ok=True)
+        batch_items: list[dict[str, Any]] = []
+        report_items: list[dict[str, Any]] = []
+        used_item_ids: set[str] = set()
+        batch_created_at = datetime.now().isoformat(timespec="seconds")
 
-        def _f(key, default): return float(afm_params.get(key, default))
-        def _i(key, default): return int(afm_params.get(key, default))
-        def _b(key, default): return bool(afm_params.get(key, default))
-        def _s(key, default): return str(afm_params.get(key, default))
+        def _slug(text: str) -> str:
+            candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text or "").strip()).strip("._-")
+            return candidate or "afm_item"
 
-        for i, p in enumerate(file_paths, start=1):
+        def _unique_item_id(base: str) -> str:
+            candidate = _slug(base)
+            if candidate not in used_item_ids:
+                used_item_ids.add(candidate)
+                return candidate
+            idx = 2
+            while f"{candidate}_{idx}" in used_item_ids:
+                idx += 1
+            unique = f"{candidate}_{idx}"
+            used_item_ids.add(unique)
+            return unique
+
+        self._stop_requested = False
+
+        for i, original_path in enumerate(file_paths, start=1):
+            if self._stop_requested:
+                self._log("AFM batch stopped before processing next file.")
+                break
             try:
-                dataset_set_status_fn(p, "running")
+                dataset_set_status_fn(original_path, "running")
+
+                resolved = resolve_afm_input_path(original_path)
+                input_path = resolved.image_path or resolved.resolved_input_path
+                if not input_path.exists():
+                    raise FileNotFoundError(f"AFM input not found: {input_path}")
+
+                item_base = resolved.item_root.name if resolved.item_root is not None else input_path.stem
+                item_id = _unique_item_id(item_base)
+                item_root = items_root / item_id
+                acquisition_dir = item_root / "acquisition"
+                analysis_dir = item_root / "analysis"
+                dir_audit = analysis_dir / "audit"
+                dir_csv = analysis_dir / "csv"
+                dir_results = analysis_dir / "results"
+                for directory in (acquisition_dir, dir_audit, dir_csv, dir_results):
+                    directory.mkdir(parents=True, exist_ok=True)
 
                 # --- LOAD IMAGE ---
                 loader_meta = {}
-                if str(p).lower().endswith(".spm"):
+                if str(input_path).lower().endswith(".spm"):
                     try:
                         from barakuda.devices.afm.io.afmreader_loader import load_spm_height
-                        img, loader_meta = load_spm_height(str(p))
+                        img, loader_meta = load_spm_height(str(input_path))
                         self._log(f"[AFM] Loaded .spm via {loader_meta.get('loader', '?')}: "
                                   f"channel={loader_meta.get('selected_channel', '?')}, "
                                   f"shape={loader_meta.get('shape', '?')}, "
                                   f"px_to_nm={loader_meta.get('pixel_to_nm', '?')}")
                     except Exception as e:
-                        self._log(f"ERROR: Failed to load .spm file {p.name}: {e!r}")
-                        dataset_set_status_fn(p, "failed")
+                        self._log(f"ERROR: Failed to load .spm file {input_path.name}: {e!r}")
+                        dataset_set_status_fn(original_path, "failed")
                         continue
                 else:
-                    img_orig = iio.imread(p)
+                    img_orig = iio.imread(input_path)
                     img = img_orig
                     if img.ndim == 3:
                         if img.shape[-1] >= 3:
@@ -1881,42 +1932,32 @@ class BatchController:
 
                 roi_img = img[y0:y0 + h0, x0:x0 + w0]
 
+                runtime_params = method.build_runtime_params(afm_params)
                 cfg = {
                     "device": "afm",
-                    "method": "AFM_V2",
+                    "method": method_id,
                     "roi_rect": [x0, y0, w0, h0],
                     "params": afm_params,
+                    "source_input_path": str(original_path),
                 }
-
-                run = self.run_manager.create_run(input_path=p, config=cfg)
-                run_dir = run.run_dir
-                stem = p.stem
-
-                # --- BUILD V2 PARAMS (Cellpose-only) ---
-                _cp_diam_px = afm_params.get("cp_diameter_px")
-                p_v2 = AfmV2Params(
-                    compute_profile=_s("compute_profile", "auto"),
-                    preview_fast_mode=_b("preview_fast_mode", False),
-                    preview_downscale=_f("preview_downscale", 0.5),
-                    invert=_b("invert", False),
-                    clip_p_low=_f("clip_p_low", 1.0),
-                    clip_p_high=_f("clip_p_high", 99.0),
-                    cp_model=_s("cp_model", "cyto3"),
-                    cp_diameter_mode=_s("cp_diameter_mode", "auto"),
-                    cp_diameter_px=int(_cp_diam_px) if _cp_diam_px is not None else None,
-                    cp_flow_threshold=_f("cp_flow_threshold", 0.4),
-                    cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
-                    rods_only=_b("rods_only", True),
-                    rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
-                    rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
-                    rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
-                    rods_min_area_px=_i("rods_min_area_px", 8),
-                    ellipse_thickness_px=_i("ellipse_thickness_px", 2),
-                    ellipse_alpha=_f("ellipse_alpha", 0.6),
+                run_id = f"{batch_id}-{item_id}"
+                run_json_path = dir_audit / "run.json"
+                run_json_path.write_text(
+                    json.dumps(
+                        {
+                            "run_id": run_id,
+                            "created_at": datetime.now().isoformat(timespec="seconds"),
+                            "input_path": str(input_path),
+                            "config": cfg,
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
                 )
+                stem = input_path.stem
 
-                # --- RUN V2 PIPELINE ---
-                res = run_afm_v2(roi_img, p_v2, float(loader_meta.get("afm_um_per_px", 0.0)))
+                res = method.compute(roi_img, runtime_params, um_per_px=float(loader_meta.get("afm_um_per_px", 0.0)))
                 labels = res["labels"]
                 rod_labels = res["rod_labels"]
                 rod_table = res["rod_table"]
@@ -1929,6 +1970,7 @@ class BatchController:
 
                 # --- Merge loader metadata into audit ---
                 audit["device"] = "AFM"
+                audit["method_id"] = method_id
                 audit["loader"] = loader_meta.get("loader", "unknown")
                 audit["selected_channel"] = loader_meta.get("selected_channel", "unknown")
                 audit["afmreader_version"] = loader_meta.get("afmreader_version", None)
@@ -1940,13 +1982,13 @@ class BatchController:
                 n_rods = len(rod_table.get("label", []))
 
                 # --- EXPORT: rods_mask.png (FULL SIZE) ---
-                rods_mask_path = run_dir / f"{stem}_rods_mask.png"
+                rods_mask_path = dir_results / f"{stem}_rods_mask.png"
                 full_mask = np.zeros((H, W), dtype=np.uint8)
                 full_mask[y0:y0+h0, x0:x0+w0] = (rod_labels > 0).astype(np.uint8) * 255
                 iio.imwrite(rods_mask_path, full_mask)
 
                 # --- EXPORT: rods_props.csv (with orientation_folded_rad) ---
-                rods_csv = run_dir / f"{stem}_rods_props.csv"
+                rods_csv = dir_csv / f"{stem}_rods_props.csv"
                 cols = ["label", "centroid_x", "centroid_y", "orientation_rad",
                         "orientation_folded_rad",
                         "major_axis_px", "minor_axis_px", "aspect_ratio",
@@ -1970,6 +2012,7 @@ class BatchController:
 
                 # --- EXPORT: orientation histograms (Sturges, 4 variants) ---
                 _ori_hist_audit = {}
+                cp_audit = audit.get("cellpose", {})
                 if n_rods > 0:
                     try:
                         import math as _math2
@@ -2011,12 +2054,12 @@ class BatchController:
                         cnt_raw_c, edg_raw_c = _render_hist(
                             ori_raw, sturges_k, range_raw,
                             "Orientation (rad)", "Count", title_raw,
-                            run_dir / f"{stem}_orientation_hist_rad_count.png",
+                            dir_results / f"{stem}_orientation_hist_rad_count.png",
                         )
                         cnt_raw_d, edg_raw_d = _render_hist(
                             ori_raw, sturges_k, range_raw,
                             "Orientation (°)", "Frequency (%)", title_raw,
-                            run_dir / f"{stem}_orientation_hist_deg_density.png",
+                            dir_results / f"{stem}_orientation_hist_deg_density.png",
                             density=True,
                         )
                         # fix x-axis to degrees for the density plot
@@ -2035,7 +2078,7 @@ class BatchController:
                         ax_d.set_ylabel("Frequency (%)")
                         ax_d.set_title(title_raw)
                         fig_d.tight_layout()
-                        fig_d.savefig(str(run_dir / f"{stem}_orientation_hist_deg_density.png"),
+                        fig_d.savefig(str(dir_results / f"{stem}_orientation_hist_deg_density.png"),
                                       dpi=300, facecolor="white")
                         plt.close(fig_d)
 
@@ -2046,7 +2089,7 @@ class BatchController:
                         cnt_fld_c, edg_fld_c = _render_hist(
                             ori_folded, sturges_k, range_fld,
                             "Folded orientation (rad)", "Count", title_fld,
-                            run_dir / f"{stem}_orientation_folded_hist_rad_count.png",
+                            dir_results / f"{stem}_orientation_folded_hist_rad_count.png",
                         )
                         cnt_fld_d2, _ = np.histogram(ori_folded * _R2D, bins=sturges_k,
                                                      range=(range_fld[0]*_R2D, range_fld[1]*_R2D),
@@ -2062,12 +2105,12 @@ class BatchController:
                         ax_f.set_ylabel("Frequency (%)")
                         ax_f.set_title(title_fld)
                         fig_f.tight_layout()
-                        fig_f.savefig(str(run_dir / f"{stem}_orientation_folded_hist_deg_density.png"),
+                        fig_f.savefig(str(dir_results / f"{stem}_orientation_folded_hist_deg_density.png"),
                                       dpi=300, facecolor="white")
                         plt.close(fig_f)
 
                         # --- JSON metadata (extended) ---
-                        hist_json_path = run_dir / f"{stem}_orientation_hist.json"
+                        hist_json_path = dir_audit / f"{stem}_orientation_hist.json"
                         hist_json_path.write_text(json.dumps({
                             "orientation_rad": {
                                 "n_samples": n_rods,
@@ -2109,14 +2152,14 @@ class BatchController:
                 # --- EXPORT: overlay.png (FULL SIZE with ROI box) ---
                 if bool(afm_params.get("save_overlay", True)):
                     from barakuda.devices.afm.core.afm_v2_pipeline import _normalize
-                    full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
+                    full_norm = _normalize(img, runtime_params.invert, runtime_params.clip_p_low, runtime_params.clip_p_high)
                     full_img8 = (full_norm * 255.0).astype(np.uint8)
-                    overlay = render_ellipse_overlay(full_img8, rod_table, thickness_px=int(p_v2.ellipse_thickness_px), ellipse_alpha=float(p_v2.ellipse_alpha))
+                    overlay = render_ellipse_overlay(full_img8, rod_table, thickness_px=int(runtime_params.ellipse_thickness_px), ellipse_alpha=float(runtime_params.ellipse_alpha))
                     
                     import cv2
-                    cv2.rectangle(overlay, (x0, y0), (x0+w0, y0+h0), (255, 255, 0), max(1, int(p_v2.ellipse_thickness_px)))
+                    cv2.rectangle(overlay, (x0, y0), (x0+w0, y0+h0), (255, 255, 0), max(1, int(runtime_params.ellipse_thickness_px)))
 
-                    overlay_path = run_dir / f"{stem}_overlay.png"
+                    overlay_path = dir_results / f"{stem}_overlay.png"
                     iio.imwrite(overlay_path, overlay)
 
                     # --- EXPORT: contours-only PNG (transparent background) ---
@@ -2141,19 +2184,17 @@ class BatchController:
                             ell_mask[_pr, _pc] = True
                         except Exception:
                             continue
-                    if int(p_v2.ellipse_thickness_px) > 1:
-                        ell_mask = sk_morph.binary_dilation(ell_mask, sk_morph.disk(int(p_v2.ellipse_thickness_px) - 1))
+                    if int(runtime_params.ellipse_thickness_px) > 1:
+                        ell_mask = sk_morph.binary_dilation(ell_mask, sk_morph.disk(int(runtime_params.ellipse_thickness_px) - 1))
                     contours_rgba[ell_mask, 0] = 255  # R
                     contours_rgba[ell_mask, 1] = 255  # G
                     contours_rgba[ell_mask, 2] = 0    # B
                     contours_rgba[ell_mask, 3] = 255  # A (opaque where ellipse)
-                    contours_path = run_dir / f"{stem}_contours.png"
+                    contours_path = dir_results / f"{stem}_contours.png"
                     iio.imwrite(contours_path, contours_rgba)
 
                 # --- EXPORT: summary.json (full audit + top-level must-have) ---
-                summary_json = run_dir / f"{stem}_summary.json"
-                
-                cp_audit = audit.get("cellpose", {})
+                summary_json = dir_audit / f"{stem}_summary.json"
                 timings = audit.get("timings_ms", {})
                 diam_eff = cp_audit.get("diameter_effective_px", "Auto")
                 
@@ -2168,17 +2209,22 @@ class BatchController:
                     "afm_scan_size_um": loader_meta.get("afm_scan_size_um", 0.0),
                     
                     # Compute & Environment
-                    "compute_profile": cp_audit.get("compute_profile", "unknown"),
+                    "compute_profile_requested": cp_audit.get("requested_profile", cp_audit.get("compute_profile", "unknown")),
+                    "compute_profile_resolved": cp_audit.get("resolved_profile", cp_audit.get("compute_profile", "unknown")),
+                    "compute_profile": cp_audit.get("resolved_profile", cp_audit.get("compute_profile", "unknown")),
                     "compute_device_resolved": cp_audit.get("device", "unknown"),
+                    "compute_backend": cp_audit.get("backend", "cellpose"),
+                    "compute_fallback_applied": bool(cp_audit.get("fallback_applied", False)),
+                    "compute_fallback_reason": cp_audit.get("fallback_reason", ""),
                     "torch_version": cp_audit.get("torch_version", "unknown"),
                     "cellpose_version": cp_audit.get("cellpose_version", "unknown"),
                     
                     # Core AFM Params
-                    "cellpose_model": cp_audit.get("cellpose_model", p_v2.cp_model),
-                    "diameter_mode": p_v2.cp_diameter_mode,
+                    "cellpose_model": cp_audit.get("cellpose_model", runtime_params.cp_model),
+                    "diameter_mode": runtime_params.cp_diameter_mode,
                     "diameter_effective_px": diam_eff,
-                    "flow_threshold": cp_audit.get("flow_threshold", p_v2.cp_flow_threshold),
-                    "cellprob_threshold": cp_audit.get("cellprob_threshold", p_v2.cp_cellprob_threshold),
+                    "flow_threshold": cp_audit.get("flow_threshold", runtime_params.cp_flow_threshold),
+                    "cellprob_threshold": cp_audit.get("cellprob_threshold", runtime_params.cp_cellprob_threshold),
                     "rod_filter": audit.get("rod_filter", {}),
                     
                     # Performance & Diagnostics
@@ -2189,8 +2235,9 @@ class BatchController:
                     # Batch metadata
                     "n_labels": int(labels.max()),
                     "n_rods": n_rods,
+                    "method_id": method_id,
                     "roi_rect": [x0, y0, w0, h0],
-                    "source_image": p.name,
+                    "source_image": input_path.name,
                     # Orientation histogram audit
                     "orientation_histogram": _ori_hist_audit,
                     # Full audit trace (for granular bug reports)
@@ -2198,15 +2245,113 @@ class BatchController:
                 }
                 summary_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
-                dataset_set_status_fn(p, "done")
-                self._log(f"OK AFM: {p.name} -> {run.run_id} (rods={n_rods}, total_labels={int(labels.max())})")
+                archived_image = acquisition_dir / input_path.name
+                if not archived_image.exists():
+                    shutil.copy2(input_path, archived_image)
+
+                item_payload = build_item_manifest_payload(
+                    item_root=item_root,
+                    item_id=item_id,
+                    batch_id=batch_id,
+                    source_input_path=str(original_path),
+                    acquisition_image=archived_image,
+                    analysis_dir=analysis_dir,
+                    roi=[x0, y0, w0, h0],
+                    afm_um_per_px=float(loader_meta.get("afm_um_per_px", 0.0) or 0.0),
+                    afm_um_per_px_source=str(loader_meta.get("afm_um_per_px_source", "unknown")),
+                    selected_channel=str(loader_meta.get("selected_channel", "unknown")),
+                    params=dict(afm_params),
+                    status="analyzed",
+                )
+                (item_root / "item.json").write_text(
+                    json.dumps(item_payload, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+                if resolved.item_json_path is not None and resolved.item_root is not None and resolved.item_json_path.exists():
+                    try:
+                        source_existing = json.loads(resolved.item_json_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        source_existing = {}
+                    source_updated = build_item_manifest_payload(
+                        item_root=resolved.item_root,
+                        item_id=resolved.item_root.name,
+                        batch_id=str(source_existing.get("batch_id") or batch_id),
+                        source_input_path=str(original_path),
+                        analysis_dir=analysis_dir,
+                        params=dict(afm_params),
+                        status=str(source_existing.get("status", "acquired") or "acquired"),
+                        existing_payload=source_existing,
+                    )
+                    source_analysis = dict(source_updated.get("analysis") or {})
+                    source_analysis["afm_last_output_item"] = str(item_root)
+                    source_analysis["afm_last_output_dir"] = str(analysis_dir)
+                    source_updated["analysis"] = source_analysis
+                    resolved.item_json_path.write_text(
+                        json.dumps(source_updated, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+
+                item_summary = build_afm_item_summary(
+                    analysis_dir=analysis_dir,
+                    base_name=stem,
+                    item_id=item_id,
+                    source_input_path=str(original_path),
+                    status="success",
+                    run_id=run_id,
+                    batch_id=batch_id,
+                    output_root=str(output_root),
+                    file_name=input_path.name,
+                )
+                try:
+                    item_pdf_path = dir_results / f"{stem}_summary.pdf"
+                    export_afm_item_pdf(item_pdf_path, item_summary)
+                    item_summary.setdefault("artifacts", {})["item_pdf"] = str(item_pdf_path)
+                except Exception as e:
+                    self._log(f"WARN: AFM item report export failed ({input_path.name}): {e!r}")
+                report_items.append(item_summary)
+                batch_items.append(
+                    {
+                        "item_id": item_id,
+                        "source_file_name": input_path.name,
+                        "item_path": f"items/{item_id}/",
+                    }
+                )
+
+                dataset_set_status_fn(original_path, "done")
+                self._log(f"OK AFM: {input_path.name} -> {run_id} (rods={n_rods}, total_labels={int(labels.max())})")
 
             except Exception as e:
-                dataset_set_status_fn(p, "failed")
-                self._log(f"ERROR AFM: {p.name}: {e!r}")
+                dataset_set_status_fn(original_path, "failed")
+                self._log(f"ERROR AFM: {original_path.name}: {e!r}")
 
             pct = int(round(100.0 * i / max(1, total)))
-            progress_fn(i, total, p.name, pct)
+            progress_fn(i, total, original_path.name, pct)
+
+        batch_payload = {
+            "schema_version": 1,
+            "module": "afm",
+            "batch_id": batch_id,
+            "created_at": batch_created_at,
+            "items": batch_items,
+        }
+        (batch_root / "batch.json").write_text(
+            json.dumps(batch_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        if report_items:
+            try:
+                export_afm_batch_pdf(
+                    batch_root / "batch_summary.pdf",
+                    {
+                        "batch_id": batch_id,
+                        "output_root": str(output_root),
+                        "batch_root": str(batch_root),
+                        "items": report_items,
+                    },
+                )
+            except Exception as e:
+                self._log(f"WARN: AFM batch PDF export failed: {e!r}")
 
         self._log("Run Batch done ✅")
 
@@ -2219,16 +2364,20 @@ class BatchController:
         import imageio.v2 as iio
         import numpy as np
 
-        from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params
+        from barakuda.devices.afm.core.afm_v2_pipeline import _normalize
         from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
+        from barakuda.devices.afm.manifest import resolve_afm_input_path
+        from barakuda.devices.afm.methods import get_afm_method
 
+        resolved = resolve_afm_input_path(file_path)
+        source_path = str(resolved.image_path or resolved.resolved_input_path)
         loader_meta = None
-        if file_path.lower().endswith(".spm"):
+        if source_path.lower().endswith(".spm"):
             from barakuda.devices.afm.io.afmreader_loader import load_spm_height
-            img, loader_meta = load_spm_height(file_path)
+            img, loader_meta = load_spm_height(source_path)
             img_orig = img
         else:
-            img_orig = iio.imread(file_path)
+            img_orig = iio.imread(source_path)
 
         self._last_afm_loader_meta = loader_meta
         img = img_orig
@@ -2251,39 +2400,26 @@ class BatchController:
         w = max(1, min(w, W - x))
         h = max(1, min(h, H - y))
         roi_img = img[y:y + h, x:x + w]
-
-        # Build V2 params
-        def _f(key, default): return float(afm_params.get(key, default))
-        def _i(key, default): return int(afm_params.get(key, default))
-        def _b(key, default): return bool(afm_params.get(key, default))
-        def _s(key, default): return str(afm_params.get(key, default))
-
-        p_v2 = AfmV2Params(
-            invert=_b("invert", False),
-            clip_p_low=_f("clip_p_low", 1.0),
-            clip_p_high=_f("clip_p_high", 99.0),
-            cp_model=_s("cp_model", "cyto3"),
-            cp_diameter=_f("cp_diameter", 0.0),
-            cp_flow_threshold=_f("cp_flow_threshold", 0.4),
-            cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
-            rods_only=_b("rods_only", True),
-            rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
-            rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
-            rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
-            rods_min_area_px=_i("rods_min_area_px", 8),
-            ellipse_thickness_px=_i("ellipse_thickness_px", 2),
-            ellipse_alpha=_f("ellipse_alpha", 0.6),
-        )
-
-        res = run_afm_v2(roi_img, p_v2)
+        method = get_afm_method(afm_params.get("afm_method"))
+        runtime_params = method.build_runtime_params(afm_params)
+        res = method.compute(roi_img, runtime_params, um_per_px=float((loader_meta or {}).get("afm_um_per_px", 0.0)))
 
         rod_table = res["rod_table"]
         n_rods = len(rod_table.get("label", []))
+        if "centroid_x" in rod_table and len(rod_table.get("centroid_x", [])) > 0:
+            rod_table["centroid_x"] = rod_table["centroid_x"] + x
+            rod_table["centroid_y"] = rod_table["centroid_y"] + y
 
-        # Overlay: single call to render_ellipse_overlay (no inline drawing)
-        overlay = render_ellipse_overlay(roi_img, rod_table, thickness_px=int(p_v2.ellipse_thickness_px), ellipse_alpha=float(p_v2.ellipse_alpha))
+        full_norm = _normalize(img, runtime_params.invert, runtime_params.clip_p_low, runtime_params.clip_p_high)
+        full_img8 = (full_norm * 255.0).astype(np.uint8)
+        overlay = render_ellipse_overlay(
+            full_img8,
+            rod_table,
+            thickness_px=int(runtime_params.ellipse_thickness_px),
+            ellipse_alpha=float(runtime_params.ellipse_alpha),
+        )
 
-        return {"overlay": overlay, "n_rods": n_rods}
+        return {"overlay": overlay, "n_rods": n_rods, "loader_meta": loader_meta}
 
     # NOTE: _build_afm_seg_params removed — legacy pipeline no longer used
 

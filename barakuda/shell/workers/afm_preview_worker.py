@@ -5,8 +5,9 @@ import numpy as np
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from barakuda.devices.afm.core.afm_v2_pipeline import run_afm_v2, AfmV2Params, _normalize
+from barakuda.devices.afm.core.afm_v2_pipeline import _normalize
 from barakuda.devices.afm.core.overlay_ellipse import render_ellipse_overlay
+from barakuda.devices.afm.methods import get_afm_method
 
 import sys
 import re
@@ -73,11 +74,21 @@ class AfmPreviewWorker(QObject):
         try:
             self.progress_pct.emit(0, "Loading image...")
             loader_meta = None
-            if self.file_path.lower().endswith(".spm"):
+            resolved_path = self.file_path
+            try:
+                from barakuda.devices.afm.manifest import resolve_afm_input_path
+
+                resolved = resolve_afm_input_path(self.file_path)
+                if resolved.image_path is not None:
+                    resolved_path = str(resolved.image_path)
+            except Exception:
+                resolved_path = self.file_path
+
+            if resolved_path.lower().endswith(".spm"):
                 from barakuda.devices.afm.io.afmreader_loader import load_spm_height
-                img_orig, loader_meta = load_spm_height(self.file_path)
+                img_orig, loader_meta = load_spm_height(resolved_path)
             else:
-                img_orig = iio.imread(self.file_path)
+                img_orig = iio.imread(resolved_path)
 
             if self._is_cancelled:
                 return
@@ -106,32 +117,8 @@ class AfmPreviewWorker(QObject):
             self.progress_pct.emit(0, f"Diag: ROI raw px=(x={x}, y={y}, w={w}, h={h})")
             self.progress_pct.emit(0, f"Diag: cropped shape={roi_img.shape}")
 
-            def _f(key, default): return float(self.afm_params.get(key, default))
-            def _i(key, default): return int(self.afm_params.get(key, default))
-            def _b(key, default): return bool(self.afm_params.get(key, default))
-            def _s(key, default): return str(self.afm_params.get(key, default))
-
-            _cp_diam_px = self.afm_params.get("cp_diameter_px")
-            p_v2 = AfmV2Params(
-                compute_profile=_s("compute_profile", "auto"),
-                preview_fast_mode=_b("preview_fast_mode", False),
-                preview_downscale=_f("preview_downscale", 0.5),
-                invert=_b("invert", False),
-                clip_p_low=_f("clip_p_low", 1.0),
-                clip_p_high=_f("clip_p_high", 99.0),
-                cp_model=_s("cp_model", "cyto3"),
-                cp_diameter_mode=_s("cp_diameter_mode", "auto"),
-                cp_diameter_px=int(_cp_diam_px) if _cp_diam_px is not None else None,
-                cp_flow_threshold=_f("cp_flow_threshold", 0.4),
-                cp_cellprob_threshold=_f("cp_cellprob_threshold", -0.5),
-                rods_only=_b("rods_only", True),
-                rods_min_major_axis_px=_f("rods_min_major_axis_px", 12.0),
-                rods_min_aspect_ratio=_f("rods_min_aspect_ratio", 1.8),
-                rods_min_eccentricity=_f("rods_min_eccentricity", 0.65),
-                rods_min_area_px=_i("rods_min_area_px", 8),
-                ellipse_thickness_px=_i("ellipse_thickness_px", 2),
-                ellipse_alpha=_f("ellipse_alpha", 0.6),
-            )
+            method = get_afm_method(self.afm_params.get("afm_method"))
+            runtime_params = method.build_runtime_params(self.afm_params)
 
             # ── Data Prep (5%) ──────────────────────────────
             self.progress_pct.emit(5, "Preprocessing...")
@@ -141,7 +128,7 @@ class AfmPreviewWorker(QObject):
                 
             self.progress_pct.emit(15, "Initializing Cellpose...")
             
-            from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE, _CELLPOSE_VERSION, run_afm_v2
+            from barakuda.devices.afm.core.afm_v2_pipeline import _HAS_CELLPOSE, _CELLPOSE_VERSION
             if not _HAS_CELLPOSE:
                 raise RuntimeError("Cellpose is not installed.")
 
@@ -153,8 +140,7 @@ class AfmPreviewWorker(QObject):
             self.progress_pct.emit(20, "Cellpose: starting inference...")
             um_per_px = float(loader_meta.get("afm_um_per_px", 0.0)) if loader_meta else 0.0
             
-            # The preview pipeline wraps auto-diameter, fallback routing, downscaling and filtering natively
-            v2_out = run_afm_v2(roi_img, p_v2, um_per_px)
+            v2_out = method.compute(roi_img, runtime_params, um_per_px=um_per_px)
 
             if self._is_cancelled:
                 return
@@ -192,12 +178,12 @@ class AfmPreviewWorker(QObject):
                 rod_table["centroid_y"] = rod_table["centroid_y"] + y
 
             # Render overlay directly on the FULL image
-            full_norm = _normalize(img, p_v2.invert, p_v2.clip_p_low, p_v2.clip_p_high)
+            full_norm = _normalize(img, runtime_params.invert, runtime_params.clip_p_low, runtime_params.clip_p_high)
             full_img8 = (full_norm * 255.0).astype(np.uint8)
             overlay = render_ellipse_overlay(
                 full_img8, rod_table,
-                thickness_px=int(p_v2.ellipse_thickness_px),
-                ellipse_alpha=float(p_v2.ellipse_alpha),
+                thickness_px=int(runtime_params.ellipse_thickness_px),
+                ellipse_alpha=float(runtime_params.ellipse_alpha),
             )
 
             if not self._is_cancelled:

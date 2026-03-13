@@ -144,6 +144,26 @@ class PreviewPanel(QWidget):
                 self._video_row.setVisible(False)
                 self._info.setText(f"{path}\n\nDataset item load error: {_e!r}")
                 return
+        elif self._device_kind == "AFM":
+            try:
+                from barakuda.devices.afm.manifest import resolve_afm_input_path
+
+                _resolved = resolve_afm_input_path(path)
+                if _resolved.image_path is not None:
+                    path = _resolved.image_path
+                    path_str = str(path)
+                elif _resolved.item_json_path is not None or _resolved.item_root is not None:
+                    self._clear_views()
+                    self._video_row.setVisible(False)
+                    self._info.setText(
+                        f"{path}\n\nDataset item: no acquisition image found."
+                    )
+                    return
+            except Exception as _e:
+                self._clear_views()
+                self._video_row.setVisible(False)
+                self._info.setText(f"{path}\n\nDataset item load error: {_e!r}")
+                return
 
         if self._reader is not None:
             try:

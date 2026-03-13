@@ -88,14 +88,14 @@ def _segment_cellpose(norm: np.ndarray, p: AfmV2Params, um_per_px: float) -> Tup
 
     img8 = (norm * 255.0).astype(np.uint8)
 
-    from barakuda.devices.afm.core.compute import resolve_device
+    from barakuda.devices.afm.core.compute import resolve_compute_profile
     from barakuda.devices.afm.core.auto_diameter import estimate_diameter_px
     from barakuda.devices.afm.core.cellpose_cache import get_cellpose
     import time
 
     t_get_start = time.perf_counter()
-    res = resolve_device(p.compute_profile)
-    device_str = res["device"]
+    runtime = resolve_compute_profile(p.compute_profile)
+    device_str = runtime["resolved_device"]
 
     model = get_cellpose(p.cp_model, device_str)
 
@@ -145,11 +145,17 @@ def _segment_cellpose(norm: np.ndarray, p: AfmV2Params, um_per_px: float) -> Tup
     masks = eval_out[0]
 
     audit = {
-        "compute_profile": res["compute_profile"],
-        "device": res["device"],
-        "gpu_name": res["gpu_name"],
-        "torch_version": res["torch_version"],
-        "cellpose_version": res["cellpose_version"],
+        "compute_profile": runtime["resolved_profile"],
+        "requested_profile": runtime["requested_profile"],
+        "resolved_profile": runtime["resolved_profile"],
+        "device": runtime["resolved_device"],
+        "gpu_name": runtime["gpu_name"],
+        "torch_version": runtime["torch_version"],
+        "cellpose_version": runtime["cellpose_version"],
+        "gpu_runtime_supported": runtime["gpu_runtime_supported"],
+        "fallback_applied": runtime["fallback_applied"],
+        "fallback_reason": runtime["fallback_reason"],
+        "backend": runtime["backend"],
         "cellpose_model": p.cp_model,
         "diameter_ui": "Auto" if p.cp_diameter_mode == "auto" else p.cp_diameter_px,
         "diameter_effective_px": diameter_effective_px if diameter_effective_px is not None else "Auto",

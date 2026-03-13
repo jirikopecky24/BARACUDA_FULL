@@ -1,0 +1,48 @@
+---
+description: Use OT as the baseline for new modules and ask proactively about forward design
+alwaysApply: true
+---
+
+# OT Baseline And Forward Design
+
+- Treat `OT` as the reference implementation for new BARAKUDA modules.
+- When building or redesigning new modules such as `AFM`, reports, run/output layout, export flow, or future modules like hydrogels, default to the same structural standard as OT unless the user explicitly wants a different direction.
+- Preserve the current stable behavior of `OT` and `Acquisition`; do not refactor or disturb them unless the user explicitly asks for changes there.
+- Treat `main` as the protected stable branch:
+  - never use `main` for experiments or first-pass implementation
+  - never merge work into `main` unless it is working and tested
+  - always create or use a separate branch for new work, validate it there, and only then merge into `main`
+- Reuse OT patterns first:
+  - consistent UI quality and layout discipline
+  - deterministic run/output structure
+  - report/export flow
+  - artifact naming and discoverability
+  - settings flow and parameter handling
+- Prioritize speed and efficiency in all new module design, but never at the cost of correctness, determinism, or scientific accuracy.
+- When both CPU and GPU implementations are realistic options, prefer designing both paths explicitly from the start instead of forcing one mixed or ambiguous execution path.
+- Treat performance as a first-class requirement:
+  - prefer architectures that can scale to fast execution cleanly
+  - ask early whether CPU, GPU, or both are required
+  - keep accelerated paths separated enough to debug, validate, and maintain safely
+  - ensure fast paths still produce correct and precise results
+- Be token-efficient and avoid wasting context:
+  - do not repeatedly re-ask for stable project decisions that are already captured in rules or confirmed by the user
+  - avoid re-reading large areas of the codebase when targeted reads or searches are enough
+  - summarize recurring project truths into persistent rules when they are clearly stable and likely to repeat
+  - keep plans and explanations concise unless depth is actually needed for a decision
+- Treat the Python environment as the primary execution context for this project.
+  - Do not describe the project as if the shell were the real runtime platform.
+  - When verifying or diagnosing runtime behavior, reason first about the active Python environment and its installed dependencies.
+  - Avoid misleading wording that implies the app environment is missing just because a generic shell context differs.
+  - The current authoritative BARAKUDA runtime environment is `C:/Users/jirik/anaconda3/envs/barakuda/python.exe`.
+  - When installing or verifying Python dependencies for the app, target that interpreter unless the user explicitly changes the project runtime.
+- At the end of each substantial implementation step, explicitly tell the user what they should test next.
+  - Make the test checklist concrete and short.
+  - Focus on user-visible behavior, output files, and the most likely regression points.
+- Before implementing new module architecture, proactively ask about decisions that could force a later rewrite:
+  - source of truth for params and outputs
+  - report/export expectations
+  - compatibility with packaging and future updates
+  - whether the new module should mirror OT exactly or intentionally diverge
+  - expected performance targets and whether separate CPU/GPU modes are needed
+- If a requested change would make a new module weaker or less consistent than OT, pause and call that out before implementing.
