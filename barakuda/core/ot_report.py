@@ -678,13 +678,29 @@ def _key_result_rows(summary: dict[str, Any]) -> list[list[str]]:
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
     return [
-        ["Mean viscosity", _fmt_measure_with_uncertainty(metrics.get("eta_mean_pa_s"), metrics.get("eta_mean_pa_s_se"), "Pa*s")],
-        ["Diffusion coeff.", _fmt_measure_with_uncertainty(metrics.get("D_m2_s"), metrics.get("D_m2_s_se"), "m^2/s")],
-        ["Trap stiffness X", _fmt_measure_with_uncertainty(metrics.get("kappa_x_pn_per_um"), metrics.get("kappa_x_pn_per_um_se"), "pN/um")],
-        ["Trap stiffness Y", _fmt_measure_with_uncertainty(metrics.get("kappa_y_pn_per_um"), metrics.get("kappa_y_pn_per_um_se"), "pN/um")],
-        ["Corner freq. X", _fmt_measure_with_uncertainty(diagnostics.get("fc_x_hz"), diagnostics.get("fc_x_hz_se"), "Hz")],
-        ["Corner freq. Y", _fmt_measure_with_uncertainty(diagnostics.get("fc_y_hz"), diagnostics.get("fc_y_hz_se"), "Hz")],
+        ["Mean viscosity", _fmt_key_result(metrics.get("eta_mean_pa_s"), "Pa*s")],
+        ["Diffusion coefficient", _fmt_key_result(metrics.get("D_m2_s"), "m^2/s")],
+        ["Trap stiffness X", _fmt_key_result(metrics.get("kappa_x_pn_per_um"), "pN/um")],
+        ["Trap stiffness Y", _fmt_key_result(metrics.get("kappa_y_pn_per_um"), "pN/um")],
+        ["Corner frequency X", _fmt_key_result(diagnostics.get("fc_x_hz"), "Hz")],
+        ["Corner frequency Y", _fmt_key_result(diagnostics.get("fc_y_hz"), "Hz")],
     ]
+
+
+def _fmt_key_result(value: Any, unit: str, sig_figs: int = 3) -> str:
+    """Format value in base SI units as X.XX x 10^n <unit> for Key results table."""
+    if value is None:
+        return "n/a"
+    try:
+        val = float(value)
+    except Exception:
+        return "n/a"
+    if not math.isfinite(val):
+        return "n/a"
+    text = _fmt_scientific_text(val, sig_figs=sig_figs)
+    if unit:
+        return f"{text} {_fmt_unit(unit)}"
+    return text
 
 
 def _conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
@@ -945,16 +961,9 @@ def _render_cover_card(
 
 
 def _cover_key_result_rows(summary_rows: list[list[str]]) -> list[list[str]]:
-    label_map = {
-        "Diffusion coefficient": "Diffusion coeff.",
-        "Corner frequency X": "Corner freq. X",
-        "Corner frequency Y": "Corner freq. Y",
-        "Trap stiffness X": "Trap stiffness X",
-        "Trap stiffness Y": "Trap stiffness Y",
-    }
     out: list[list[str]] = []
     for label, value in summary_rows:
-        out.append([label_map.get(str(label), str(label)), str(value)])
+        out.append([str(label), str(value)])
     return out
 
 
@@ -1068,10 +1077,10 @@ def _render_cover_page(
         _cover_key_result_rows(right_rows),
         facecolor=PANEL_BG,
         header_label="Key result",
-        label_wrap=20,
-        value_wrap=24,
-        min_label_fraction=0.36,
-        max_label_fraction=0.48,
+        label_wrap=22,
+        value_wrap=22,
+        min_label_fraction=0.40,
+        max_label_fraction=0.52,
     )
 
     fig.text(
@@ -1105,101 +1114,335 @@ def _render_theory_page(pdf, page_counter: PageCounter | None = None) -> None:
     equation_gap = 0.045
 
     # Title
-    ax.text(0, y, "Optical Tweezers Calibration Theory", 
-            fontsize=FONT_SIZE_HEADER, fontweight="bold", color=TEXT_COLOR, 
-            transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "Optical Tweezers Calibration Theory",
+        fontsize=FONT_SIZE_HEADER,
+        fontweight="bold",
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height * 1.5
 
     # Intro
-    ax.text(0, y, "This report presents results from passive calibration of optical tweezers using",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "This report presents results from passive calibration of optical tweezers using Brownian motion",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0, y, "Brownian motion analysis of a trapped microsphere.",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "analysis of a trapped microsphere.",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height + section_gap
 
     # Equipartition Theorem
-    ax.text(0, y, "Equipartition Theorem", 
-            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
-            transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "Equipartition Theorem",
+        fontsize=11,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.02, y, "The trap stiffness is calculated from the variance of particle position:",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "The trap stiffness is calculated from the variance of particle position:",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= equation_gap
-    ax.text(0.15, y, r"$\kappa = \frac{k_B T}{\langle x^2 \rangle}$",
-            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    ax.text(
+        0.5,
+        y,
+        r"$\kappa = \frac{k_{\mathrm{B}} T}{\langle x^2 \rangle}$",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
     y -= line_height
-    ax.text(0.02, y, "where kB is Boltzmann constant, T is temperature, and <x2> is position variance.",
-            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "where $k_{\mathrm{B}}$ is the Boltzmann constant, $T$ is temperature, and $\\langle x^2 \\rangle$ is the",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= line_height
+    ax.text(
+        0.0,
+        y,
+        "position variance of the trapped particle.",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height + section_gap
 
     # PSD Analysis
-    ax.text(0, y, "Power Spectral Density (PSD) Analysis", 
-            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
-            transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "Power Spectral Density (PSD) Analysis",
+        fontsize=11,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.02, y, "The corner frequency is obtained by fitting a Lorentzian to the PSD:",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "The corner frequency is obtained by fitting a Lorentzian function to the one-sided PSD:",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= equation_gap
-    ax.text(0.15, y, r"$P(f) = \frac{A}{f_c^2 + f^2} + B$",
-            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    ax.text(
+        0.5,
+        y,
+        r"$P(f) = \frac{A}{f_{\mathrm{c}}^{2} + f^{2}} + B$",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
     y -= line_height
-    ax.text(0.02, y, "The corner frequency relates to trap stiffness via fc = kappa / (2*pi*gamma),",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "The corner frequency relates to trap stiffness and viscous drag through",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= equation_gap
+    ax.text(
+        0.5,
+        y,
+        r"$f_{\mathrm{c}} = \frac{\kappa}{2\pi\gamma}$,",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
     y -= line_height
-    ax.text(0.02, y, "where gamma = 6*pi*eta*R is the Stokes drag coefficient.",
-            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        r"where $\gamma = 6 \pi \eta R$ is the Stokes drag coefficient for a sphere of radius $R$ in a fluid",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= line_height
+    ax.text(
+        0.0,
+        y,
+        "with dynamic viscosity $\\eta$.",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height + section_gap
 
     # Viscosity
-    ax.text(0, y, "Viscosity Determination", 
-            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
-            transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "Viscosity Determination",
+        fontsize=11,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.02, y, "The medium viscosity is inferred from the measured kappa and corner frequency:",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "The medium viscosity can be inferred from the measured trap stiffness and corner frequency:",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= equation_gap
-    ax.text(0.15, y, r"$\eta = \frac{\kappa}{12 \pi^2 R f_c}$",
-            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    ax.text(
+        0.5,
+        y,
+        r"$\eta = \frac{\kappa}{12 \pi^{2} R f_{\mathrm{c}}}$",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
     y -= line_height + section_gap
 
     # Diffusion
-    ax.text(0, y, "Diffusion Coefficient", 
-            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
-            transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "Diffusion Coefficient",
+        fontsize=11,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.02, y, "Calculated from the Stokes-Einstein relation:",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "The translational diffusion coefficient follows from the Stokes–Einstein relation:",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= equation_gap
-    ax.text(0.15, y, r"$D = \frac{k_B T}{6 \pi \eta R}$",
-            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    ax.text(
+        0.5,
+        y,
+        r"$D = \frac{k_{\mathrm{B}} T}{6 \pi \eta R}$",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
     y -= line_height + section_gap
 
     # Uncertainty
-    ax.text(0, y, "Uncertainty Estimation", 
-            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
-            transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "Uncertainty Estimation",
+        fontsize=11,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.02, y, "Measurement uncertainties are propagated from:",
-            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "Measurement uncertainties are propagated from:",
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.04, y, "- Position variance standard error",
-            fontsize=FONT_SIZE_SMALL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        r"- Position variance standard error, with $\mathrm{SE}(\sigma^{2}) = \sigma^{2} \sqrt{\frac{2}{n-1}}$",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.04, y, "- PSD fitting uncertainty for corner frequency",
-            fontsize=FONT_SIZE_SMALL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "- PSD fitting uncertainty for the corner frequency $f_{\mathrm{c}}$, obtained from the Lorentzian fit.",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height + section_gap
 
     # References
-    ax.text(0, y, "References", 
-            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
-            transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "References",
+        fontsize=11,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.02, y, "[1] K. Berg-Sorensen, H. Flyvbjerg, Rev. Sci. Instrum. 75, 594 (2004)",
-            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "[1] K. Berg-Sorensen, H. Flyvbjerg, Rev. Sci. Instrum. 75, 594 (2004)",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
     y -= line_height
-    ax.text(0.02, y, "[2] K.C. Neuman, S.M. Block, Rev. Sci. Instrum. 75, 2787 (2004)",
-            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    ax.text(
+        0.0,
+        y,
+        "[2] K.C. Neuman, S.M. Block, Rev. Sci. Instrum. 75, 2787 (2004)",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
 
     pdf.savefig(fig)
     plt.close(fig)
@@ -1408,7 +1651,7 @@ def _render_trajectory_heatmap_page(
     *,
     page_counter: PageCounter | None = None,
 ) -> None:
-    """Render trajectory as 2D heatmap with marginal histograms + optional MSD plot."""
+    """Render trajectory heatmap and MSD as two equally sized panels on one page."""
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
     import numpy as np
@@ -1429,17 +1672,25 @@ def _render_trajectory_heatmap_page(
     fig.patch.set_facecolor("white")
     _add_brand_header(fig, title, page_counter=page_counter)
 
-    # Create grid for heatmap with marginal histograms
-    gs = GridSpec(3, 3, width_ratios=[4, 1, 0.2], height_ratios=[1, 4, 0.5],
-                  left=0.10, right=0.88, bottom=PAGE_MARGIN_BOTTOM + 0.02, top=0.82, 
-                  wspace=0.05, hspace=0.05)
+    # Two equally tall rows: top = trajectory heatmap (+ colorbar), bottom = MSD.
+    gs = GridSpec(
+        2,
+        2,
+        height_ratios=[1, 1],
+        width_ratios=[20, 1],
+        left=PAGE_MARGIN_LEFT,
+        right=1 - PAGE_MARGIN_RIGHT,
+        bottom=PAGE_MARGIN_BOTTOM + 0.02,
+        top=0.84,
+        wspace=0.06,
+        hspace=0.15,
+    )
 
-    ax_main = fig.add_subplot(gs[1, 0])
-    ax_hist_x = fig.add_subplot(gs[0, 0], sharex=ax_main)
-    ax_hist_y = fig.add_subplot(gs[1, 1], sharey=ax_main)
-    ax_cbar = fig.add_subplot(gs[1, 2])
+    ax_main = fig.add_subplot(gs[0, 0])
+    ax_cbar = fig.add_subplot(gs[0, 1])
+    ax_msd = fig.add_subplot(gs[1, :])
 
-    # 2D histogram (heatmap)
+    # 2D histogram (heatmap) in the top panel
     bins = 80
     h, xedges, yedges, im = ax_main.hist2d(
         xs, ys, bins=bins, cmap="viridis",
@@ -1452,38 +1703,22 @@ def _render_trajectory_heatmap_page(
     ax_main.tick_params(labelsize=8)
     ax_main.grid(True, linestyle="--", linewidth=0.3, color=LINE_COLOR, alpha=0.5)
 
-    # Colorbar
+    # Colorbar for trajectory heatmap
     cbar = fig.colorbar(im, cax=ax_cbar)
     cbar.set_label("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
     cbar.ax.tick_params(labelsize=8)
 
-    # Marginal histogram X (top)
-    ax_hist_x.hist(xs, bins=bins, color=PLOT_COLOR, alpha=0.7, edgecolor="white", linewidth=0.3,
-                   range=[np.percentile(xs, 0.5), np.percentile(xs, 99.5)])
-    ax_hist_x.set_ylabel("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
-    ax_hist_x.tick_params(labelsize=8, labelbottom=False)
-    ax_hist_x.set_facecolor(PANEL_BG)
-
-    # Marginal histogram Y (right)
-    ax_hist_y.hist(ys, bins=bins, orientation="horizontal", color=PLOT_COLOR, alpha=0.7,
-                   edgecolor="white", linewidth=0.3,
-                   range=[np.percentile(ys, 0.5), np.percentile(ys, 99.5)])
-    ax_hist_y.set_xlabel("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
-    ax_hist_y.tick_params(labelsize=8, labelleft=False)
-    ax_hist_y.set_facecolor(PANEL_BG)
-
-    # Add MSD subplot if data available
+    # MSD in the bottom panel (same vertical size as trajectory)
     if msd_csv is not None:
         msd_parsed = _csv_numeric_columns(msd_csv, ("tau_s",), ("msd_r_um2", "msd_r_px2"))
         if msd_parsed is not None:
             msd_xs, msd_ys, _, _ = msd_parsed
-            ax_msd = fig.add_axes([0.55, PAGE_MARGIN_BOTTOM + 0.02, 0.33, 0.20])
             ax_msd.set_facecolor(PANEL_BG)
             ax_msd.loglog(msd_xs, msd_ys, color=PLOT_COLOR, linewidth=1.5)
             ax_msd.set_xlabel("τ [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
             ax_msd.set_ylabel("MSD [µm²]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
-            ax_msd.set_title("MSD", fontsize=FONT_SIZE_NORMAL, fontweight="bold", 
-                            color=TEXT_COLOR, family=FONT_FAMILY)
+            ax_msd.set_title("MSD", fontsize=FONT_SIZE_NORMAL, fontweight="bold",
+                             color=TEXT_COLOR, family=FONT_FAMILY)
             ax_msd.tick_params(labelsize=8)
             ax_msd.grid(True, which="both", linestyle="--", linewidth=0.5, color=LINE_COLOR)
 
