@@ -68,13 +68,22 @@ class ShellMainWindow(QMainWindow):
         self._preview_stack.addWidget(self._ot_preview)
         self._preview_stack.setCurrentWidget(self._afm_preview)
 
-        self._device_container.setMinimumWidth(280)
+        # Right-hand panel (device container with PipelinePanel / AFM panel)
+        # should behave similarly to the Dataset dock: never collapse below
+        # a comfortable minimum width so that labels and controls remain readable.
+        self._device_container.setMinimumWidth(380)
 
         self._center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._center_splitter.addWidget(self._preview_stack)
         self._center_splitter.addWidget(self._device_container)
         self._center_splitter.setStretchFactor(0, 3)
         self._center_splitter.setStretchFactor(1, 2)
+        # Do not allow the right panel to be collapsed to 0px.
+        try:
+            self._center_splitter.setCollapsible(1, False)
+        except Exception:
+            # Older Qt versions may not support setCollapsible; safe to ignore.
+            pass
         self.setCentralWidget(self._center_splitter)
 
         # ---------------- Method dock (above Dataset) ----------------
@@ -472,6 +481,23 @@ class ShellMainWindow(QMainWindow):
                 self.method_combo.addItem("Brownian (PSD)", "Brownian")
                 self.method_combo.addItem("Drag (Stage)", "Drag")
                 self.method_combo.addItem("Microrheology (Coming later)", "Rheology")
+
+                # Per-method tooltips (shown in dropdown when hovering)
+                self.method_combo.setItemData(
+                    0,
+                    "Brownian (PSD): passive calibration from the Brownian motion power spectral density.",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+                self.method_combo.setItemData(
+                    1,
+                    "Drag (Stage): calibration from stage-driven drag of the trapped bead at constant velocity.",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+                self.method_combo.setItemData(
+                    2,
+                    "Microrheology: planned module for frequency-dependent viscoelastic measurements.",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
                 
                 # Disable the rheology item
                 self._set_method_combo_item_enabled(self.method_combo.count() - 1, False)

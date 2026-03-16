@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, Qt, QObject, QEvent
+from PyQt6.QtCore import pyqtSignal, Qt, QObject, QEvent, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox, QLineEdit,
@@ -44,8 +44,6 @@ class PipelinePanel(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-
-
 
         # Preview Gate split-button (STRICT default) with popup policy menu
         self._preview_gate_policy = "STRICT"  # STRICT | ROBUST | CUSTOM
@@ -351,6 +349,22 @@ class PipelinePanel(QWidget):
         self._drift_mode.addItem("Linear detrend subtract", "detrend_linear")
         self._drift_mode.setCurrentIndex(1)  # Default: lowpass_subtract
         self._drift_mode.setToolTip("Method to remove low-frequency drift from the particle trajectory.")
+        # Per-option tooltips (visible in the dropdown list)
+        self._drift_mode.setItemData(
+            0,
+            "No drift correction. Raw particle trajectory is used.",
+            Qt.ItemDataRole.ToolTipRole,
+        )
+        self._drift_mode.setItemData(
+            1,
+            "Remove slow drift by subtracting a low-pass filtered version of the trajectory.",
+            Qt.ItemDataRole.ToolTipRole,
+        )
+        self._drift_mode.setItemData(
+            2,
+            "Fit and subtract a linear trend from the trajectory to remove drift.",
+            Qt.ItemDataRole.ToolTipRole,
+        )
 
         self._drift_window_s = QDoubleSpinBox()
         self._drift_window_s.setRange(0.0, 1e6)
@@ -629,6 +643,25 @@ class PipelinePanel(QWidget):
         self.tabs.addTab(tab_settings, "Settings")
 
         layout.addWidget(self.tabs, stretch=1)
+
+        # Ensure the pipeline panel is never narrower than the widest tab
+        def _update_min_width_for_tab(index: int) -> None:
+            tab = self.tabs.widget(index)
+            if tab is None:
+                return
+            tab.adjustSize()
+            hint = tab.sizeHint()
+            if not hint.isValid():
+                return
+            # Add a small safety margin for scrollbars/padding
+            target_width = hint.width() + 32
+            current_min = self.minimumWidth()
+            if target_width > current_min:
+                self.setMinimumWidth(target_width)
+
+        self.tabs.currentChanged.connect(_update_min_width_for_tab)
+        # Apply once after construction for the initial tab
+        QTimer.singleShot(0, lambda: _update_min_width_for_tab(self.tabs.currentIndex()))
         
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
@@ -1059,6 +1092,18 @@ class PipelinePanel(QWidget):
         if mode == "Brownian":
             self._strategy_selector.addItem("PSD_Welch (Scipy/Hann)", "PSD_Welch")
             self._strategy_selector.addItem("PSD_ProcFFT (MATLAB)", "PSD_ProcFFT")
+
+            # Per-strategy tooltips (Brownian calibration)
+            self._strategy_selector.setItemData(
+                0,
+                "PSD_Welch: power spectral density via Welch averaging with Hann window.",
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            self._strategy_selector.setItemData(
+                1,
+                "PSD_ProcFFT: MATLAB-like FFT-based PSD implementation for comparison.",
+                Qt.ItemDataRole.ToolTipRole,
+            )
             
             idx = self._strategy_selector.findData(current_data)
             if idx >= 0:
@@ -1070,6 +1115,12 @@ class PipelinePanel(QWidget):
                 
         elif mode == "Drag":
             self._strategy_selector.addItem("Drag (Constant Velocity)", "Drag_ConstantVelocity")
+
+            self._strategy_selector.setItemData(
+                0,
+                "Drag: calibration from constant-velocity stage motion and viscous drag force.",
+                Qt.ItemDataRole.ToolTipRole,
+            )
             
             idx = self._strategy_selector.findData(current_data)
             if idx >= 0:

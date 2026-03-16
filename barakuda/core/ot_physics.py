@@ -182,8 +182,17 @@ def fit_lorentzian_psd(
 
     assert best is not None
     rmse, fc, A, B = best
+
+    # Estimate standard error of fc using bootstrap-like approach
+    # based on RMSE and number of data points
+    # SE(fc) ≈ rmse * fc / (A * sqrt(n))
+    # This is a heuristic approximation for the fitting uncertainty
+    fc_se = float(rmse * fc / (abs(A) * math.sqrt(ff.size))) if A != 0 and ff.size > 0 else 0.0
+    fc_se = min(fc_se, 0.2 * fc)  # Cap at 20% relative uncertainty
+
     return {
         "fc_hz": float(fc),
+        "fc_hz_se": float(fc_se),
         "A": float(A),
         "B": float(B),
         "rmse": float(rmse),
@@ -316,6 +325,14 @@ class CalibrationResult:
     fc_y_hz: float
     n_used: int
 
+    # Uncertainties (standard errors)
+    kappa_x_pn_per_um_se: float = 0.0
+    kappa_y_pn_per_um_se: float = 0.0
+    eta_mean_pa_s_se: float = 0.0
+    d_m2_s_se: float = 0.0
+    fc_x_hz_se: float = 0.0
+    fc_y_hz_se: float = 0.0
+
 
 def _to_kappa_pn_per_um(kappa_n_per_m: float) -> float:
     """
@@ -334,6 +351,8 @@ def compute_calibration_from_equipartition_and_fc(
     fc_x_hz: float,
     fc_y_hz: float,
     params: CalibrationParams,
+    fc_x_hz_se: float = 0.0,
+    fc_y_hz_se: float = 0.0,
 ) -> CalibrationResult:
     """
     Returns: kappa_x, kappa_y from equipartition, and inferred viscosity eta from (kappa, fc).
@@ -341,13 +360,15 @@ def compute_calibration_from_equipartition_and_fc(
       - x_um, y_um already drift-corrected (or at least centered)
       - bead diameter (for radius)
       - temperature
+      - fc_x_hz_se, fc_y_hz_se: standard errors on corner frequencies (optional)
     """
     x = np.asarray(x_um, dtype=np.float64)
     y = np.asarray(y_um, dtype=np.float64)
     m = np.isfinite(x) & np.isfinite(y)
     x = x[m]
     y = y[m]
-    if x.size < 32:
+    n = x.size
+    if n < 32:
         raise ValueError("not enough samples for calibration")
 
     T_k = float(params.temperature_c) + 273.15
@@ -366,15 +387,26 @@ def compute_calibration_from_equipartition_and_fc(
     if var_x <= 0 or var_y <= 0:
         raise ValueError("variance <= 0 (check units, drift correction, or tracking)")
 
+    # Standard error of variance: SE(var) = var * sqrt(2/(n-1))
+    # This comes from chi-squared distribution of sample variance
+    var_x_se = var_x * math.sqrt(2.0 / (n - 1)) if n > 1 else 0.0
+    var_y_se = var_y * math.sqrt(2.0 / (n - 1)) if n > 1 else 0.0
+
     # equipartition: kappa = kBT / <x^2>
     kBT = K_B * T_k
     kappa_x = float(kBT / (var_x * 1e-12))  # um^2 -> m^2 via 1e-12
     kappa_y = float(kBT / (var_y * 1e-12))
 
+    # Uncertainty in kappa: δkappa/kappa = δvar/var (error propagation for f=a/x)
+    kappa_x_se = kappa_x * (var_x_se / var_x) if var_x > 0 else 0.0
+    kappa_y_se = kappa_y * (var_y_se / var_y) if var_y > 0 else 0.0
+
     # viscosity from kappa + fc: eta = kappa / (12π^2 R fc)
     # derived from: fc = kappa / (2πγ), γ = 6π η R => eta = kappa / (12 π^2 R fc)
     fx = float(fc_x_hz)
     fy = float(fc_y_hz)
+    fx_se = float(fc_x_hz_se) if fc_x_hz_se > 0 else 0.0
+    fy_se = float(fc_y_hz_se) if fc_y_hz_se > 0 else 0.0
     if not np.isfinite(fx) or fx <= 0 or not np.isfinite(fy) or fy <= 0:
         raise ValueError("fc_x_hz/fc_y_hz must be > 0")
 
@@ -383,12 +415,26 @@ def compute_calibration_from_equipartition_and_fc(
     eta_x = float(kappa_x / denom_x)
     eta_y = float(kappa_y / denom_y)
 
+    # Uncertainty in eta: δeta/eta = sqrt((δkappa/kappa)^2 + (δfc/fc)^2)
+    rel_err_kappa_x = kappa_x_se / kappa_x if kappa_x > 0 else 0.0
+    rel_err_kappa_y = kappa_y_se / kappa_y if kappa_y > 0 else 0.0
+    rel_err_fc_x = fx_se / fx if fx > 0 else 0.0
+    rel_err_fc_y = fy_se / fy if fy > 0 else 0.0
+
+    eta_x_se = eta_x * math.sqrt(rel_err_kappa_x**2 + rel_err_fc_x**2)
+    eta_y_se = eta_y * math.sqrt(rel_err_kappa_y**2 + rel_err_fc_y**2)
+
     # if override viscosity provided, use it for D (but keep inferred for reporting)
     eta_mean = float(0.5 * (eta_x + eta_y))
+    eta_mean_se = float(0.5 * math.sqrt(eta_x_se**2 + eta_y_se**2))
     eta_for_d = float(params.viscosity_pa_s_override) if float(params.viscosity_pa_s_override) > 0 else eta_mean
 
     # diffusion: D = kBT / (6π η R)
     d = float(kBT / (6.0 * math.pi * eta_for_d * r_m))
+
+    # Uncertainty in D: δD/D = δη/η (since D ∝ 1/η)
+    rel_err_eta = eta_mean_se / eta_mean if eta_mean > 0 else 0.0
+    d_se = d * rel_err_eta
 
     return CalibrationResult(
         temperature_k=float(T_k),
@@ -406,6 +452,12 @@ def compute_calibration_from_equipartition_and_fc(
         var_y_um2=float(var_y),
         fc_x_hz=float(fx),
         fc_y_hz=float(fy),
-        n_used=int(x.size),
+        n_used=int(n),
+        kappa_x_pn_per_um_se=_to_kappa_pn_per_um(kappa_x_se),
+        kappa_y_pn_per_um_se=_to_kappa_pn_per_um(kappa_y_se),
+        eta_mean_pa_s_se=float(eta_mean_se),
+        d_m2_s_se=float(d_se),
+        fc_x_hz_se=float(fx_se),
+        fc_y_hz_se=float(fy_se),
     )
 
