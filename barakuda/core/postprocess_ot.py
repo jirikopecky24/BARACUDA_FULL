@@ -676,3 +676,60 @@ def render_tracking_preview(
 
     except Exception:
         return None
+
+
+def render_random_tracking_previews(
+    video_path: Path,
+    trajectory_csv_path: Path,
+    raw_dir: Path,
+    *,
+    um_per_px: float | None = None,
+    n_frames: int = 10,
+) -> None:
+    """
+    Generate multiple tracking preview images at random frames across the run.
+
+    Images are saved into the item's raw directory as video_preview_01.png, ..., up to n_frames.
+    """
+    from barakuda.core.trajectory_csv_io import read_trajectory_csv
+
+    try:
+        video_path = Path(video_path)
+        trajectory_csv_path = Path(trajectory_csv_path)
+        raw_dir = Path(raw_dir)
+        if not video_path.is_file() or not trajectory_csv_path.is_file():
+            return
+
+        table = read_trajectory_csv(trajectory_csv_path)
+        n_rows = len(table.rows)
+        if n_rows <= 0:
+            return
+
+        n = min(max(1, int(n_frames)), n_rows)
+        if n_rows <= n:
+            indices = np.arange(n_rows, dtype=int)
+        else:
+            indices = np.random.choice(n_rows, size=n, replace=False)
+        indices = sorted(int(i) for i in indices)
+
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        written = 0
+        for idx, frame_idx in enumerate(indices, start=1):
+            if idx > n_frames:
+                break
+            output_path = raw_dir / f"video_preview_{idx:02d}.png"
+            try:
+                result = render_tracking_preview(
+                    video_path=video_path,
+                    trajectory_csv_path=trajectory_csv_path,
+                    output_path=output_path,
+                    frame_idx=int(frame_idx),
+                    um_per_px=um_per_px,
+                )
+                if result is not None and output_path.is_file():
+                    written += 1
+            except Exception:
+                continue
+    except Exception:
+        return None

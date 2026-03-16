@@ -26,7 +26,12 @@ from barakuda.core.ot_report import (
     export_ot_batch_pdf,
     export_ot_item_pdf,
 )
-from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams, render_tracking_preview
+from barakuda.core.postprocess_ot import (
+    postprocess_trajectory_csv_inplace,
+    PostprocessParams,
+    render_tracking_preview,
+    render_random_tracking_previews,
+)
 from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, kappa_from_fc_n_per_m
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
@@ -1610,6 +1615,21 @@ class BatchController:
                     except Exception as _tp_err:
                         import traceback
                         self._log(f"WARN: tracking preview failed ({file_path.name}): {traceback.format_exc()}")
+
+                    # 5. Generate 10 random preview frames with crosshair into raw (item or run folder)
+                    raw_dir = (_item_root_for_run / "raw") if _item_root_for_run is not None else (run_dir / "raw")
+                    try:
+                        raw_dir.mkdir(parents=True, exist_ok=True)
+                        render_random_tracking_previews(
+                            video_path=file_path,
+                            trajectory_csv_path=traj_path,
+                            raw_dir=raw_dir,
+                            um_per_px=um_per_px,
+                            n_frames=10,
+                        )
+                    except Exception:
+                        import traceback
+                        self._log(f"WARN: random preview generation failed ({file_path.name}): {traceback.format_exc()}")
 
                     export_ot_results_xlsx(
                         output_dir=dir_results,

@@ -575,6 +575,18 @@ def build_ot_item_summary(
         warnings.append(str(warning))
     diagnostics["warning_count"] = len(warnings)
 
+    preview_grid_pngs: list[str] = []
+    if run_dir is not None:
+        for raw_dir in (run_dir.parent / "raw", run_dir / "raw"):
+            if not raw_dir.exists():
+                continue
+            for i in range(1, 11):
+                p = raw_dir / f"video_preview_{i:02d}.png"
+                if p.is_file():
+                    preview_grid_pngs.append(str(p))
+            if preview_grid_pngs:
+                break
+
     artifacts = {
         "analysis_dir": str(run_dir) if run_dir is not None else None,
         "audit_dir": str(dir_audit) if dir_audit is not None and dir_audit.exists() else None,
@@ -594,6 +606,7 @@ def build_ot_item_summary(
         "hist_y_png": str(dir_results / f"{base_name}_hist_y.png") if dir_results is not None else None,
         "hist_r_png": str(dir_results / f"{base_name}_hist_r.png") if dir_results is not None else None,
         "tracking_preview_png": str(dir_results / f"{base_name}_tracking_preview.png") if dir_results is not None else None,
+        "preview_grid_pngs": preview_grid_pngs,
     }
 
     return {
@@ -825,13 +838,13 @@ def _build_image_entry(label: str, path_value: str | None) -> tuple[str, Path] |
     if not path_value:
         return None
     path = Path(path_value)
-    # Prefer SVG for vector quality in PDF
+    # Prefer raster (e.g. PNG) so matplotlib's imread/imshow can display in PDF; SVG is not supported by imread
+    if path.is_file():
+        return (label, path)
     svg_path = path.with_suffix(".svg")
     if svg_path.is_file():
         return (label, svg_path)
-    if not path.is_file():
-        return None
-    return (label, path)
+    return None
 
 
 def _style_table(table, body_font_size: int = 9, header_font_size: int = 10) -> None:
@@ -990,10 +1003,13 @@ class PageCounter:
 
 
 def _add_page_footer(fig, page_counter: PageCounter | None) -> None:
-    """Add page number footer to figure."""
+    """Add page number footer to figure (bottom-right corner)."""
     if page_counter is not None:
         page_counter.next()
-        fig.text(0.50, 0.02, page_counter.page_str(), fontsize=9, color=MUTED_COLOR, ha="center")
+        fig.text(
+            1 - PAGE_MARGIN_RIGHT, 0.02, page_counter.page_str(),
+            fontsize=9, color=MUTED_COLOR, ha="right", va="bottom"
+        )
 
 
 def _add_brand_header(
@@ -1037,12 +1053,13 @@ def _render_cover_page(
     right_rows: list[list[str]],
     *,
     eyebrow: str = "Scientific Summary",
+    page_counter: PageCounter | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=PAGE_SIZE)
     fig.patch.set_facecolor("white")
-    _add_brand_header(fig, page_note=None, cover=True)
+    _add_brand_header(fig, page_note=None, cover=True, page_counter=page_counter)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.axis("off")
     ax.text(0.50, 0.812, eyebrow, fontsize=10.5, color=ACCENT_COLOR, fontweight="bold", ha="center")
@@ -1432,17 +1449,6 @@ def _render_theory_page(pdf, page_counter: PageCounter | None = None) -> None:
         family=FONT_FAMILY,
         ha="left",
     )
-    y -= line_height
-    ax.text(
-        0.0,
-        y,
-        "[2] K.C. Neuman, S.M. Block, Rev. Sci. Instrum. 75, 2787 (2004)",
-        fontsize=FONT_SIZE_SMALL,
-        color=TEXT_COLOR,
-        transform=ax.transAxes,
-        family=FONT_FAMILY,
-        ha="left",
-    )
 
     pdf.savefig(fig)
     plt.close(fig)
@@ -1646,12 +1652,11 @@ def _render_plot_pages(
 def _render_trajectory_heatmap_page(
     pdf,
     trajectory_csv: Path,
-    msd_csv: Path | None = None,
-    title: str = "Trajectory And MSD",
+    title: str = "Trajectory",
     *,
     page_counter: PageCounter | None = None,
 ) -> None:
-    """Render trajectory heatmap and MSD as two equally sized panels on one page."""
+    """Render trajectory as 2D heatmap with marginal X/Y histograms (scatter_hist style)."""
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
     import numpy as np
@@ -1668,59 +1673,199 @@ def _render_trajectory_heatmap_page(
     xs = xs - np.nanmean(xs)
     ys = ys - np.nanmean(ys)
 
+    xrange = [np.percentile(xs, 0.5), np.percentile(xs, 99.5)]
+    yrange = [np.percentile(ys, 0.5), np.percentile(ys, 99.5)]
+    bins = 80
+
     fig = plt.figure(figsize=PAGE_SIZE)
     fig.patch.set_facecolor("white")
     _add_brand_header(fig, title, page_counter=page_counter)
 
-    # Two equally tall rows: top = trajectory heatmap (+ colorbar), bottom = MSD.
+    # Scatter_hist layout: histx top, scatter bottom-left, histy right, colorbar far right
     gs = GridSpec(
         2,
-        2,
-        height_ratios=[1, 1],
-        width_ratios=[20, 1],
+        3,
+        width_ratios=[4, 1, 0.35],
+        height_ratios=[1, 4],
         left=PAGE_MARGIN_LEFT,
         right=1 - PAGE_MARGIN_RIGHT,
         bottom=PAGE_MARGIN_BOTTOM + 0.02,
         top=0.84,
-        wspace=0.06,
-        hspace=0.15,
+        wspace=0.05,
+        hspace=0.05,
     )
 
-    ax_main = fig.add_subplot(gs[0, 0])
-    ax_cbar = fig.add_subplot(gs[0, 1])
-    ax_msd = fig.add_subplot(gs[1, :])
+    ax_histx = fig.add_subplot(gs[0, 0])
+    ax_main = fig.add_subplot(gs[1, 0])
+    ax_histy = fig.add_subplot(gs[1, 1])
+    ax_cbar = fig.add_subplot(gs[1, 2])
 
-    # 2D histogram (heatmap) in the top panel
-    bins = 80
-    h, xedges, yedges, im = ax_main.hist2d(
-        xs, ys, bins=bins, cmap="viridis",
-        range=[[np.percentile(xs, 0.5), np.percentile(xs, 99.5)],
-               [np.percentile(ys, 0.5), np.percentile(ys, 99.5)]]
-    )
+    # Central 2D histogram (heatmap)
+    _, _, _, im = ax_main.hist2d(xs, ys, bins=bins, cmap="viridis", range=[xrange, yrange])
     ax_main.set_aspect("equal", adjustable="box")
     ax_main.set_xlabel("X position [µm]", fontsize=FONT_SIZE_NORMAL, family=FONT_FAMILY)
     ax_main.set_ylabel("Y position [µm]", fontsize=FONT_SIZE_NORMAL, family=FONT_FAMILY)
     ax_main.tick_params(labelsize=8)
     ax_main.grid(True, linestyle="--", linewidth=0.3, color=LINE_COLOR, alpha=0.5)
 
-    # Colorbar for trajectory heatmap
+    # Marginal histogram X (top)
+    ax_histx.hist(xs, bins=bins, range=xrange, color=PLOT_COLOR, alpha=0.7, edgecolor="white", linewidth=0.3)
+    ax_histx.tick_params(axis="x", labelbottom=False)
+    ax_histx.set_ylabel("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+    ax_histx.set_facecolor(PANEL_BG)
+    ax_histx.tick_params(labelsize=8)
+
+    # Marginal histogram Y (right)
+    ax_histy.hist(ys, bins=bins, range=yrange, orientation="horizontal", color=PLOT_COLOR, alpha=0.7, edgecolor="white", linewidth=0.3)
+    ax_histy.tick_params(axis="y", labelleft=False)
+    ax_histy.set_xlabel("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+    ax_histy.set_facecolor(PANEL_BG)
+    ax_histy.tick_params(labelsize=8)
+
+    # Colorbar
     cbar = fig.colorbar(im, cax=ax_cbar)
     cbar.set_label("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
     cbar.ax.tick_params(labelsize=8)
 
-    # MSD in the bottom panel (same vertical size as trajectory)
-    if msd_csv is not None:
-        msd_parsed = _csv_numeric_columns(msd_csv, ("tau_s",), ("msd_r_um2", "msd_r_px2"))
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_histogram_r_and_msd_page(
+    pdf,
+    hist_r_csv: Path | str | None,
+    msd_csv: Path | str | None,
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Render one page with Histogram R curve and MSD plot stacked vertically."""
+    import matplotlib.pyplot as plt
+
+    # Two rows, one column: top = Histogram R, bottom = MSD
+    fig, axes = plt.subplots(2, 1, figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Histogram R And MSD", page_counter=page_counter)
+    fig.subplots_adjust(top=0.81, left=0.10, right=0.92, bottom=0.09, hspace=0.38)
+
+    ax_hist, ax_msd = axes
+
+    # Histogram R curve (top panel)
+    hist_path = Path(hist_r_csv) if hist_r_csv else None
+    if hist_path and hist_path.is_file():
+        parsed = _csv_numeric_columns(hist_path, ("bin_center_um", "bin_center_px"), ("count", "density"))
+        if parsed is not None:
+            xs, ys, _, _ = parsed
+            ax_hist.set_facecolor(PANEL_BG)
+            ax_hist.plot(xs, ys, linewidth=1.6, color=PLOT_COLOR)
+            ax_hist.set_title("Histogram R curve", fontsize=11.5, fontweight="bold", color=TEXT_COLOR, pad=10, family=FONT_FAMILY)
+            ax_hist.set_xlabel("Bin center", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax_hist.set_ylabel("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax_hist.tick_params(labelsize=8)
+            ax_hist.grid(True, which="both", linestyle="--", linewidth=0.5, color=LINE_COLOR)
+            for spine in ax_hist.spines.values():
+                spine.set_color(LINE_COLOR)
+        else:
+            ax_hist.axis("off")
+            ax_hist.text(0.5, 0.5, "Not available\nHistogram R curve", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+    else:
+        ax_hist.axis("off")
+        ax_hist.text(0.5, 0.5, "Not available\nHistogram R curve", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+
+    # MSD (bottom panel)
+    msd_path = Path(msd_csv) if msd_csv else None
+    if msd_path and msd_path.is_file():
+        msd_parsed = _csv_numeric_columns(msd_path, ("tau_s",), ("msd_r_um2", "msd_r_px2"))
         if msd_parsed is not None:
             msd_xs, msd_ys, _, _ = msd_parsed
             ax_msd.set_facecolor(PANEL_BG)
             ax_msd.loglog(msd_xs, msd_ys, color=PLOT_COLOR, linewidth=1.5)
+            ax_msd.set_title("MSD", fontsize=11.5, fontweight="bold", color=TEXT_COLOR, pad=10, family=FONT_FAMILY)
             ax_msd.set_xlabel("τ [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
             ax_msd.set_ylabel("MSD [µm²]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
-            ax_msd.set_title("MSD", fontsize=FONT_SIZE_NORMAL, fontweight="bold",
-                             color=TEXT_COLOR, family=FONT_FAMILY)
             ax_msd.tick_params(labelsize=8)
             ax_msd.grid(True, which="both", linestyle="--", linewidth=0.5, color=LINE_COLOR)
+            for spine in ax_msd.spines.values():
+                spine.set_color(LINE_COLOR)
+        else:
+            ax_msd.axis("off")
+            ax_msd.text(0.5, 0.5, "Not available\nMSD", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+    else:
+        ax_msd.axis("off")
+        ax_msd.text(0.5, 0.5, "Not available\nMSD", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_preview_grid_page(
+    pdf,
+    image_paths: list[Path],
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Render a grid of preview frames (thumbnails) with indices in the top-left corners."""
+    import matplotlib.image as mpimg
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+
+    if not image_paths:
+        return
+
+    # Use at most 10 images, laid out in up to 3x4 grid (12 slots)
+    max_images = 10
+    paths = [Path(p) for p in image_paths][:max_images]
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Preview Frames", page_counter=page_counter)
+
+    nrows, ncols = 3, 4
+    gs = GridSpec(
+        nrows,
+        ncols,
+        left=PAGE_MARGIN_LEFT,
+        right=1 - PAGE_MARGIN_RIGHT,
+        bottom=PAGE_MARGIN_BOTTOM + 0.02,
+        top=0.84,
+        wspace=0.12,
+        hspace=0.18,
+    )
+
+    idx = 0
+    for r in range(nrows):
+        for c in range(ncols):
+            ax = fig.add_subplot(gs[r, c])
+            ax.axis("off")
+            if idx >= len(paths):
+                continue
+            path = paths[idx]
+            idx += 1
+            try:
+                img = mpimg.imread(path)
+                ax.imshow(img, cmap=None)
+                ax.axis("off")
+                # Index in top-left corner (1-based)
+                ax.text(
+                    0.03,
+                    0.95,
+                    f"{idx}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=FONT_SIZE_SMALL,
+                    color="white",
+                    bbox=dict(boxstyle="round,pad=0.18", fc="black", ec="none", alpha=0.6),
+                )
+            except Exception:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "Not available",
+                    ha="center",
+                    va="center",
+                    color=MUTED_COLOR,
+                    family=FONT_FAMILY,
+                )
 
     pdf.savefig(fig)
     plt.close(fig)
@@ -1781,26 +1926,7 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
     report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     artifacts = summary.get("artifacts") or {}
-    
-    # Tracking preview as a separate entry (shown first)
-    tracking_preview_entries = [
-        entry
-        for entry in (
-            _build_image_entry("Tracking Preview (Frame 10)", artifacts.get("tracking_preview_png")),
-        )
-        if entry is not None
-    ]
-    
-    image_entries = [
-        entry
-        for entry in (
-            _build_image_entry("Quality control image", artifacts.get("qc_png")),
-            _build_image_entry("Histogram X", artifacts.get("hist_x_png")),
-            _build_image_entry("Histogram Y", artifacts.get("hist_y_png")),
-            _build_image_entry("Histogram R", artifacts.get("hist_r_png")),
-        )
-        if entry is not None
-    ]
+    preview_paths = [Path(p) for p in (artifacts.get("preview_grid_pngs") or []) if p]
 
     psd_entries = [
         entry
@@ -1811,12 +1937,11 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
         if entry is not None
     ]
 
-    hist_curve_entries = [
+    hist_curve_entries_xy = [
         entry
         for entry in (
             _build_plot_entry("Histogram X curve", artifacts.get("hist_x_csv"), ("bin_center_um", "bin_center_px"), ("count", "density"), "Bin center", "Counts", False, False),
             _build_plot_entry("Histogram Y curve", artifacts.get("hist_y_csv"), ("bin_center_um", "bin_center_px"), ("count", "density"), "Bin center", "Counts", False, False),
-            _build_plot_entry("Histogram R curve", artifacts.get("hist_r_csv"), ("bin_center_um", "bin_center_px"), ("count", "density"), "Bin center", "Counts", False, False),
         )
         if entry is not None
     ]
@@ -1833,10 +1958,11 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             left_rows=_identity_rows(summary),
             right_rows=_key_result_rows(summary),
             eyebrow="Scientific Summary",
+            page_counter=page_counter,
         )
-        # Theory page - page 1
+        # Theory page
         _render_theory_page(pdf, page_counter=page_counter)
-        # Conditions page - page 2
+        # Conditions page
         _render_dual_table_page(
             pdf,
             "Item Conditions And Quality Control",
@@ -1846,33 +1972,33 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             _qc_rows(summary),
             page_counter=page_counter,
         )
-        # Tracking preview page
-        if tracking_preview_entries:
-            _render_image_pages(pdf, "Tracking Preview", tracking_preview_entries, 
-                               layout="vertical", items_per_page=1, page_counter=page_counter)
-        # QC and histogram images
-        if image_entries:
-            _render_image_pages(pdf, "Quality Control And Histogram Images", image_entries, 
-                               layout="vertical", items_per_page=2, page_counter=page_counter)
-        # Render trajectory as heatmap with marginal histograms
+        # Preview grid page (optional)
+        if preview_paths:
+            _render_preview_grid_page(pdf, preview_paths, page_counter=page_counter)
+        # Trajectory: heatmap with marginal histograms only (no MSD here)
         trajectory_csv = artifacts.get("trajectory_csv")
-        msd_csv = artifacts.get("msd_csv")
         if trajectory_csv and Path(trajectory_csv).is_file():
             _render_trajectory_heatmap_page(
                 pdf,
                 Path(trajectory_csv),
-                Path(msd_csv) if msd_csv and Path(msd_csv).is_file() else None,
-                title="Trajectory And MSD",
+                title="Trajectory",
                 page_counter=page_counter,
             )
         # PSD plots
         if psd_entries:
-            _render_plot_pages(pdf, "Power Spectral Density", psd_entries, 
+            _render_plot_pages(pdf, "Power Spectral Density", psd_entries,
                               layout="vertical", items_per_page=2, page_counter=page_counter)
-        # Histogram curves
-        if hist_curve_entries:
-            _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries, 
+        # Histogram X and Y curves
+        if hist_curve_entries_xy:
+            _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries_xy,
                               layout="vertical", items_per_page=2, page_counter=page_counter)
+        # Histogram R curve + MSD on one page
+        _render_histogram_r_and_msd_page(
+            pdf,
+            artifacts.get("hist_r_csv"),
+            artifacts.get("msd_csv"),
+            page_counter=page_counter,
+        )
         # Artifact appendix removed - file structure is consistent across analyses
         # and documented in the user manual
     return report_path
@@ -1902,6 +2028,7 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
             left_rows=_batch_overview_rows(batch_summary, items, successes, failures),
             right_rows=_batch_cover_key_rows(batch_summary),
             eyebrow="Batch Summary",
+            page_counter=page_counter,
         )
 
         summary_rows = _batch_summary_rows(items)
