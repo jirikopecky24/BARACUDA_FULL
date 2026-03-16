@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 
-PAGE_SIZE = (8.27, 11.69)
+PAGE_SIZE = (8.27, 11.69)  # A4 in inches
+PAGE_MARGIN_LEFT = 0.08
+PAGE_MARGIN_RIGHT = 0.08
+PAGE_MARGIN_TOP = 0.12
+PAGE_MARGIN_BOTTOM = 0.06
+
 BRAND_NAME = "BARAKUDA"
 REPORT_NAME = "Optical Tweezers Analysis Report"
 BRAND_COLOR = "#0F3D5E"
@@ -22,6 +27,12 @@ TEXT_COLOR = "#162534"
 MUTED_COLOR = "#586574"
 LINE_COLOR = "#CAD5E0"
 PLOT_COLOR = "#1F6AA5"
+
+FONT_FAMILY = "DejaVu Sans"
+FONT_SIZE_NORMAL = 10
+FONT_SIZE_SMALL = 9
+FONT_SIZE_TITLE = 14
+FONT_SIZE_HEADER = 12
 
 
 def _branding_asset_path(file_name: str) -> Path:
@@ -96,15 +107,136 @@ def _fmt_value(value: Any) -> str:
     if isinstance(value, float):
         if not math.isfinite(value):
             return "n/a"
+        # Use scientific notation with proper formatting for very small/large values
+        if abs(value) < 0.01 or abs(value) >= 1000:
+            return _fmt_scientific_text(value, sig_figs=3)
         return f"{value:.6g}"
     return str(value)
+
+
+def _fmt_unit(unit: str) -> str:
+    """Format unit string with proper Unicode symbols."""
+    return (
+        unit
+        .replace("um", "µm")
+        .replace("^2", "²")
+        .replace("*", "·")
+    )
 
 
 def _fmt_measure(value: Any, unit: str = "") -> str:
     text = _fmt_value(value)
     if text == "n/a" or not unit:
         return text
-    return f"{text} {unit}"
+    return f"{text} {_fmt_unit(unit)}"
+
+
+def _fmt_scientific_text(value: float, sig_figs: int = 3) -> str:
+    """Format number as 'X.XX x 10^n' with Unicode superscript for plain text contexts."""
+    try:
+        if value == 0 or not math.isfinite(value):
+            return "0" if value == 0 else "n/a"
+        abs_val = abs(value)
+        if abs_val >= 0.01 and abs_val < 1000:
+            return f"{value:.{sig_figs}g}"
+        
+        exp = int(math.floor(math.log10(abs_val)))
+        mantissa = value / (10 ** exp)
+        # Superscript digits for plain text
+        sup = str(exp).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
+        return f"{mantissa:.{sig_figs-1}f} x 10{sup}"
+    except Exception:
+        return f"{value:.{sig_figs}g}"
+
+
+def _fmt_scientific_mathtext(value: float, sig_figs: int = 3) -> str:
+    """Format number as 'X.XX x 10^n' with proper superscript using mathtext for matplotlib."""
+    try:
+        if value == 0 or not math.isfinite(value):
+            return "0" if value == 0 else "n/a"
+        abs_val = abs(value)
+        if abs_val >= 0.01 and abs_val < 1000:
+            return f"{value:.{sig_figs}g}"
+        
+        exp = int(math.floor(math.log10(abs_val)))
+        mantissa = value / (10 ** exp)
+        # Mathtext format for rendering in matplotlib
+        return f"${mantissa:.{sig_figs-1}f} \\times 10^{{{exp}}}$"
+    except Exception:
+        return f"{value:.{sig_figs}g}"
+
+
+def _fmt_measure_with_uncertainty(value: Any, uncertainty: Any, unit: str = "") -> str:
+    """Format a measurement value with uncertainty, rounded according to uncertainty magnitude."""
+    if value is None:
+        return "n/a"
+    try:
+        val = float(value)
+        if not math.isfinite(val):
+            return "n/a"
+    except Exception:
+        return "n/a"
+
+    unc = None
+    try:
+        unc = float(uncertainty) if uncertainty is not None else None
+        if unc is not None and (not math.isfinite(unc) or unc <= 0):
+            unc = None
+    except Exception:
+        unc = None
+
+    if unc is None or unc == 0:
+        # No uncertainty - use scientific notation for very small/large values
+        abs_val = abs(val)
+        if abs_val > 0 and (abs_val < 0.01 or abs_val >= 1000):
+            formatted = _fmt_scientific_text(val, sig_figs=3)
+            if unit:
+                return f"{formatted} {_fmt_unit(unit)}"
+            return formatted
+        return _fmt_measure(val, unit)
+
+    # Find decimal precision based on uncertainty
+    # Round uncertainty to 1-2 significant figures
+    try:
+        unc_exp = int(math.floor(math.log10(abs(unc))))
+        precision = max(0, min(10, -unc_exp + 1))  # Cap precision at 10 decimals
+    except (ValueError, OverflowError):
+        precision = 2
+    
+    # Round both values to the same precision
+    val_rounded = round(val, precision)
+    unc_rounded = round(unc, precision)
+    
+    # Check if we need scientific notation (very small or large values)
+    abs_val_rounded = abs(val_rounded)
+    if abs_val_rounded > 0 and (abs_val_rounded < 0.01 or abs_val_rounded >= 1000):
+        try:
+            # Scientific notation with uncertainty
+            val_exp = int(math.floor(math.log10(abs_val_rounded)))
+            val_mantissa = val_rounded / (10 ** val_exp)
+            unc_mantissa = unc_rounded / (10 ** val_exp)
+            
+            # Format mantissas with appropriate precision
+            mant_precision = max(1, min(6, precision + val_exp))
+            val_str = f"{val_mantissa:.{mant_precision}f}"
+            unc_str = f"{unc_mantissa:.{mant_precision}f}"
+            
+            # Unicode superscript for exponent
+            sup = str(val_exp).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
+            
+            if unit:
+                return f"({val_str} +/- {unc_str}) x 10{sup} {_fmt_unit(unit)}"
+            return f"({val_str} +/- {unc_str}) x 10{sup}"
+        except (ValueError, OverflowError):
+            pass
+    
+    # Normal range - format with appropriate decimal places
+    val_str = f"{val_rounded:.{precision}f}"
+    unc_str = f"{unc_rounded:.{precision}f}"
+
+    if unit:
+        return f"{val_str} +/- {unc_str} {_fmt_unit(unit)}"
+    return f"{val_str} +/- {unc_str}"
 
 
 def _fmt_status(value: Any) -> str:
@@ -272,6 +404,7 @@ def _presentation_key(key: str) -> str:
         "hist_x_png": "Histogram X image",
         "hist_y_png": "Histogram Y image",
         "hist_r_png": "Histogram R image",
+        "tracking_preview_png": "Tracking preview image",
         "trajectory_csv": "Trajectory CSV",
         "msd_csv": "MSD CSV",
         "psd_x_csv": "PSD X CSV",
@@ -369,13 +502,19 @@ def build_ot_item_summary(
         metrics["kappa_y_n_per_m"] = _parse_float(kappa.get("kappa_y_n_per_m"))
         metrics["kappa_x_pn_per_um"] = _parse_float(kappa.get("kappa_x_pn_per_um"))
         metrics["kappa_y_pn_per_um"] = _parse_float(kappa.get("kappa_y_pn_per_um"))
+        metrics["kappa_x_pn_per_um_se"] = _parse_float(kappa.get("kappa_x_pn_per_um_se"))
+        metrics["kappa_y_pn_per_um_se"] = _parse_float(kappa.get("kappa_y_pn_per_um_se"))
         metrics["kappa_iso_ratio"] = _parse_float(kappa.get("kappa_iso_ratio"))
         metrics["eta_x_pa_s"] = _parse_float(viscosity.get("eta_x_pa_s"))
         metrics["eta_y_pa_s"] = _parse_float(viscosity.get("eta_y_pa_s"))
         metrics["eta_mean_pa_s"] = _parse_float(viscosity.get("eta_mean_pa_s"))
+        metrics["eta_mean_pa_s_se"] = _parse_float(viscosity.get("eta_mean_pa_s_se"))
         metrics["D_m2_s"] = _parse_float(diffusion.get("D_m2_s"))
+        metrics["D_m2_s_se"] = _parse_float(diffusion.get("D_m2_s_se"))
         diagnostics["fc_x_hz"] = _parse_float(diag.get("fc_x_hz"))
         diagnostics["fc_y_hz"] = _parse_float(diag.get("fc_y_hz"))
+        diagnostics["fc_x_hz_se"] = _parse_float(diag.get("fc_x_hz_se"))
+        diagnostics["fc_y_hz_se"] = _parse_float(diag.get("fc_y_hz_se"))
         diagnostics["n_used"] = _parse_float(diag.get("n_used"))
         diagnostics["eta_primary_pa_s"] = _parse_float(anisotropy.get("eta_primary_pa_s"))
         diagnostics["eta_primary_axis"] = anisotropy.get("eta_primary_axis")
@@ -454,6 +593,7 @@ def build_ot_item_summary(
         "hist_x_png": str(dir_results / f"{base_name}_hist_x.png") if dir_results is not None else None,
         "hist_y_png": str(dir_results / f"{base_name}_hist_y.png") if dir_results is not None else None,
         "hist_r_png": str(dir_results / f"{base_name}_hist_r.png") if dir_results is not None else None,
+        "tracking_preview_png": str(dir_results / f"{base_name}_tracking_preview.png") if dir_results is not None else None,
     }
 
     return {
@@ -538,12 +678,12 @@ def _key_result_rows(summary: dict[str, Any]) -> list[list[str]]:
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
     return [
-        ["Mean viscosity", _fmt_measure(metrics.get("eta_mean_pa_s"), "Pa*s")],
-        ["Diffusion coefficient", _fmt_measure(metrics.get("D_m2_s"), "m^2/s")],
-        ["Trap stiffness X", _fmt_measure(metrics.get("kappa_x_pn_per_um"), "pN/um")],
-        ["Trap stiffness Y", _fmt_measure(metrics.get("kappa_y_pn_per_um"), "pN/um")],
-        ["Corner frequency X", _fmt_measure(diagnostics.get("fc_x_hz"), "Hz")],
-        ["Corner frequency Y", _fmt_measure(diagnostics.get("fc_y_hz"), "Hz")],
+        ["Mean viscosity", _fmt_measure_with_uncertainty(metrics.get("eta_mean_pa_s"), metrics.get("eta_mean_pa_s_se"), "Pa*s")],
+        ["Diffusion coeff.", _fmt_measure_with_uncertainty(metrics.get("D_m2_s"), metrics.get("D_m2_s_se"), "m^2/s")],
+        ["Trap stiffness X", _fmt_measure_with_uncertainty(metrics.get("kappa_x_pn_per_um"), metrics.get("kappa_x_pn_per_um_se"), "pN/um")],
+        ["Trap stiffness Y", _fmt_measure_with_uncertainty(metrics.get("kappa_y_pn_per_um"), metrics.get("kappa_y_pn_per_um_se"), "pN/um")],
+        ["Corner freq. X", _fmt_measure_with_uncertainty(diagnostics.get("fc_x_hz"), diagnostics.get("fc_x_hz_se"), "Hz")],
+        ["Corner freq. Y", _fmt_measure_with_uncertainty(diagnostics.get("fc_y_hz"), diagnostics.get("fc_y_hz_se"), "Hz")],
     ]
 
 
@@ -669,6 +809,10 @@ def _build_image_entry(label: str, path_value: str | None) -> tuple[str, Path] |
     if not path_value:
         return None
     path = Path(path_value)
+    # Prefer SVG for vector quality in PDF
+    svg_path = path.with_suffix(".svg")
+    if svg_path.is_file():
+        return (label, svg_path)
     if not path.is_file():
         return None
     return (label, path)
@@ -822,6 +966,27 @@ def _batch_cover_key_rows(batch_summary: dict[str, Any]) -> list[list[str]]:
     ]
 
 
+class PageCounter:
+    """Helper to track global page numbers across PDF generation."""
+    def __init__(self):
+        self.current = 0
+        self.total = 0
+
+    def next(self) -> int:
+        self.current += 1
+        return self.current
+
+    def page_str(self) -> str:
+        return f"-- {self.current} of {self.total} --" if self.total > 0 else f"-- {self.current} --"
+
+
+def _add_page_footer(fig, page_counter: PageCounter | None) -> None:
+    """Add page number footer to figure."""
+    if page_counter is not None:
+        page_counter.next()
+        fig.text(0.50, 0.02, page_counter.page_str(), fontsize=9, color=MUTED_COLOR, ha="center")
+
+
 def _add_brand_header(
     fig,
     title: str | None = None,
@@ -829,6 +994,7 @@ def _add_brand_header(
     page_note: str | None = None,
     *,
     cover: bool = False,
+    page_counter: PageCounter | None = None,
 ) -> None:
     from matplotlib.lines import Line2D
 
@@ -849,6 +1015,9 @@ def _add_brand_header(
     if page_note:
         fig.text(0.93, 0.955, page_note, fontsize=9, color=MUTED_COLOR, ha="right")
     fig.add_artist(Line2D([0.06, 0.94], [0.875, 0.875], transform=fig.transFigure, color=ACCENT_COLOR, linewidth=1.4))
+
+    # Add page footer if counter provided
+    _add_page_footer(fig, page_counter)
 
 
 def _render_cover_page(
@@ -913,7 +1082,126 @@ def _render_cover_page(
         color=MUTED_COLOR,
         ha="center",
     )
-    pdf.savefig(fig, bbox_inches="tight")
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_theory_page(pdf, page_counter: PageCounter | None = None) -> None:
+    """Render a page explaining the theoretical basis of OT calibration with proper equations."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Theory and Methods", page_counter=page_counter)
+
+    ax = fig.add_axes([PAGE_MARGIN_LEFT, PAGE_MARGIN_BOTTOM + 0.02, 
+                       1 - PAGE_MARGIN_LEFT - PAGE_MARGIN_RIGHT, 0.76])
+    ax.axis("off")
+
+    # Structured theory content with mathtext equations
+    y = 0.98
+    line_height = 0.032
+    section_gap = 0.025
+    equation_gap = 0.045
+
+    # Title
+    ax.text(0, y, "Optical Tweezers Calibration Theory", 
+            fontsize=FONT_SIZE_HEADER, fontweight="bold", color=TEXT_COLOR, 
+            transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height * 1.5
+
+    # Intro
+    ax.text(0, y, "This report presents results from passive calibration of optical tweezers using",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0, y, "Brownian motion analysis of a trapped microsphere.",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height + section_gap
+
+    # Equipartition Theorem
+    ax.text(0, y, "Equipartition Theorem", 
+            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
+            transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "The trap stiffness is calculated from the variance of particle position:",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= equation_gap
+    ax.text(0.15, y, r"$\kappa = \frac{k_B T}{\langle x^2 \rangle}$",
+            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    y -= line_height
+    ax.text(0.02, y, "where kB is Boltzmann constant, T is temperature, and <x2> is position variance.",
+            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height + section_gap
+
+    # PSD Analysis
+    ax.text(0, y, "Power Spectral Density (PSD) Analysis", 
+            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
+            transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "The corner frequency is obtained by fitting a Lorentzian to the PSD:",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= equation_gap
+    ax.text(0.15, y, r"$P(f) = \frac{A}{f_c^2 + f^2} + B$",
+            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    y -= line_height
+    ax.text(0.02, y, "The corner frequency relates to trap stiffness via fc = kappa / (2*pi*gamma),",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "where gamma = 6*pi*eta*R is the Stokes drag coefficient.",
+            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height + section_gap
+
+    # Viscosity
+    ax.text(0, y, "Viscosity Determination", 
+            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
+            transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "The medium viscosity is inferred from the measured kappa and corner frequency:",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= equation_gap
+    ax.text(0.15, y, r"$\eta = \frac{\kappa}{12 \pi^2 R f_c}$",
+            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    y -= line_height + section_gap
+
+    # Diffusion
+    ax.text(0, y, "Diffusion Coefficient", 
+            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
+            transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "Calculated from the Stokes-Einstein relation:",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= equation_gap
+    ax.text(0.15, y, r"$D = \frac{k_B T}{6 \pi \eta R}$",
+            fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    y -= line_height + section_gap
+
+    # Uncertainty
+    ax.text(0, y, "Uncertainty Estimation", 
+            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
+            transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "Measurement uncertainties are propagated from:",
+            fontsize=FONT_SIZE_NORMAL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.04, y, "- Position variance standard error",
+            fontsize=FONT_SIZE_SMALL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.04, y, "- PSD fitting uncertainty for corner frequency",
+            fontsize=FONT_SIZE_SMALL, color=TEXT_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height + section_gap
+
+    # References
+    ax.text(0, y, "References", 
+            fontsize=11, fontweight="bold", color=BRAND_COLOR, 
+            transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "[1] K. Berg-Sorensen, H. Flyvbjerg, Rev. Sci. Instrum. 75, 594 (2004)",
+            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+    y -= line_height
+    ax.text(0.02, y, "[2] K.C. Neuman, S.M. Block, Rev. Sci. Instrum. 75, 2787 (2004)",
+            fontsize=FONT_SIZE_SMALL, color=MUTED_COLOR, transform=ax.transAxes, family=FONT_FAMILY)
+
+    pdf.savefig(fig)
     plt.close(fig)
 
 
@@ -923,6 +1211,7 @@ def _render_path_block_pages(
     entries: list[tuple[str, list[str]]],
     *,
     subtitle: str | None = None,
+    page_counter: PageCounter | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -930,11 +1219,12 @@ def _render_path_block_pages(
         return
 
     idx = 0
-    page_no = 1
     while idx < len(entries):
         fig = plt.figure(figsize=PAGE_SIZE)
-        _add_brand_header(fig, title, subtitle=subtitle, page_note=f"Page {page_no}")
-        ax = fig.add_axes([0.07, 0.08, 0.86, 0.78])
+        fig.patch.set_facecolor("white")
+        _add_brand_header(fig, title, subtitle=subtitle, page_counter=page_counter)
+        ax = fig.add_axes([PAGE_MARGIN_LEFT, PAGE_MARGIN_BOTTOM, 
+                          1 - PAGE_MARGIN_LEFT - PAGE_MARGIN_RIGHT, 0.78])
         ax.axis("off")
 
         y = 0.98
@@ -944,7 +1234,8 @@ def _render_path_block_pages(
             if y - block_height < 0.06:
                 break
 
-            ax.text(0.0, y, label, fontsize=11, fontweight="bold", color=TEXT_COLOR, va="top")
+            ax.text(0.0, y, label, fontsize=11, fontweight="bold", color=TEXT_COLOR, 
+                    va="top", family=FONT_FAMILY)
             y -= 0.038
             ax.text(
                 0.02,
@@ -960,9 +1251,8 @@ def _render_path_block_pages(
             ax.hlines(y + 0.012, 0.0, 0.98, colors=LINE_COLOR, linewidth=0.8, transform=ax.transAxes)
             idx += 1
 
-        pdf.savefig(fig, bbox_inches="tight")
+        pdf.savefig(fig)
         plt.close(fig)
-        page_no += 1
 
 
 def _render_paginated_table(
@@ -973,6 +1263,7 @@ def _render_paginated_table(
     *,
     subtitle: str | None = None,
     rows_per_page: int = 16,
+    page_counter: PageCounter | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -981,9 +1272,10 @@ def _render_paginated_table(
     chunks = _chunked(rows, rows_per_page)
     for idx, chunk in enumerate(chunks, start=1):
         fig = plt.figure(figsize=PAGE_SIZE)
-        note = f"Page {idx}/{len(chunks)}" if len(chunks) > 1 else None
-        _add_brand_header(fig, title, subtitle=subtitle, page_note=note)
-        ax = fig.add_axes([0.07, 0.08, 0.86, 0.76])
+        fig.patch.set_facecolor("white")
+        _add_brand_header(fig, title, subtitle=subtitle, page_counter=page_counter)
+        ax = fig.add_axes([PAGE_MARGIN_LEFT, PAGE_MARGIN_BOTTOM, 
+                          1 - PAGE_MARGIN_LEFT - PAGE_MARGIN_RIGHT, 0.76])
         ax.axis("off")
         table = ax.table(
             cellText=chunk,
@@ -994,7 +1286,7 @@ def _render_paginated_table(
         )
         body_font_size = 8 if len(headers) > 4 else 9
         _style_table(table, body_font_size=body_font_size, header_font_size=10)
-        pdf.savefig(fig, bbox_inches="tight")
+        pdf.savefig(fig)
         plt.close(fig)
 
 
@@ -1005,21 +1297,24 @@ def _render_dual_table_page(
     top_rows: list[list[str]],
     bottom_title: str,
     bottom_rows: list[list[str]],
+    *,
+    page_counter: PageCounter | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=PAGE_SIZE)
     fig.patch.set_facecolor("white")
-    _add_brand_header(fig, title)
+    _add_brand_header(fig, title, page_counter=page_counter)
 
     _add_panel(fig, (0.06, 0.46, 0.88, 0.31), facecolor=CARD_BG)
     _add_panel(fig, (0.06, 0.09, 0.88, 0.29), facecolor=PANEL_BG)
 
-    ax_top_title = fig.add_axes([0.08, 0.74, 0.84, 0.05])
+    ax_top_title = fig.add_axes([PAGE_MARGIN_LEFT, 0.74, 0.84, 0.05])
     ax_top_title.axis("off")
-    ax_top_title.text(0.0, 0.5, top_title, fontsize=12, fontweight="bold", color=TEXT_COLOR, va="center")
+    ax_top_title.text(0.0, 0.5, top_title, fontsize=FONT_SIZE_HEADER, fontweight="bold", 
+                      color=TEXT_COLOR, va="center", family=FONT_FAMILY)
 
-    ax_top = fig.add_axes([0.08, 0.495, 0.84, 0.23])
+    ax_top = fig.add_axes([PAGE_MARGIN_LEFT, 0.495, 0.84, 0.23])
     ax_top.axis("off")
     top_table = ax_top.table(
         cellText=top_rows,
@@ -1030,11 +1325,12 @@ def _render_dual_table_page(
     )
     _style_table(top_table)
 
-    ax_bottom_title = fig.add_axes([0.08, 0.34, 0.84, 0.05])
+    ax_bottom_title = fig.add_axes([PAGE_MARGIN_LEFT, 0.34, 0.84, 0.05])
     ax_bottom_title.axis("off")
-    ax_bottom_title.text(0.0, 0.5, bottom_title, fontsize=12, fontweight="bold", color=TEXT_COLOR, va="center")
+    ax_bottom_title.text(0.0, 0.5, bottom_title, fontsize=FONT_SIZE_HEADER, fontweight="bold", 
+                         color=TEXT_COLOR, va="center", family=FONT_FAMILY)
 
-    ax_bottom = fig.add_axes([0.08, 0.125, 0.84, 0.19])
+    ax_bottom = fig.add_axes([PAGE_MARGIN_LEFT, 0.125, 0.84, 0.19])
     ax_bottom.axis("off")
     bottom_table = ax_bottom.table(
         cellText=bottom_rows,
@@ -1045,7 +1341,7 @@ def _render_dual_table_page(
     )
     _style_table(bottom_table)
 
-    pdf.savefig(fig, bbox_inches="tight")
+    pdf.savefig(fig)
     plt.close(fig)
 
 
@@ -1056,6 +1352,7 @@ def _render_plot_pages(
     *,
     layout: str = "vertical",
     items_per_page: int = 2,
+    page_counter: PageCounter | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -1071,8 +1368,8 @@ def _render_plot_pages(
             nrows = len(chunk)
         fig, axes = plt.subplots(nrows, ncols, figsize=PAGE_SIZE)
         fig.patch.set_facecolor("white")
-        _add_brand_header(fig, title, page_note=(f"Page {idx}/{len(chunks)}" if len(chunks) > 1 else None))
-        fig.subplots_adjust(top=0.81, left=0.10, right=0.95, bottom=0.09, hspace=0.46, wspace=0.28)
+        _add_brand_header(fig, title, page_counter=page_counter)
+        fig.subplots_adjust(top=0.81, left=0.10, right=0.92, bottom=0.09, hspace=0.46, wspace=0.28)
         flat_axes = list(axes.flatten()) if hasattr(axes, "flatten") else [axes]
         for ax in flat_axes:
             ax.axis("off")
@@ -1080,7 +1377,8 @@ def _render_plot_pages(
             parsed = _csv_numeric_columns(csv_path, x_opts, y_opts)
             if parsed is None:
                 ax.axis("off")
-                ax.text(0.5, 0.5, f"Not available\n{label}", ha="center", va="center", color=MUTED_COLOR)
+                ax.text(0.5, 0.5, f"Not available\n{label}", ha="center", va="center", 
+                        color=MUTED_COLOR, family=FONT_FAMILY)
                 continue
             xs, ys, _, _ = parsed
             ax.axis("on")
@@ -1090,15 +1388,107 @@ def _render_plot_pages(
                 ax.set_xscale("log")
             if log_y:
                 ax.set_yscale("log")
-            ax.set_title(label, fontsize=11.5, fontweight="bold", color=TEXT_COLOR, pad=10)
-            ax.set_xlabel(x_title, fontsize=9)
-            ax.set_ylabel(y_title, fontsize=9)
+            ax.set_title(label, fontsize=11.5, fontweight="bold", color=TEXT_COLOR, 
+                         pad=10, family=FONT_FAMILY)
+            ax.set_xlabel(x_title, fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.set_ylabel(y_title, fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
             ax.tick_params(labelsize=8)
             ax.grid(True, which="both", linestyle="--", linewidth=0.5, color=LINE_COLOR)
             for spine in ax.spines.values():
                 spine.set_color(LINE_COLOR)
-        pdf.savefig(fig, bbox_inches="tight")
+        pdf.savefig(fig)
         plt.close(fig)
+
+
+def _render_trajectory_heatmap_page(
+    pdf,
+    trajectory_csv: Path,
+    msd_csv: Path | None = None,
+    title: str = "Trajectory And MSD",
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Render trajectory as 2D heatmap with marginal histograms + optional MSD plot."""
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+    import numpy as np
+
+    parsed = _csv_numeric_columns(trajectory_csv, ("x_corr_um", "x_corr_px", "x_px"), ("y_corr_um", "y_corr_px", "y_px"))
+    if parsed is None:
+        return
+
+    xs, ys, _, _ = parsed
+    xs = np.array(xs, dtype=np.float64)
+    ys = np.array(ys, dtype=np.float64)
+
+    # Center the data
+    xs = xs - np.nanmean(xs)
+    ys = ys - np.nanmean(ys)
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, title, page_counter=page_counter)
+
+    # Create grid for heatmap with marginal histograms
+    gs = GridSpec(3, 3, width_ratios=[4, 1, 0.2], height_ratios=[1, 4, 0.5],
+                  left=0.10, right=0.88, bottom=PAGE_MARGIN_BOTTOM + 0.02, top=0.82, 
+                  wspace=0.05, hspace=0.05)
+
+    ax_main = fig.add_subplot(gs[1, 0])
+    ax_hist_x = fig.add_subplot(gs[0, 0], sharex=ax_main)
+    ax_hist_y = fig.add_subplot(gs[1, 1], sharey=ax_main)
+    ax_cbar = fig.add_subplot(gs[1, 2])
+
+    # 2D histogram (heatmap)
+    bins = 80
+    h, xedges, yedges, im = ax_main.hist2d(
+        xs, ys, bins=bins, cmap="viridis",
+        range=[[np.percentile(xs, 0.5), np.percentile(xs, 99.5)],
+               [np.percentile(ys, 0.5), np.percentile(ys, 99.5)]]
+    )
+    ax_main.set_aspect("equal", adjustable="box")
+    ax_main.set_xlabel("X position [µm]", fontsize=FONT_SIZE_NORMAL, family=FONT_FAMILY)
+    ax_main.set_ylabel("Y position [µm]", fontsize=FONT_SIZE_NORMAL, family=FONT_FAMILY)
+    ax_main.tick_params(labelsize=8)
+    ax_main.grid(True, linestyle="--", linewidth=0.3, color=LINE_COLOR, alpha=0.5)
+
+    # Colorbar
+    cbar = fig.colorbar(im, cax=ax_cbar)
+    cbar.set_label("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+    cbar.ax.tick_params(labelsize=8)
+
+    # Marginal histogram X (top)
+    ax_hist_x.hist(xs, bins=bins, color=PLOT_COLOR, alpha=0.7, edgecolor="white", linewidth=0.3,
+                   range=[np.percentile(xs, 0.5), np.percentile(xs, 99.5)])
+    ax_hist_x.set_ylabel("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+    ax_hist_x.tick_params(labelsize=8, labelbottom=False)
+    ax_hist_x.set_facecolor(PANEL_BG)
+
+    # Marginal histogram Y (right)
+    ax_hist_y.hist(ys, bins=bins, orientation="horizontal", color=PLOT_COLOR, alpha=0.7,
+                   edgecolor="white", linewidth=0.3,
+                   range=[np.percentile(ys, 0.5), np.percentile(ys, 99.5)])
+    ax_hist_y.set_xlabel("Counts", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+    ax_hist_y.tick_params(labelsize=8, labelleft=False)
+    ax_hist_y.set_facecolor(PANEL_BG)
+
+    # Add MSD subplot if data available
+    if msd_csv is not None:
+        msd_parsed = _csv_numeric_columns(msd_csv, ("tau_s",), ("msd_r_um2", "msd_r_px2"))
+        if msd_parsed is not None:
+            msd_xs, msd_ys, _, _ = msd_parsed
+            ax_msd = fig.add_axes([0.55, PAGE_MARGIN_BOTTOM + 0.02, 0.33, 0.20])
+            ax_msd.set_facecolor(PANEL_BG)
+            ax_msd.loglog(msd_xs, msd_ys, color=PLOT_COLOR, linewidth=1.5)
+            ax_msd.set_xlabel("τ [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax_msd.set_ylabel("MSD [µm²]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax_msd.set_title("MSD", fontsize=FONT_SIZE_NORMAL, fontweight="bold", 
+                            color=TEXT_COLOR, family=FONT_FAMILY)
+            ax_msd.tick_params(labelsize=8)
+            ax_msd.grid(True, which="both", linestyle="--", linewidth=0.5, color=LINE_COLOR)
+
+    pdf.savefig(fig)
+    plt.close(fig)
 
 
 def _render_image_pages(
@@ -1108,6 +1498,7 @@ def _render_image_pages(
     *,
     layout: str = "vertical",
     items_per_page: int = 2,
+    page_counter: PageCounter | None = None,
 ) -> None:
     import matplotlib.image as mpimg
     import matplotlib.pyplot as plt
@@ -1124,8 +1515,9 @@ def _render_image_pages(
             nrows = len(chunk)
         fig, axes = plt.subplots(nrows, ncols, figsize=PAGE_SIZE)
         fig.patch.set_facecolor("white")
-        _add_brand_header(fig, title, page_note=(f"Page {idx}/{len(chunks)}" if len(chunks) > 1 else None))
-        fig.subplots_adjust(top=0.81, left=0.08, right=0.95, bottom=0.08, hspace=0.34, wspace=0.20)
+        _add_brand_header(fig, title, page_counter=page_counter)
+        fig.subplots_adjust(top=0.81, left=PAGE_MARGIN_LEFT, right=1-PAGE_MARGIN_RIGHT, 
+                           bottom=PAGE_MARGIN_BOTTOM + 0.02, hspace=0.34, wspace=0.20)
         flat_axes = list(axes.flatten()) if hasattr(axes, "flatten") else [axes]
         for ax in flat_axes:
             ax.axis("off")
@@ -1134,12 +1526,14 @@ def _render_image_pages(
                 image = mpimg.imread(path)
                 ax.set_facecolor(PANEL_BG)
                 ax.imshow(image)
-                ax.set_title(label, fontsize=11.5, fontweight="bold", color=TEXT_COLOR, pad=10)
+                ax.set_title(label, fontsize=11.5, fontweight="bold", color=TEXT_COLOR, 
+                            pad=10, family=FONT_FAMILY)
                 ax.axis("off")
             except Exception:
                 ax.axis("off")
-                ax.text(0.5, 0.5, f"Not available\n{label}", ha="center", va="center", color=MUTED_COLOR)
-        pdf.savefig(fig, bbox_inches="tight")
+                ax.text(0.5, 0.5, f"Not available\n{label}", ha="center", va="center", 
+                        color=MUTED_COLOR, family=FONT_FAMILY)
+        pdf.savefig(fig)
         plt.close(fig)
 
 
@@ -1152,6 +1546,16 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
     report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     artifacts = summary.get("artifacts") or {}
+    
+    # Tracking preview as a separate entry (shown first)
+    tracking_preview_entries = [
+        entry
+        for entry in (
+            _build_image_entry("Tracking Preview (Frame 10)", artifacts.get("tracking_preview_png")),
+        )
+        if entry is not None
+    ]
+    
     image_entries = [
         entry
         for entry in (
@@ -1159,15 +1563,6 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             _build_image_entry("Histogram X", artifacts.get("hist_x_png")),
             _build_image_entry("Histogram Y", artifacts.get("hist_y_png")),
             _build_image_entry("Histogram R", artifacts.get("hist_r_png")),
-        )
-        if entry is not None
-    ]
-
-    trajectory_entries = [
-        entry
-        for entry in (
-            _build_plot_entry("Trajectory", artifacts.get("trajectory_csv"), ("x_corr_um", "x_corr_px", "x_px"), ("y_corr_um", "y_corr_px", "y_px"), "X position", "Y position", False, False),
-            _build_plot_entry("MSD", artifacts.get("msd_csv"), ("tau_s",), ("msd_r_um2", "msd_r_px2"), "Tau [s]", "MSD", True, True),
         )
         if entry is not None
     ]
@@ -1191,7 +1586,11 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
         if entry is not None
     ]
 
+    # Create page counter for global page numbering (cover page is unnumbered)
+    page_counter = PageCounter()
+
     with PdfPages(report_path) as pdf:
+        # Cover page - no page number
         _render_cover_page(
             pdf,
             title=f"Item Report: {summary.get('item_id')}",
@@ -1200,6 +1599,9 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             right_rows=_key_result_rows(summary),
             eyebrow="Scientific Summary",
         )
+        # Theory page - page 1
+        _render_theory_page(pdf, page_counter=page_counter)
+        # Conditions page - page 2
         _render_dual_table_page(
             pdf,
             "Item Conditions And Quality Control",
@@ -1207,18 +1609,37 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             _conditions_rows(summary),
             "Quality control and report notes",
             _qc_rows(summary),
+            page_counter=page_counter,
         )
+        # Tracking preview page
+        if tracking_preview_entries:
+            _render_image_pages(pdf, "Tracking Preview", tracking_preview_entries, 
+                               layout="vertical", items_per_page=1, page_counter=page_counter)
+        # QC and histogram images
         if image_entries:
-            _render_image_pages(pdf, "Quality Control And Histogram Images", image_entries, layout="vertical", items_per_page=2)
-        if trajectory_entries:
-            _render_plot_pages(pdf, "Trajectory And MSD", trajectory_entries, layout="vertical", items_per_page=2)
+            _render_image_pages(pdf, "Quality Control And Histogram Images", image_entries, 
+                               layout="vertical", items_per_page=2, page_counter=page_counter)
+        # Render trajectory as heatmap with marginal histograms
+        trajectory_csv = artifacts.get("trajectory_csv")
+        msd_csv = artifacts.get("msd_csv")
+        if trajectory_csv and Path(trajectory_csv).is_file():
+            _render_trajectory_heatmap_page(
+                pdf,
+                Path(trajectory_csv),
+                Path(msd_csv) if msd_csv and Path(msd_csv).is_file() else None,
+                title="Trajectory And MSD",
+                page_counter=page_counter,
+            )
+        # PSD plots
         if psd_entries:
-            _render_plot_pages(pdf, "Power Spectral Density", psd_entries, layout="vertical", items_per_page=2)
+            _render_plot_pages(pdf, "Power Spectral Density", psd_entries, 
+                              layout="vertical", items_per_page=2, page_counter=page_counter)
+        # Histogram curves
         if hist_curve_entries:
-            _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries, layout="vertical", items_per_page=2)
-        artifact_rows = _existing_artifact_rows(summary)
-        if artifact_rows:
-            _render_paginated_table(pdf, "Artifact Appendix", ["Artifact", "Path"], artifact_rows, subtitle="Relevant output files stored for this item", rows_per_page=14)
+            _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries, 
+                              layout="vertical", items_per_page=2, page_counter=page_counter)
+        # Artifact appendix removed - file structure is consistent across analyses
+        # and documented in the user manual
     return report_path
 
 
@@ -1234,7 +1655,11 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
     successes = [item for item in items if str(item.get("status")).lower() == "success"]
     failures = [item for item in items if str(item.get("status")).lower() != "success"]
 
+    # Create page counter for global page numbering (cover page is unnumbered)
+    page_counter = PageCounter()
+
     with PdfPages(report_path) as pdf:
+        # Cover page - no page number
         _render_cover_page(
             pdf,
             title=f"Batch Report: {batch_summary.get('batch_id') or 'OT batch'}",
@@ -1253,6 +1678,7 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
                 summary_rows,
                 subtitle="One row per item for rapid cross-batch inspection",
                 rows_per_page=12,
+                page_counter=page_counter,
             )
 
         metric_rows = _batch_metric_rows(successes)
@@ -1264,6 +1690,7 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
                 metric_rows,
                 subtitle="Successful items compared by the main physical outputs",
                 rows_per_page=12,
+                page_counter=page_counter,
             )
 
         def _collect_image_entries(key: str, label_prefix: str) -> list[tuple[str, Path]]:
@@ -1299,7 +1726,8 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
         ):
             image_entries = _collect_image_entries(key, title.replace("Grouped ", "").replace(" Images", ""))
             if image_entries:
-                _render_image_pages(pdf, title, image_entries, layout="grid", items_per_page=2)
+                _render_image_pages(pdf, title, image_entries, layout="grid", 
+                                   items_per_page=2, page_counter=page_counter)
 
         for title, key, x_opts, y_opts, x_title, y_title, log_x, log_y in (
             ("PSD X Comparison", "psd_x_csv", ("f_hz",), ("psd_um2_per_hz", "psd_px2_per_hz"), "Frequency [Hz]", "PSD", True, True),
@@ -1310,7 +1738,8 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
         ):
             plot_entries = _collect_plot_entries(key, title, x_opts, y_opts, x_title, y_title, log_x, log_y)
             if plot_entries:
-                _render_plot_pages(pdf, title, plot_entries, layout="grid", items_per_page=2)
+                _render_plot_pages(pdf, title, plot_entries, layout="grid", 
+                                  items_per_page=2, page_counter=page_counter)
 
         detail_rows = [
             [
@@ -1331,6 +1760,7 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
                 detail_rows,
                 subtitle="Compact item-by-item appendix for quick reference",
                 rows_per_page=12,
+                page_counter=page_counter,
             )
 
         if failures:
@@ -1342,6 +1772,7 @@ def export_ot_batch_pdf(report_path: Path | str, batch_summary: dict[str, Any]) 
                 fail_rows,
                 subtitle="Items without complete outputs are listed here for traceability",
                 rows_per_page=14,
+                page_counter=page_counter,
             )
 
     return report_path

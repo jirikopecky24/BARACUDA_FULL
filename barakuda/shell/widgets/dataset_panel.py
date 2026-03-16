@@ -41,10 +41,7 @@ class DatasetPanel(QWidget):
         self._path_to_item: Dict[str, QListWidgetItem] = {}
         self._item_params: Dict[str, dict] = {}
 
-        title = QLabel("Dataset")
-        title.setStyleSheet("font-weight: 600;")
-
-        # Buttons (order: Import -> Select All -> Remove -> Clear)
+        # Buttons (order: Import -> Select All -> Remove)
         self._btn_import = QPushButton("Import Files…")
         self._btn_import.clicked.connect(self._on_import)
 
@@ -58,18 +55,11 @@ class DatasetPanel(QWidget):
         self._btn_remove_selected.setToolTip("Remove selected items from list (does not delete files from disk)")
         self._btn_remove_selected.clicked.connect(self.remove_selected)
 
-        self._btn_clear_list = QPushButton("Clear List")
-        self._btn_clear_list.setToolTip("Clear the entire imported file list (does not delete files from disk)")
-        self._btn_clear_list.clicked.connect(self.clear_list)
-
         header = QHBoxLayout()
-        header.addWidget(title)
-        header.addStretch(1)
         header.addWidget(self._btn_import)
         header.addWidget(self._btn_import_folder)
         header.addWidget(self._btn_select_all)
         header.addWidget(self._btn_remove_selected)
-        header.addWidget(self._btn_clear_list)
 
         self._list = QListWidget()
         self._list.itemSelectionChanged.connect(self._on_selection_changed)

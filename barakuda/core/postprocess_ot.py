@@ -20,6 +20,17 @@ from barakuda.core.ot_physics import (
     compute_calibration_from_equipartition_and_fc,
 )
 
+# Consistent figure styling for all OT plots
+FIGURE_SIZE = (7, 5)
+FIGURE_SIZE_WIDE = (10, 8)
+AXIS_LABEL_FONTSIZE = 11
+TICK_LABEL_FONTSIZE = 9
+TITLE_FONTSIZE = 12
+PLOT_DPI = 300
+PLOT_COLOR = "#1F6AA5"
+GRID_COLOR = "#CAD5E0"
+PANEL_BG = "#F8FBFD"
+
 
 @dataclass(frozen=True)
 class PostprocessParams:
@@ -310,6 +321,8 @@ def postprocess_trajectory_csv_inplace(
             # pull fc from fits (if fit succeeded)
             fc_x = float(fit_x.get("fc_hz", 0.0)) if isinstance(fit_x, dict) else 0.0
             fc_y = float(fit_y.get("fc_hz", 0.0)) if isinstance(fit_y, dict) else 0.0
+            fc_x_se = float(fit_x.get("fc_hz_se", 0.0)) if isinstance(fit_x, dict) else 0.0
+            fc_y_se = float(fit_y.get("fc_hz_se", 0.0)) if isinstance(fit_y, dict) else 0.0
 
             # Validation (UI/config)
             if not np.isfinite(params.bead_diameter_um) or float(params.bead_diameter_um) <= 0:
@@ -329,6 +342,8 @@ def postprocess_trajectory_csv_inplace(
                         bead_diameter_um=float(params.bead_diameter_um),
                         viscosity_pa_s_override=0.0,
                     ),
+                    fc_x_hz_se=fc_x_se,
+                    fc_y_hz_se=fc_y_se,
                 )
 
                 fc_ratio = cal.fc_x_hz / cal.fc_y_hz if cal.fc_y_hz > 0 else float("nan")
@@ -366,19 +381,27 @@ def postprocess_trajectory_csv_inplace(
                         "kappa_y_n_per_m": cal.kappa_y_n_per_m,
                         "kappa_x_pn_per_um": cal.kappa_x_pn_per_um,
                         "kappa_y_pn_per_um": cal.kappa_y_pn_per_um,
+                        "kappa_x_pn_per_um_se": cal.kappa_x_pn_per_um_se,
+                        "kappa_y_pn_per_um_se": cal.kappa_y_pn_per_um_se,
                         "kappa_iso_ratio": cal.kappa_iso_ratio,
                     },
                     "viscosity": {
                         "eta_x_pa_s": cal.eta_x_pa_s,
                         "eta_y_pa_s": cal.eta_y_pa_s,
                         "eta_mean_pa_s": cal.eta_mean_pa_s,
+                        "eta_mean_pa_s_se": cal.eta_mean_pa_s_se,
                     },
-                    "diffusion": {"D_m2_s": cal.d_m2_s},
+                    "diffusion": {
+                        "D_m2_s": cal.d_m2_s,
+                        "D_m2_s_se": cal.d_m2_s_se,
+                    },
                     "diagnostics": {
                         "var_x_um2": cal.var_x_um2,
                         "var_y_um2": cal.var_y_um2,
                         "fc_x_hz": cal.fc_x_hz,
                         "fc_y_hz": cal.fc_y_hz,
+                        "fc_x_hz_se": cal.fc_x_hz_se,
+                        "fc_y_hz_se": cal.fc_y_hz_se,
                         "n_used": cal.n_used,
                     },
                     "kappa_unit_check": {
@@ -397,20 +420,20 @@ def postprocess_trajectory_csv_inplace(
                 import csv as _csv
                 with cal_csv.open("w", encoding="utf-8", newline="") as f:
                     w = _csv.writer(f)
-                    w.writerow(["metric", "value"])
-                    w.writerow(["temperature_C", f"{float(params.temperature_c):.12g}"])
-                    w.writerow(["bead_diameter_um", f"{float(params.bead_diameter_um):.12g}"])
-                    w.writerow(["kappa_x_n_per_m", f"{cal.kappa_x_n_per_m:.12g}"])
-                    w.writerow(["kappa_y_n_per_m", f"{cal.kappa_y_n_per_m:.12g}"])
-                    w.writerow(["kappa_x_pn_per_um", f"{cal.kappa_x_pn_per_um:.12g}"])
-                    w.writerow(["kappa_y_pn_per_um", f"{cal.kappa_y_pn_per_um:.12g}"])
-                    w.writerow(["kappa_iso_ratio", f"{cal.kappa_iso_ratio:.12g}"])
-                    w.writerow(["eta_x_pa_s", f"{cal.eta_x_pa_s:.12g}"])
-                    w.writerow(["eta_y_pa_s", f"{cal.eta_y_pa_s:.12g}"])
-                    w.writerow(["eta_mean_pa_s", f"{cal.eta_mean_pa_s:.12g}"])
-                    w.writerow(["D_m2_s", f"{cal.d_m2_s:.12g}"])
-                    w.writerow(["fc_x_hz", f"{cal.fc_x_hz:.12g}"])
-                    w.writerow(["fc_y_hz", f"{cal.fc_y_hz:.12g}"])
+                    w.writerow(["metric", "value", "uncertainty"])
+                    w.writerow(["temperature_C", f"{float(params.temperature_c):.12g}", ""])
+                    w.writerow(["bead_diameter_um", f"{float(params.bead_diameter_um):.12g}", ""])
+                    w.writerow(["kappa_x_n_per_m", f"{cal.kappa_x_n_per_m:.12g}", ""])
+                    w.writerow(["kappa_y_n_per_m", f"{cal.kappa_y_n_per_m:.12g}", ""])
+                    w.writerow(["kappa_x_pn_per_um", f"{cal.kappa_x_pn_per_um:.12g}", f"{cal.kappa_x_pn_per_um_se:.12g}"])
+                    w.writerow(["kappa_y_pn_per_um", f"{cal.kappa_y_pn_per_um:.12g}", f"{cal.kappa_y_pn_per_um_se:.12g}"])
+                    w.writerow(["kappa_iso_ratio", f"{cal.kappa_iso_ratio:.12g}", ""])
+                    w.writerow(["eta_x_pa_s", f"{cal.eta_x_pa_s:.12g}", ""])
+                    w.writerow(["eta_y_pa_s", f"{cal.eta_y_pa_s:.12g}", ""])
+                    w.writerow(["eta_mean_pa_s", f"{cal.eta_mean_pa_s:.12g}", f"{cal.eta_mean_pa_s_se:.12g}"])
+                    w.writerow(["D_m2_s", f"{cal.d_m2_s:.12g}", f"{cal.d_m2_s_se:.12g}"])
+                    w.writerow(["fc_x_hz", f"{cal.fc_x_hz:.12g}", f"{cal.fc_x_hz_se:.12g}"])
+                    w.writerow(["fc_y_hz", f"{cal.fc_y_hz:.12g}", f"{cal.fc_y_hz_se:.12g}"])
 
                 # Histograms: x,y,r in um (simple deterministic bins)
                 def _write_hist(csv_path: Path, png_path: Path, data_um: np.ndarray, title: str) -> None:
@@ -437,20 +460,25 @@ def postprocess_trajectory_csv_inplace(
                         for c, h in zip(centers, hist):
                             w.writerow([f"{float(c):.12g}", str(int(h))])
 
-                    # --- PNG ---
+                    # --- PNG + SVG ---
                     try:
                         import matplotlib
                         matplotlib.use("Agg")
                         import matplotlib.pyplot as plt
 
-                        fig = plt.figure(figsize=(7, 4))
+                        fig = plt.figure(figsize=FIGURE_SIZE)
                         ax = fig.add_subplot(1, 1, 1)
-                        ax.plot(centers, hist)
-                        ax.set_xlabel("position [µm]")
-                        ax.set_ylabel("count")
-                        ax.set_title(title)
+                        ax.set_facecolor(PANEL_BG)
+                        ax.plot(centers, hist, color=PLOT_COLOR, linewidth=1.5)
+                        ax.set_xlabel("position [µm]", fontsize=AXIS_LABEL_FONTSIZE)
+                        ax.set_ylabel("count", fontsize=AXIS_LABEL_FONTSIZE)
+                        ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold")
+                        ax.tick_params(labelsize=TICK_LABEL_FONTSIZE)
+                        ax.grid(True, linestyle="--", linewidth=0.5, color=GRID_COLOR)
                         fig.tight_layout()
-                        fig.savefig(png_path, dpi=160)
+                        fig.savefig(png_path, dpi=PLOT_DPI)
+                        svg_path = png_path.with_suffix(".svg")
+                        fig.savefig(svg_path, format="svg")
                         plt.close(fig)
                     except Exception:
                         pass
@@ -479,18 +507,19 @@ def postprocess_trajectory_csv_inplace(
                 summary.setdefault("calibration", {})
                 summary["calibration"] = {"skipped": True, "reason": repr(e)}
 
-        # QC plot (single PNG): PSD (x+y+fits) + MSD
+        # QC plot (single PNG + SVG): PSD (x+y+fits) + MSD
         qc_png = out_dir / f"{base}_qc.png"
         try:
             import matplotlib
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
 
-            fig = plt.figure(figsize=(10, 8))
+            fig = plt.figure(figsize=FIGURE_SIZE_WIDE)
 
             ax1 = fig.add_subplot(2, 1, 1)
-            ax1.loglog(f_x[1:], pxx[1:], label="PSD X")
-            ax1.loglog(f_y[1:], pyy[1:], label="PSD Y")
+            ax1.set_facecolor(PANEL_BG)
+            ax1.loglog(f_x[1:], pxx[1:], label="PSD X", color=PLOT_COLOR, linewidth=1.5)
+            ax1.loglog(f_y[1:], pyy[1:], label="PSD Y", color="#E57373", linewidth=1.5)
 
             if "fc_hz" in fit_x and "fc_hz" in fit_y:
                 fx = np.asarray(f_x, dtype=np.float64)
@@ -501,23 +530,30 @@ def postprocess_trajectory_csv_inplace(
                 px_fit = _lorentz_curve(fx, float(fit_x["A"]), float(fit_x["fc_hz"]), float(fit_x["B"]))
                 py_fit = _lorentz_curve(fx, float(fit_y["A"]), float(fit_y["fc_hz"]), float(fit_y["B"]))
 
-                ax1.loglog(fx[1:], px_fit[1:], linestyle="--", label=f"Fit X (fc={fit_x['fc_hz']:.2f} Hz)")
-                ax1.loglog(fx[1:], py_fit[1:], linestyle="--", label=f"Fit Y (fc={fit_y['fc_hz']:.2f} Hz)")
+                ax1.loglog(fx[1:], px_fit[1:], linestyle="--", label=f"Fit X (fc={fit_x['fc_hz']:.2f} Hz)", color=PLOT_COLOR)
+                ax1.loglog(fx[1:], py_fit[1:], linestyle="--", label=f"Fit Y (fc={fit_y['fc_hz']:.2f} Hz)", color="#E57373")
 
-            ax1.set_xlabel("f [Hz]")
-            ax1.set_ylabel("PSD [px^2/Hz]")
-            ax1.set_title("PSD + Lorentzian fit")
-            ax1.legend()
+            ax1.set_xlabel("f [Hz]", fontsize=AXIS_LABEL_FONTSIZE)
+            ax1.set_ylabel("PSD [px²/Hz]", fontsize=AXIS_LABEL_FONTSIZE)
+            ax1.set_title("PSD + Lorentzian fit", fontsize=TITLE_FONTSIZE, fontweight="bold")
+            ax1.tick_params(labelsize=TICK_LABEL_FONTSIZE)
+            ax1.grid(True, which="both", linestyle="--", linewidth=0.5, color=GRID_COLOR)
+            ax1.legend(fontsize=TICK_LABEL_FONTSIZE)
 
             ax2 = fig.add_subplot(2, 1, 2)
-            ax2.loglog(msd["tau_s"], msd["msd_r"], label="MSD r (px^2)")
-            ax2.set_xlabel("tau [s]")
-            ax2.set_ylabel("MSD [px^2]")
-            ax2.set_title("MSD")
-            ax2.legend()
+            ax2.set_facecolor(PANEL_BG)
+            ax2.loglog(msd["tau_s"], msd["msd_r"], label="MSD r (px²)", color=PLOT_COLOR, linewidth=1.5)
+            ax2.set_xlabel("τ [s]", fontsize=AXIS_LABEL_FONTSIZE)
+            ax2.set_ylabel("MSD [px²]", fontsize=AXIS_LABEL_FONTSIZE)
+            ax2.set_title("MSD", fontsize=TITLE_FONTSIZE, fontweight="bold")
+            ax2.tick_params(labelsize=TICK_LABEL_FONTSIZE)
+            ax2.grid(True, which="both", linestyle="--", linewidth=0.5, color=GRID_COLOR)
+            ax2.legend(fontsize=TICK_LABEL_FONTSIZE)
 
             fig.tight_layout()
-            fig.savefig(qc_png, dpi=160)
+            fig.savefig(qc_png, dpi=PLOT_DPI)
+            qc_svg = qc_png.with_suffix(".svg")
+            fig.savefig(qc_svg, format="svg")
             plt.close(fig)
         except Exception:
             pass
@@ -540,3 +576,103 @@ def postprocess_trajectory_csv_inplace(
     # Default: BROWNIAN
     summary["physics"] = {"mode": "BROWNIAN"} | _compute_brownian_physics(x_rng, y_rng)
     return summary
+
+
+def render_tracking_preview(
+    video_path: Path,
+    trajectory_csv_path: Path,
+    output_path: Path,
+    frame_idx: int = 10,
+    um_per_px: float | None = None,
+) -> Path | None:
+    """
+    Generate tracking preview image showing a video frame with tracked position overlay.
+
+    Args:
+        video_path: Path to the video file (.raw, .avi, etc.)
+        trajectory_csv_path: Path to the trajectory CSV with x_px, y_px columns
+        output_path: Path where to save the preview image (PNG)
+        frame_idx: Which frame to show (default: 10)
+        um_per_px: Scale for scalebar (µm per pixel), if None scalebar uses pixels
+
+    Returns:
+        Path to the saved image, or None if generation failed
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Circle
+        from matplotlib_scalebar.scalebar import ScaleBar
+
+        from barakuda.core.video_reader import VideoReader
+        from barakuda.core.trajectory_csv_io import read_trajectory_csv
+
+        video_path = Path(video_path)
+        trajectory_csv_path = Path(trajectory_csv_path)
+        output_path = Path(output_path)
+
+        if not video_path.is_file() or not trajectory_csv_path.is_file():
+            return None
+
+        reader = VideoReader(video_path)
+        frame = reader.get_frame(frame_idx)
+        reader.close()
+
+        table = read_trajectory_csv(trajectory_csv_path)
+        if frame_idx >= len(table.rows):
+            frame_idx = len(table.rows) - 1
+        row = table.rows[frame_idx]
+
+        x_px = float(row.get("x_px", 0))
+        y_px = float(row.get("y_px", 0))
+
+        fig = plt.figure(figsize=FIGURE_SIZE)
+        ax = fig.add_subplot(1, 1, 1)
+
+        # Show frame (grayscale or RGB)
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            ax.imshow(frame)
+        else:
+            ax.imshow(frame, cmap="gray")
+
+        # Overlay tracked position
+        circle = Circle((x_px, y_px), radius=8, fill=False, color="red", linewidth=2)
+        ax.add_patch(circle)
+        ax.plot(x_px, y_px, "r+", markersize=10, markeredgewidth=2)
+
+        # Add scalebar
+        if um_per_px is not None and um_per_px > 0:
+            scalebar = ScaleBar(
+                um_per_px, "µm",
+                location="lower right",
+                color="white",
+                box_color="black",
+                box_alpha=0.6,
+                font_properties={"size": 10},
+            )
+        else:
+            scalebar = ScaleBar(
+                1, "px",
+                location="lower right",
+                color="white",
+                box_color="black",
+                box_alpha=0.6,
+                font_properties={"size": 10},
+            )
+        ax.add_artist(scalebar)
+
+        ax.set_title(f"Tracking Preview (frame {frame_idx})", fontsize=TITLE_FONTSIZE, fontweight="bold")
+        ax.axis("off")
+        fig.tight_layout()
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+        svg_path = output_path.with_suffix(".svg")
+        fig.savefig(svg_path, format="svg", bbox_inches="tight")
+        plt.close(fig)
+
+        return output_path
+
+    except Exception:
+        return None

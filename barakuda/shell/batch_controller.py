@@ -26,7 +26,7 @@ from barakuda.core.ot_report import (
     export_ot_batch_pdf,
     export_ot_item_pdf,
 )
-from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams
+from barakuda.core.postprocess_ot import postprocess_trajectory_csv_inplace, PostprocessParams, render_tracking_preview
 from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, kappa_from_fc_n_per_m
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
@@ -1586,6 +1586,30 @@ class BatchController:
                         f"{stem}_hist_r.png",
                     ):
                         _move_to(_tracking / _png_name, dir_results)
+                    # Also move SVG files if they exist
+                    for _svg_name in (
+                        f"{stem}_qc.svg",
+                        f"{stem}_hist_x.svg",
+                        f"{stem}_hist_y.svg",
+                        f"{stem}_hist_r.svg",
+                    ):
+                        _move_to(_tracking / _svg_name, dir_results)
+
+                    # 4. Generate tracking preview image
+                    try:
+                        tracking_preview_path = dir_results / f"{stem}_tracking_preview.png"
+                        result = render_tracking_preview(
+                            video_path=file_path,
+                            trajectory_csv_path=traj_path,
+                            output_path=tracking_preview_path,
+                            frame_idx=10,
+                            um_per_px=um_per_px,
+                        )
+                        if result is None:
+                            self._log(f"WARN: tracking preview returned None for {file_path.name}")
+                    except Exception as _tp_err:
+                        import traceback
+                        self._log(f"WARN: tracking preview failed ({file_path.name}): {traceback.format_exc()}")
 
                     export_ot_results_xlsx(
                         output_dir=dir_results,
@@ -1616,7 +1640,10 @@ class BatchController:
                 )
                 try:
                     if dir_results is not None:
-                        item_pdf_path = dir_results / f"{stem}_summary.pdf"
+                        from datetime import datetime as _dt
+                        _report_date = _dt.now().strftime("%Y-%m-%d")
+                        _report_item_id = item_summary.get("item_id") or stem
+                        item_pdf_path = dir_results / f"{_report_date}-OT-{_report_item_id}-report.pdf"
                         export_ot_item_pdf(item_pdf_path, item_summary)
                         item_summary.setdefault("artifacts", {})["item_pdf"] = str(item_pdf_path)
                 except Exception as e:
@@ -2304,7 +2331,10 @@ class BatchController:
                     file_name=input_path.name,
                 )
                 try:
-                    item_pdf_path = dir_results / f"{stem}_summary.pdf"
+                    from datetime import datetime as _dt
+                    _report_date = _dt.now().strftime("%Y-%m-%d")
+                    _report_item_id = item_summary.get("item_id") or stem
+                    item_pdf_path = dir_results / f"{_report_date}-AFM-{_report_item_id}-report.pdf"
                     export_afm_item_pdf(item_pdf_path, item_summary)
                     item_summary.setdefault("artifacts", {})["item_pdf"] = str(item_pdf_path)
                 except Exception as e:
