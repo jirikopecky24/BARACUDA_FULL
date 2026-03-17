@@ -508,6 +508,37 @@ class PipelinePanel(QWidget):
         self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         self.post_box_layout.addRow("Drag axis", self._drag_axis)
         self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
+
+        # Brownian baseline folder (used only in Drag mode)
+        self._brownian_baseline_folder = QLineEdit()
+        self._brownian_baseline_folder.setPlaceholderText("Path to Brownian analysis folder (audit/ + csv/)")
+        self._brownian_baseline_folder.setToolTip(
+            "Folder with Brownian calibration outputs (analysis/audit + analysis/csv).\n"
+            "DRAG will import kappa and optional µm/px from this folder."
+        )
+        self._btn_browse_brownian = QToolButton()
+        self._btn_browse_brownian.setText("Browse…")
+
+        def _on_browse_brownian() -> None:
+            from PyQt6.QtWidgets import QFileDialog
+
+            current = self._brownian_baseline_folder.text().strip() or ""
+            start_dir = str(Path(current)) if current else ""
+            chosen = QFileDialog.getExistingDirectory(
+                self,
+                "Select Brownian analysis folder",
+                start_dir,
+            )
+            if chosen:
+                self._brownian_baseline_folder.setText(chosen)
+
+        self._btn_browse_brownian.clicked.connect(_on_browse_brownian)
+
+        row_brownian = QHBoxLayout()
+        row_brownian.setContentsMargins(0, 0, 0, 0)
+        row_brownian.addWidget(self._brownian_baseline_folder)
+        row_brownian.addWidget(self._btn_browse_brownian)
+        self.post_box_layout.addRow("Brownian baseline (folder)", row_brownian)
         
         self._calibration_mode = "Brownian"
 
@@ -1025,7 +1056,31 @@ class PipelinePanel(QWidget):
                 "stage_speed_um_s": float(self._stage_speed.value()),
                 "drag_axis": str(self._drag_axis.currentData()),
                 "viscosity_pa_s": float(self._viscosity.value()),
+                "brownian_baseline_folder": self._brownian_baseline_folder.text().strip(),
             })
+
+        # #region agent log
+        try:
+            import json as _json
+            from time import time as _time
+            _payload = {
+                "sessionId": "19fc6c",
+                "runId": "ui-get-postprocess",
+                "hypothesisId": "H1",
+                "location": "panel.py:get_postprocess_params",
+                "message": "OT get_postprocess_params snapshot",
+                "data": {
+                    "mode": mode,
+                    "brownian_baseline_folder": params.get("brownian_baseline_folder", ""),
+                },
+                "timestamp": int(_time() * 1000),
+            }
+            with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
+                _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        # #endregion agent log
+
         return params
 
     def get_strategy_params(self) -> dict:
@@ -1141,11 +1196,15 @@ class PipelinePanel(QWidget):
             self._set_row_visible(self._drag_axis, False)
             self._set_row_visible(self._viscosity, False)
             self._set_row_visible(self._bead_diameter_um, True)
+            self._set_row_visible(self._brownian_baseline_folder, False)
+            self._set_row_visible(self._btn_browse_brownian, False)
         elif mode == "Drag":
             self._set_row_visible(self._stage_speed, True)
             self._set_row_visible(self._drag_axis, True)
             self._set_row_visible(self._viscosity, True)
             self._set_row_visible(self._bead_diameter_um, True)
+            self._set_row_visible(self._brownian_baseline_folder, True)
+            self._set_row_visible(self._btn_browse_brownian, True)
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()

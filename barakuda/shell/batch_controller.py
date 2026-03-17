@@ -39,6 +39,13 @@ from barakuda.core.tracking import Detection, choose_tracking_polarity, track_pa
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
 from barakuda.devices.optical_tweezers.manifest import resolve_ot_input_path
 from barakuda.devices.optical_tweezers import perf as ot_perf
+from barakuda.devices.optical_tweezers.drag.calibration_import import (
+    load_brownian_calibration_from_folder,
+)
+from barakuda.devices.optical_tweezers.drag.pipeline import (
+    run_drag_from_raw,
+)
+from barakuda.devices.optical_tweezers.drag.alignment import DragAlignmentError
 
 
 
@@ -839,8 +846,33 @@ class BatchController:
                 device_panel.set_current_path(str(original_input_path))
                 
             tracking_params = device_panel.get_tracking_params()
-            post_params = self._normalize_ot_postprocess_params(device_panel.get_postprocess_params())
+            post_params_raw = device_panel.get_postprocess_params()
+
+            # #region agent log
+            try:
+                import json as _json
+                from time import time as _time
+                _payload = {
+                    "sessionId": "19fc6c",
+                    "runId": "batch-pre-normalize",
+                    "hypothesisId": "H1",
+                    "location": "batch_controller.py:run_batch_before_normalize",
+                    "message": "Raw postprocess params from device panel",
+                    "data": {
+                        "calibration_mode": str(post_params_raw.get("calibration_mode", "")),
+                        "brownian_baseline_folder": str(post_params_raw.get("brownian_baseline_folder", "")),
+                    },
+                    "timestamp": int(_time() * 1000),
+                }
+                with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
+                    _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+            # #endregion agent log
+
+            post_params = self._normalize_ot_postprocess_params(post_params_raw)
             post_params.setdefault("temperature_c", 25.0)
+            calibration_mode = str(post_params.get("calibration_mode", "Brownian"))
             ot_runtime = self._resolve_ot_runtime(tracking_params)
             shadow_mode = self._get_ot_shadow_mode()
             ot_runtime["shadow_mode"] = shadow_mode
@@ -1309,34 +1341,168 @@ class BatchController:
                 self.last_ot_overlay_trajectory_path = str(traj_path)
 
                 if pp_enabled:
-                    try:
-                        post_started = time.perf_counter()
-                        pp_summary = postprocess_trajectory_csv_inplace(
-                            trajectory_csv_path=traj_path,
-                            fps=fps,
-                            um_per_px=um_per_px,
-                            params=pp,
-                            start_frame=int(s),
-                            end_frame=int(e),
-                        )
-                        (dir_audit / f"{stem}_postprocess.json").write_text(
-                            json.dumps({
-                                "enabled": True,
-                                "params": {
-                                    "qc_enabled": bool(pp.qc_enabled),
-                                    "q_min": float(pp.q_min),
-                                    "jump_max_px": float(pp.jump_max_px),
-                                    "drift_enabled": bool(pp.drift_enabled),
-                                    "drift_window_s": float(pp.drift_window_s),
-                                    "export_um_columns": bool(pp.export_um_columns),
-                                },
-                                "summary": pp_summary,
-                            }, indent=2, ensure_ascii=False),
-                            encoding="utf-8",
-                        )
-                        postprocess_elapsed_ms = round((time.perf_counter() - post_started) * 1000.0, 3)
-                    except Exception as e:
-                        self._log(f"WARN: postprocess failed ({file_path.name}): {e!r}")
+                    if calibration_mode == "Drag":
+                        # DRAG mode: run dedicated DRAG pipeline using Brownian calibration imported from folder.
+                        try:
+                            baseline_folder = str(post_params.get("brownian_baseline_folder", "")).strip()
+                            if not baseline_folder:
+                                raise ValueError("Brownian baseline folder is required for Drag calibration.")
+
+                            # #region agent log
+                            try:
+                                import json as _json
+                                from time import time as _time
+                                _payload = {
+                                    "sessionId": "19fc6c",
+                                    "runId": "batch-drag-start",
+                                    "hypothesisId": "H1",
+                                    "location": "batch_controller.py:drag_mode_entry",
+                                    "message": "Entering DRAG mode postprocess",
+                                    "data": {
+                                        "baseline_folder": baseline_folder,
+                                        "calibration_mode": calibration_mode,
+                                        "drag_axis_param": str(post_params.get("drag_axis", "")),
+                                    },
+                                    "timestamp": int(_time() * 1000),
+                                }
+                                with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
+                                    _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion agent log
+
+                            brownian_cal = load_brownian_calibration_from_folder(Path(baseline_folder))
+
+                            axis = str(post_params.get("drag_axis", "x")).lower().strip()
+                            if axis not in {"x", "y"}:
+                                axis = "x"
+
+                            if axis == "x":
+                                kappa_n_per_m = brownian_cal.kappa_x_n_per_m
+                            else:
+                                kappa_n_per_m = brownian_cal.kappa_y_n_per_m
+
+                            if kappa_n_per_m is None or not np.isfinite(kappa_n_per_m) or kappa_n_per_m <= 0:
+                                raise ValueError("Valid kappa_n_per_m could not be loaded from Brownian calibration.")
+
+                            # Prefer Brownian um_per_px if available, otherwise keep the resolved um_per_px.
+                            drag_um_per_px = brownian_cal.um_per_px if brownian_cal.um_per_px is not None else um_per_px
+
+                            from barakuda.devices.optical_tweezers.drag.schema import DragAnalysisConfig
+
+                            # #region agent log
+                            try:
+                                import json as _json
+                                from time import time as _time
+                                _payload = {
+                                    "sessionId": "19fc6c",
+                                    "runId": "batch-drag-module-info",
+                                    "hypothesisId": "H2",
+                                    "location": "batch_controller.py:drag_mode_entry",
+                                    "message": "run_drag_from_raw origin",
+                                    "data": {
+                                        "run_drag_from_raw_module": getattr(run_drag_from_raw, "__module__", ""),
+                                        "run_drag_from_raw_file": str(getattr(run_drag_from_raw, "__globals__", {}).get("__file__", "")),
+                                    },
+                                    "timestamp": int(_time() * 1000),
+                                }
+                                with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
+                                    _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion agent log
+
+                            drag_cfg = DragAnalysisConfig(
+                                analysis_axis=axis,
+                                um_per_px=drag_um_per_px,
+                                bead_diameter_um=float(pp.bead_diameter_um),
+                                kappa_n_per_m=float(kappa_n_per_m),
+                            )
+
+                            # DRAG expects the acquisition/run folder where RAW + stage files live.
+                            run_dir_drag = file_path.parent
+
+                            drag_result, drag_outputs = run_drag_from_raw(
+                                run_dir=run_dir_drag,
+                                drag_config=drag_cfg,
+                                tracking_config=config["tracking"],
+                            )
+
+                            # Mirror key DRAG artifacts into analysis directories for reports.
+                            try:
+                                traj_src = drag_outputs.get("trajectory")
+                                if traj_src and Path(traj_src).is_file():
+                                    shutil.copy2(traj_src, dir_csv / Path(traj_src).name)
+
+                                summary_json = drag_outputs.get("summary_json")
+                                if summary_json and Path(summary_json).is_file():
+                                    shutil.copy2(summary_json, dir_audit / Path(summary_json).name)
+
+                                summary_csv = drag_outputs.get("summary_csv")
+                                if summary_csv and Path(summary_csv).is_file():
+                                    shutil.copy2(summary_csv, dir_csv / Path(summary_csv).name)
+
+                                diagnostic_png = drag_outputs.get("diagnostic_png")
+                                if diagnostic_png and Path(diagnostic_png).is_file():
+                                    shutil.copy2(diagnostic_png, dir_results / Path(diagnostic_png).name)
+                            except Exception as copy_err:  # noqa: BLE001
+                                self._log(f"WARN: DRAG artifacts copy failed ({file_path.name}): {copy_err!r}")
+
+                            # DRAG postprocess time is tracked for perf summary
+                            postprocess_elapsed_ms = None
+                        except DragAlignmentError as e:
+                            self._log(f"WARN: DRAG calibration failed ({file_path.name}): {e!r}")
+                            if getattr(e, "diagnostics", None) is not None:
+                                d = e.diagnostics
+                                self._log(
+                                    f"[DRAG alignment] {d.failure_reason}: {d.message}"
+                                )
+                                self._log(
+                                    f"[DRAG alignment] baseline_median={d.baseline_median:.4f} px, "
+                                    f"sigma={d.baseline_sigma:.4f}, threshold={d.onset_threshold_abs:.4f} px, "
+                                    f"min_hold={d.onset_min_hold_s:.3f} s, n_baseline={d.n_baseline_samples}"
+                                )
+                                if d.candidate_onset_times_s:
+                                    self._log(
+                                        f"[DRAG alignment] candidate onsets (s): {list(d.candidate_onset_times_s)[:5]}"
+                                    )
+                                run_dir_drag = file_path.parent
+                                stem = file_path.stem
+                                self._log(
+                                    f"[DRAG alignment] See {run_dir_drag / f'{stem}_alignment_failure.json'} and "
+                                    f"{run_dir_drag / f'{stem}_alignment_debug.png'}"
+                                )
+                        except Exception as e:
+                            self._log(f"WARN: DRAG calibration failed ({file_path.name}): {e!r}")
+                    else:
+                        try:
+                            post_started = time.perf_counter()
+                            pp_summary = postprocess_trajectory_csv_inplace(
+                                trajectory_csv_path=traj_path,
+                                fps=fps,
+                                um_per_px=um_per_px,
+                                params=pp,
+                                start_frame=int(s),
+                                end_frame=int(e),
+                            )
+                            (dir_audit / f"{stem}_postprocess.json").write_text(
+                                json.dumps({
+                                    "enabled": True,
+                                    "params": {
+                                        "qc_enabled": bool(pp.qc_enabled),
+                                        "q_min": float(pp.q_min),
+                                        "jump_max_px": float(pp.jump_max_px),
+                                        "drift_enabled": bool(pp.drift_enabled),
+                                        "drift_window_s": float(pp.drift_window_s),
+                                        "export_um_columns": bool(pp.export_um_columns),
+                                    },
+                                    "summary": pp_summary,
+                                }, indent=2, ensure_ascii=False),
+                                encoding="utf-8",
+                            )
+                            postprocess_elapsed_ms = round((time.perf_counter() - post_started) * 1000.0, 3)
+                        except Exception as e:
+                            self._log(f"WARN: postprocess failed ({file_path.name}): {e!r}")
 
                 # --- 2-video Pairing & Comparison (Brownian vs Dragging) ---
                 try:
