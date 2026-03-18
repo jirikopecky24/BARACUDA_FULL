@@ -162,13 +162,14 @@ class XimcStage(AbstractStage):
             result = _ll.lib.get_position(self._device_id, pos)
             if result != _ll.Result.Ok:
                 raise RuntimeError(f"XIMC get_position failed: {result}")
-            return float(pos.Position)
+            # XIMC reports position as integer steps + microsteps (uPosition, 1/256 step).
+            return float(pos.Position) + (float(pos.uPosition) / 256.0)
         else:  # pragma: no cover
             pos = pyximc.get_position_t()
             result = _lib.get_position(self._device_id, pos)
             if result != pyximc.Result.Ok:
                 raise RuntimeError(f"XIMC get_position failed: {result}")
-            return float(pos.Position)
+            return float(pos.Position) + (float(getattr(pos, "uPosition", 0)) / 256.0)
 
     def move_constant_velocity(
         self,
