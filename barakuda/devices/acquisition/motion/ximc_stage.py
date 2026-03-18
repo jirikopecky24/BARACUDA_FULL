@@ -180,10 +180,23 @@ class XimcStage(AbstractStage):
         decel: float,
         stop_event: Optional[threading.Event] = None,
     ) -> MotionResult:
+        """Execute a constant-velocity move and block until complete.
+
+        Polling is split into two phases to handle the COM-port latency between
+        command_move() and the controller actually setting MVCMD_RUNNING:
+
+          Phase 1 — wait for move to start (MVCMD_RUNNING becomes set).
+                    Without this, get_status immediately after command_move
+                    still sees MVCMD_RUNNING = 0 and the loop exits before
+                    the motor moves at all.
+
+          Phase 2 — wait for move to finish (MVCMD_RUNNING clears).
+                    Includes a safety timeout proportional to expected travel.
+        """
         self._require_connected()
 
+        # Read initial position (integer steps + microsteps / 256)
         pos_before = self.get_position()
-        t_start = time.perf_counter()
 
         # Set speed profile
         if _BACKEND == "libximc":
@@ -209,40 +222,88 @@ class XimcStage(AbstractStage):
             if r != pyximc.Result.Ok:
                 raise RuntimeError(f"XIMC set_move_settings failed: {r}")
 
-        # Compute target position
+        # Issue the move command (asynchronous — motor starts after latency)
         signed_travel = int(round(abs(travel) * direction))
         target = int(pos_before) + signed_travel
         if _BACKEND == "libximc":
             r = _ll.lib.command_move(self._device_id, target, 0)
             if r != _ll.Result.Ok:
                 raise RuntimeError(f"XIMC command_move failed: {r}")
+            status = _ll.status_t()
+            _running_flag = _ll.MvcmdStatus.MVCMD_RUNNING
+            _result_ok = _ll.Result.Ok
+
+            def _get_status() -> int:
+                return _ll.lib.get_status(self._device_id, status)
+
         else:  # pragma: no cover
             r = _lib.command_move(self._device_id, target, 0)
             if r != pyximc.Result.Ok:
                 raise RuntimeError(f"XIMC command_move failed: {r}")
+            status = pyximc.status_t()
+            _running_flag = pyximc.MvcmdStatus.MVCMD_RUNNING
+            _result_ok = pyximc.Result.Ok
 
-        # Poll until stopped
-        status = _ll.status_t() if _BACKEND == "libximc" else pyximc.status_t()  # type: ignore[name-defined]
+            def _get_status() -> int:  # type: ignore[misc]
+                return _lib.get_status(self._device_id, status)
+
+        # ------------------------------------------------------------------
+        # Phase 1: wait for MVCMD_RUNNING to be set (motor has started).
+        # command_move is asynchronous; over a COM port the controller may
+        # need 20–100 ms before it reflects the new state in get_status.
+        # Without this phase the loop below would exit immediately.
+        # ------------------------------------------------------------------
+        _PHASE1_TIMEOUT_S = 2.0
+        _phase1_deadline = time.perf_counter() + _PHASE1_TIMEOUT_S
+        while True:
+            r = _get_status()
+            if r != _result_ok:
+                raise RuntimeError(f"XIMC get_status (phase1) failed: {r}")
+            if status.MvCmdSts & _running_flag:
+                break
+            if time.perf_counter() > _phase1_deadline:
+                raise RuntimeError(
+                    "XIMC: motor did not start within "
+                    f"{_PHASE1_TIMEOUT_S:.1f} s of command_move. "
+                    "Check speed/accel settings and hardware."
+                )
+            time.sleep(0.010)
+
+        # t_start is captured once MVCMD_RUNNING is confirmed set
+        t_start = time.perf_counter()
+
+        # ------------------------------------------------------------------
+        # Phase 2: wait for MVCMD_RUNNING to clear (move finished).
+        # Timeout is 3× the expected duration plus a 5 s buffer.
+        # ------------------------------------------------------------------
+        _expected_s = abs(travel) / max(speed, 1.0)
+        _phase2_timeout_s = _expected_s * 3.0 + 5.0
+        _phase2_deadline = t_start + _phase2_timeout_s
+
         while True:
             if stop_event is not None and stop_event.is_set():
                 self.stop()
                 break
-            if _BACKEND == "libximc":
-                r = _ll.lib.get_status(self._device_id, status)
-                if r != _ll.Result.Ok:
-                    raise RuntimeError(f"XIMC get_status failed: {r}")
-                if not (status.MvCmdSts & _ll.MvcmdStatus.MVCMD_RUNNING):
-                    break
-            else:  # pragma: no cover
-                r = _lib.get_status(self._device_id, status)
-                if r != pyximc.Result.Ok:
-                    raise RuntimeError(f"XIMC get_status failed: {r}")
-                if not (status.MvCmdSts & pyximc.MvcmdStatus.MVCMD_RUNNING):
-                    break
+            r = _get_status()
+            if r != _result_ok:
+                raise RuntimeError(f"XIMC get_status (phase2) failed: {r}")
+            if not (status.MvCmdSts & _running_flag):
+                break
+            if time.perf_counter() > _phase2_deadline:
+                self.stop()
+                raise RuntimeError(
+                    f"XIMC: move timeout after {_phase2_timeout_s:.1f} s "
+                    f"(travel={travel}, speed={speed})"
+                )
             time.sleep(0.005)
 
         t_stop = time.perf_counter()
-        pos_after = self.get_position()
+
+        # Read final position from the last status response
+        # (status_t has CurPosition + uCurPosition; saves a COM round-trip)
+        pos_after = (
+            float(status.CurPosition) + float(status.uCurPosition) / 256.0
+        )
         actual_travel = abs(pos_after - pos_before)
         actual_duration = t_stop - t_start
         actual_speed = actual_travel / actual_duration if actual_duration > 0 else 0.0
