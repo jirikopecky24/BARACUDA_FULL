@@ -8,10 +8,18 @@ materialise a canonical dataset item under runs/acquisition/<item_id>/:
         <item_id>/
           item.json
           acquisition/
-            video.raw  (or video.avi)
-            video_meta.json
-            video_timestamps.csv   (if present)
-            qc.json                (if present)
+            <basename>.raw          (or .avi)
+            <basename>_meta.json
+            <basename>_timestamps.csv   (if present)
+            <basename>_qc.json          (if present)
+            <basename>_stage.json       (if present)
+            <basename>_stage_trace.csv  (if present)
+
+Naming contract: all files in the canonical acquisition/ subfolder
+preserve the run basename derived from the source video filename stem
+(e.g. "ot_drag_water_rep01").  Generic names like "video.*" are NOT used.
+Stage files already carry the basename from the recording step and are
+copied as-is.
 
 Files are copied from the user-chosen recording directory into the
 canonical acquisition/ subfolder.  The originals are left in place for
@@ -65,10 +73,13 @@ def create_acquisition_dataset_home(
     acq_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Copy acquisition files into canonical acquisition/ subfolder ─────────
-    video_dest = _copy_to_acq(video_path, acq_dir, "video" + Path(video_path).suffix)
-    meta_dest = _copy_to_acq(meta_path, acq_dir, "video_meta.json")
-    ts_dest = _copy_to_acq(timestamps_path, acq_dir, "video_timestamps.csv")
-    qc_dest = _copy_to_acq(qc_path, acq_dir, "qc.json")
+    # Use the source video stem as the shared basename for all output files,
+    # e.g. "ot_drag_water_rep01.raw", "ot_drag_water_rep01_meta.json", …
+    stem = Path(video_path).stem
+    video_dest = _copy_to_acq(video_path, acq_dir, stem + Path(video_path).suffix)
+    meta_dest  = _copy_to_acq(meta_path,  acq_dir, stem + "_meta.json")
+    ts_dest    = _copy_to_acq(timestamps_path, acq_dir, stem + "_timestamps.csv")
+    qc_dest    = _copy_to_acq(qc_path,    acq_dir, stem + "_qc.json")
 
     # Stage files use their original filename (basename-derived) — do not rename.
     stage_meta_dest = (

@@ -5,6 +5,8 @@ alwaysApply: true
 
 # OT Baseline And Forward Design
 
+- **OT in its current form is the ideal default and canonical model** for BARAKUDA. How OT looks and works now (pipeline, UI cards/tabs, run layout, report, export) is the template everything else should follow.
+- When you add a **new method or module** (e.g. AFM, hydrogels, or any new analysis type), read this rule and **build it from the start** to match OT: same pipeline structure, same card/tab layout and behaviour, same export and report flow. Do not invent a different layout or flow unless the user explicitly asks for a different direction.
 - Treat `OT` as the reference implementation for new BARAKUDA modules.
 - When building or redesigning new modules such as `AFM`, reports, run/output layout, export flow, or future modules like hydrogels, default to the same structural standard as OT unless the user explicitly wants a different direction.
 - Preserve the current stable behavior of `OT` and `Acquisition`; do not refactor or disturb them unless the user explicitly asks for changes there.
@@ -12,14 +14,17 @@ alwaysApply: true
   - never use `main` for experiments or first-pass implementation
   - never merge work into `main` unless it is working and tested
   - always create or use a separate branch for new work, validate it there, and only then merge into `main`
-- Reuse OT patterns first:
+- Reuse OT patterns first (pipeline, cards, export):
+  - pipeline: same step sequence, batch vs single run, parameter handling
+  - cards/tabs: same UI layout and behaviour as OT (tabs, combo boxes, tooltips, panel width)
+  - export: same report layout (cover, theory, conditions, preview grid, plots), same output folder structure and naming
   - consistent UI quality and layout discipline
   - deterministic run/output structure
   - report/export flow
   - artifact naming and discoverability
   - settings flow and parameter handling
 - Prioritize speed and efficiency in all new module design, but never at the cost of correctness, determinism, or scientific accuracy.
-- When both CPU and GPU implementations are realistic options, prefer designing both paths explicitly from the start instead of forcing one mixed or ambiguous execution path.
+- When both CPU and GPU implementations are realistic options, **always build both paths**, and keep them **independent of each other** (no shared mixed path). Ideally implement **GPU first**, then CPU; both must be present and selectable.
 - Treat performance as a first-class requirement:
   - prefer architectures that can scale to fast execution cleanly
   - ask early whether CPU, GPU, or both are required

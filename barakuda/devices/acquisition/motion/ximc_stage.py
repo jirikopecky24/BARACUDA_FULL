@@ -196,8 +196,17 @@ class XimcStage(AbstractStage):
         """
         self._require_connected()
 
+        # #region agent log setup — MUST be before get_position
+        import json as _json, pathlib as _pl
+        def _dbg(msg, hyp, data):
+            e = _json.dumps({"sessionId":"a34608","hypothesisId":hyp,"timestamp":int(time.perf_counter()*1000),"location":"ximc_stage.py","message":msg,"data":data})
+            _pl.Path("debug-a34608.log").open("a").write(e+"\n")
+        _dbg("move_constant_velocity ENTER", "H1", {"travel": travel, "speed": speed, "direction": direction})
+        # #endregion
+
         # Read initial position (integer steps + microsteps / 256)
         pos_before = self.get_position()
+        _dbg("get_position done", "H1", {"pos_before": pos_before})
 
         # Set speed profile
         if _BACKEND == "libximc":
@@ -205,12 +214,55 @@ class XimcStage(AbstractStage):
             r = _ll.lib.get_move_settings(self._device_id, byref(mvst))
             if r != _ll.Result.Ok:
                 raise RuntimeError(f"XIMC get_move_settings failed: {r}")
-            mvst.Speed = max(1, int(round(abs(speed))))
+            # #region agent log H-A,H-B — before/after move settings
+            _dbg("move_settings BEFORE set", "H-B", {
+                "pos_before": pos_before,
+                "Speed": int(mvst.Speed), "uSpeed": int(mvst.uSpeed),
+                "Accel": int(mvst.Accel), "Decel": int(mvst.Decel),
+                "AntiplaySpeed": int(mvst.AntiplaySpeed), "MoveFlags": int(mvst.MoveFlags),
+            })
+            # #endregion
+            # Speed is passed DIRECTLY as the XIMC firmware Speed register (1:1 mapping).
+            # The XIMC Speed register does NOT map linearly to physical counts/sec —
+            # the relationship depends on Accel, travel, motor physics, and MicrostepMode.
+            # The K-formula approach (K/Speed_reg) was found empirically incorrect across
+            # the useful operating range; predicted vs. actual speed diverged by 8×+.
+            #
+            # Practical reference (empirical, this motor + 256-microstep config):
+            #   Speed=1,   Accel=20  → ~75 c/s  → Travel=1500 takes ~20s  (slow drag mode)
+            #   Speed=175, Accel=100 → ~392 c/s → Travel=200  takes ~0.5s (fast mode)
+            #
+            # Speed=1 matches XILab's SPEED_UNITS_S=1 "default slow drag mode" script.
+            # Type safety: ctypes.c_ulong (uint32, max ~4.3e9); Speed=1 is safe.
+            _speed_reg = max(1, int(round(abs(speed))))
+            mvst.Speed = _speed_reg
             mvst.Accel = max(1, int(round(abs(accel))))
             mvst.Decel = max(1, int(round(abs(decel))))
             r = _ll.lib.set_move_settings(self._device_id, byref(mvst))
             if r != _ll.Result.Ok:
                 raise RuntimeError(f"XIMC set_move_settings failed: {r}")
+            # read back to verify the controller accepted the values
+            mvst_rb = _ll.move_settings_t()
+            _ll.lib.get_move_settings(self._device_id, byref(mvst_rb))
+            # #region agent log H-A — read-back after set
+            _dbg("move_settings AFTER set (readback)", "H-A", {
+                "speed_reg_commanded": _speed_reg,
+                "speed_reg_readback": int(mvst_rb.Speed),
+                "Accel": int(mvst_rb.Accel), "Decel": int(mvst_rb.Decel),
+                "set_result": int(r),
+            })
+            # #endregion
+            # #region agent log H-E — engine settings (NomSpeed, MicrostepMode, StepsPerRev)
+            eng = _ll.engine_settings_t()
+            _ll.lib.get_engine_settings(self._device_id, byref(eng))
+            _dbg("engine_settings", "H-E", {
+                "NomSpeed": int(eng.NomSpeed), "uNomSpeed": int(eng.uNomSpeed),
+                "MicrostepMode": int(eng.MicrostepMode),
+                "StepsPerRev": int(eng.StepsPerRev),
+                "NomVoltage": int(eng.NomVoltage), "NomCurrent": int(eng.NomCurrent),
+                "EngineFlags": int(eng.EngineFlags),
+            })
+            # #endregion
         else:  # pragma: no cover
             mvst = pyximc.move_settings_t()
             r = _lib.get_move_settings(self._device_id, mvst)
@@ -223,9 +275,41 @@ class XimcStage(AbstractStage):
             if r != pyximc.Result.Ok:
                 raise RuntimeError(f"XIMC set_move_settings failed: {r}")
 
+        # ------------------------------------------------------------------
+        # Pre-flight: check XIMC status for alarm / limit flags.
+        # If controller is in alarm state, abort cleanly (avoid DLL hard fault).
+        # ------------------------------------------------------------------
+        if _BACKEND == "libximc":
+            _pre_status = _ll.status_t()
+            _ps_r = _ll.lib.get_status(self._device_id, byref(_pre_status))
+            # Flags byte: bit 5 = ALARM, bit 6 = CTP_ERROR, bit 7 = POWER_OVERHEAT
+            # GPIOFlags: bit 0/1 = left/right limit switches (controller-dependent)
+            _flags = int(getattr(_pre_status, "Flags", 0))
+            _gpio = int(getattr(_pre_status, "GPIOFlags", 0))
+            _dbg("pre_motion status check", "H1", {
+                "get_status_result": int(_ps_r),
+                "Flags": _flags,
+                "GPIOFlags": _gpio,
+                "MvCmdSts": int(getattr(_pre_status, "MvCmdSts", -1)),
+                "CurPosition": int(getattr(_pre_status, "CurPosition", -1)),
+            })
+            # ALARM flag = bit 5 (0x20). If set, controller is in alarm state.
+            if _flags & 0x20:
+                raise RuntimeError(
+                    f"XIMC controller is in ALARM state (Flags=0x{_flags:02X}). "
+                    "Home the stage in XILab and reset the controller before moving."
+                )
+            # If controller already reports RUNNING from a previous command, stop it first.
+            if int(getattr(_pre_status, "MvCmdSts", 0)) & 0x01:
+                _ll.lib.command_stop(self._device_id)
+                time.sleep(0.15)  # let stop propagate before issuing new move
+
         # Issue the move command (asynchronous — motor starts after latency)
         signed_travel = int(round(abs(travel) * direction))
         target = int(pos_before) + signed_travel
+        # #region agent log — command_move target
+        _dbg("command_move", "H-SPEED", {"pos_before": pos_before, "target": target, "signed_travel": signed_travel, "commanded_speed": speed})
+        # #endregion
         if _BACKEND == "libximc":
             r = _ll.lib.command_move(self._device_id, target, 0)
             if r != _ll.Result.Ok:
@@ -276,12 +360,14 @@ class XimcStage(AbstractStage):
 
         # ------------------------------------------------------------------
         # Phase 2: wait for MVCMD_RUNNING to clear (move finished).
-        # Timeout is 3× the expected duration plus a 5 s buffer.
+        # Speed is now a raw XIMC register (not c/s), so travel/speed is not a reliable
+        # time estimate. Use a generous fixed timeout: max(60s, travel×0.1 + 30s).
+        # For Speed=1/Travel=1500 this gives 180s — the actual motion is ~20s.
         # ------------------------------------------------------------------
-        _expected_s = abs(travel) / max(speed, 1.0)
-        _phase2_timeout_s = _expected_s * 3.0 + 5.0
+        _phase2_timeout_s = max(60.0, abs(travel) * 0.1 + 30.0)
         _phase2_deadline = t_start + _phase2_timeout_s
 
+        _p2_n = 0
         while True:
             if stop_event is not None and stop_event.is_set():
                 self.stop()
@@ -289,6 +375,17 @@ class XimcStage(AbstractStage):
             r = _get_status()
             if r != _result_ok:
                 raise RuntimeError(f"XIMC get_status (phase2) failed: {r}")
+            # #region agent log H-C — log CurSpeed during motion (first 3 polls)
+            if _p2_n < 3:
+                _dbg("phase2 poll", "H-C", {
+                    "n": _p2_n,
+                    "CurSpeed": int(getattr(status, "CurSpeed", -1)),
+                    "uCurSpeed": int(getattr(status, "uCurSpeed", -1)),
+                    "CurPosition": int(getattr(status, "CurPosition", -1)),
+                    "MvCmdSts": int(status.MvCmdSts),
+                })
+            _p2_n += 1
+            # #endregion
             if not (status.MvCmdSts & _running_flag):
                 break
             if time.perf_counter() > _phase2_deadline:
@@ -309,6 +406,14 @@ class XimcStage(AbstractStage):
         actual_travel = abs(pos_after - pos_before)
         actual_duration = t_stop - t_start
         actual_speed = actual_travel / actual_duration if actual_duration > 0 else 0.0
+        # #region agent log H-SPEED — move result
+        _dbg("move_result", "H-SPEED", {
+            "pos_before": pos_before, "pos_after": pos_after,
+            "actual_travel": actual_travel, "actual_duration_s": actual_duration,
+            "actual_speed": actual_speed, "commanded_speed": speed,
+            "phase2_polls": _p2_n,
+        })
+        # #endregion
 
         return MotionResult(
             actual_travel_user=actual_travel,

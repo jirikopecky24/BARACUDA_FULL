@@ -54,29 +54,6 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
 
     basename, raw_path = _require_single_raw(run_dir)
 
-    # #region agent log
-    try:
-        import json as _json
-        from time import time as _time
-        _payload = {
-            "sessionId": "19fc6c",
-            "runId": "drag-discover-paths",
-            "hypothesisId": "H2",
-            "location": "drag/io.py:discover_drag_run_paths",
-            "message": "discover_drag_run_paths entry",
-            "data": {
-                "run_dir": str(run_dir),
-                "basename": basename,
-                "trajectory_override": str(trajectory_path) if trajectory_path is not None else "",
-            },
-            "timestamp": int(_time() * 1000),
-        }
-        with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion agent log
-
     # --- video meta / timestamps ---
     meta_path = run_dir / f"{basename}_meta.json"
     if not meta_path.is_file():

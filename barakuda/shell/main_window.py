@@ -282,6 +282,8 @@ class ShellMainWindow(QMainWindow):
                     self.preview.set_scale_display(txt)
                     self._device_panel.set_um_per_px(um)      # type: ignore[attr-defined]
                     self._device_panel.set_scale_status(txt)   # type: ignore[attr-defined]
+                    if info.stage_um_per_unit is not None:
+                        self._device_panel.set_stage_um_per_unit(info.stage_um_per_unit)  # type: ignore[attr-defined]
                 else:
                     # Default OT scale (user requirement) for convenience; saved scale still wins.
                     um = 0.060420
@@ -628,11 +630,17 @@ class ShellMainWindow(QMainWindow):
                 self.log_panel.log("Save scale: um/px must be > 0.")
                 return
 
-            info = save_dataset_scale(p, um)
+            stage_raw = scale_params.get("stage_um_per_unit", 0.0)
+            stage_um_per_unit: float | None = float(stage_raw) if float(stage_raw) > 0 else None
+
+            info = save_dataset_scale(p, um, stage_um_per_unit=stage_um_per_unit)
             txt = f"Scale: {info.um_per_px:.6f} µm/px (dataset)"
             self.preview.set_scale_display(txt)
             self._device_panel.set_scale_status(txt)  # type: ignore[attr-defined]
-            self.log_panel.log(f"Saved dataset scale: {p.name} -> {info.um_per_px:.6f} µm/px")
+            stage_log = f", stage: {stage_um_per_unit:.4f} µm/unit" if stage_um_per_unit else ""
+            self.log_panel.log(
+                f"Saved dataset scale: {p.name} -> {info.um_per_px:.6f} µm/px{stage_log}"
+            )
         except Exception as e:
             self.log_panel.log(f"Save scale ERROR: {e!r}")
 

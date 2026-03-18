@@ -37,8 +37,6 @@ from barakuda.devices.acquisition.camera import (
 )
 from barakuda.devices.acquisition.camera_base import AbstractCamera
 from barakuda.devices.acquisition.camera_factory import enumerate_all, create as create_camera
-from barakuda.devices.acquisition.dataset import create_acquisition_dataset_home
-
 # Motion integration (lazy — only imported if pyximc is available)
 from barakuda.devices.acquisition.motion.recipes import ConstantVelocityDragRecipe
 from barakuda.devices.acquisition.motion.motion_run import (
@@ -54,8 +52,6 @@ except Exception:
     XimcStage = None  # type: ignore
     enumerate_ximc_devices = lambda: []  # type: ignore
 
-# Project runs/ root — two levels above the package root (barakuda/)
-_RUNS_ROOT = Path(__file__).resolve().parents[4] / "runs"
 
 
 # ------------------------------------------------------------------ #
@@ -279,6 +275,8 @@ class AcquisitionPanel(QWidget):
     # Thread-safe signals from background fps/benchmark threads
     _fps_done_signal = pyqtSignal()
     _fps_result_signal = pyqtSignal(str)   # carries result text for label + status
+    # Thread-safe signal for slow stage enumeration (XIMC + COM descriptions)
+    _stage_list_ready_signal = pyqtSignal(object, object)  # (devices, com_desc)
 
     # Default recording ROI
     _DEFAULT_ROI_W = 48
@@ -302,10 +300,13 @@ class AcquisitionPanel(QWidget):
         self._stage = None          # XimcStage or None (lazy connect)
         self._motion_thread: QThread | None = None
         self._motion_worker: _RecordMotionWorker | None = None
+        self._motion_elapsed_timer: QTimer | None = None
+        self._motion_run_t0: float = 0.0
 
         # Connect thread-safe fps signals to UI slots (always run in main thread)
         self._fps_done_signal.connect(self._on_fps_done)
         self._fps_result_signal.connect(self._on_fps_result)
+        self._stage_list_ready_signal.connect(self._on_stage_list_ready)
 
         # Sensor limits (updated on connect)
         self._sensor_w = self._DEFAULT_SENSOR_W
@@ -567,7 +568,11 @@ class AcquisitionPanel(QWidget):
 
         dir_row = QHBoxLayout()
         self._edit_output_dir = QLineEdit(r"C:\Work\Video")
-        self._edit_output_dir.setToolTip("Folder to save recorded video + <basename>_meta.json.")
+        self._edit_output_dir.setToolTip(
+            "Base folder for acquisitions.\n"
+            "Each run is saved into a subfolder named <basename>.\n"
+            "Example: <output>/<basename>/<basename>.raw"
+        )
         dir_row.addWidget(self._edit_output_dir, 1)
         self._btn_browse = QPushButton("…")
         self._btn_browse.setToolTip("Choose output folder.")
@@ -579,7 +584,10 @@ class AcquisitionPanel(QWidget):
         self._edit_basename = QLineEdit(
             time.strftime("Basler_%Y%m%d_%H%M%S")
         )
-        self._edit_basename.setToolTip("Base filename (without extension). Timestamp recommended.")
+        self._edit_basename.setToolTip(
+            "Run name. A subfolder with this name is created under Output folder,\n"
+            "and all files inside use this basename."
+        )
         rec_form.addRow("Basename:", self._edit_basename)
 
         self._combo_format = QComboBox()
@@ -744,7 +752,9 @@ class AcquisitionPanel(QWidget):
         row_stage_btns = QHBoxLayout()
         self._btn_stage_refresh = QPushButton("Refresh list")
         self._btn_stage_refresh.setToolTip("Znovu vyhledat XIMC zařízení (USB i COM).")
-        self._btn_stage_refresh.clicked.connect(self._refresh_stage_device_list)
+        self._btn_stage_refresh.clicked.connect(
+            lambda: self._refresh_stage_device_list(async_scan=True)
+        )
         row_stage_btns.addWidget(self._btn_stage_refresh)
 
         self._btn_stage_connect = QPushButton("Connect Stage")
@@ -761,11 +771,12 @@ class AcquisitionPanel(QWidget):
 
         self._spin_stage_um_per_unit = _NoScrollDoubleSpinBox()
         self._spin_stage_um_per_unit.setRange(0.0, 10000.0)
-        self._spin_stage_um_per_unit.setValue(0.0)
+        self._spin_stage_um_per_unit.setValue(1.25)
         self._spin_stage_um_per_unit.setDecimals(4)
         self._spin_stage_um_per_unit.setToolTip(
-            "Micrometers per stage user unit. 0 = unknown (leave blank).\n"
-            "Used for unit conversion in DRAG analysis."
+            "Micrometers per stage user unit.\n"
+            "Standa 8MT167-25LS-MEn1 (pitch 0.25 mm, 200 steps/rev): 1.25 µm/unit.\n"
+            "0 = unknown (leave blank, will be omitted from *_stage.json)."
         )
         stage_form.addRow("µm/unit:", self._spin_stage_um_per_unit)
 
@@ -805,26 +816,39 @@ class AcquisitionPanel(QWidget):
 
         self._spin_motion_speed = _NoScrollDoubleSpinBox()
         self._spin_motion_speed.setRange(1.0, 1_000_000.0)
-        self._spin_motion_speed.setValue(50.0)
-        self._spin_motion_speed.setDecimals(1)
-        self._spin_motion_speed.setSuffix(" u/s")
-        self._spin_motion_speed.setToolTip("Target constant velocity in stage user units per second.")
+        self._spin_motion_speed.setValue(1.0)
+        self._spin_motion_speed.setDecimals(0)
+        self._spin_motion_speed.setSuffix(" (reg)")
+        self._spin_motion_speed.setToolTip(
+            "XIMC Speed register (direct firmware value).\n"
+            "Lower = faster, higher = slower.\n"
+            "Speed=1, Accel=20 → ~20 s for Travel=1500 (slow drag mode).\n"
+            "Same as XILab: m.Speed = 1"
+        )
         motion_form.addRow("Speed:", self._spin_motion_speed)
 
         self._spin_motion_accel = _NoScrollDoubleSpinBox()
         self._spin_motion_accel.setRange(1.0, 1_000_000.0)
-        self._spin_motion_accel.setValue(100.0)
-        self._spin_motion_accel.setDecimals(1)
-        self._spin_motion_accel.setSuffix(" u/s²")
-        self._spin_motion_accel.setToolTip("Acceleration in stage user units per second squared.")
+        self._spin_motion_accel.setValue(20.0)
+        self._spin_motion_accel.setDecimals(0)
+        self._spin_motion_accel.setSuffix(" (reg)")
+        self._spin_motion_accel.setToolTip(
+            "XIMC Accel register (direct firmware value).\n"
+            "Accel=20 matches XILab slow drag mode: m.Accel = 20"
+        )
         motion_form.addRow("Accel:", self._spin_motion_accel)
 
         self._spin_motion_decel = _NoScrollDoubleSpinBox()
         self._spin_motion_decel.setRange(1.0, 1_000_000.0)
-        self._spin_motion_decel.setValue(100.0)
+        self._spin_motion_decel.setValue(20.0)
         self._spin_motion_decel.setDecimals(1)
         self._spin_motion_decel.setSuffix(" u/s²")
-        self._spin_motion_decel.setToolTip("Deceleration in stage user units per second squared.")
+        self._spin_motion_decel.setDecimals(0)
+        self._spin_motion_decel.setSuffix(" (reg)")
+        self._spin_motion_decel.setToolTip(
+            "XIMC Decel register (direct firmware value).\n"
+            "Decel=20 matches XILab slow drag mode: m.Decel = 20"
+        )
         motion_form.addRow("Decel:", self._spin_motion_decel)
 
         self._spin_motion_pre_delay = _NoScrollDoubleSpinBox()
@@ -887,40 +911,90 @@ class AcquisitionPanel(QWidget):
         layout.addWidget(self._lbl_motion_run_status)
 
         layout.addStretch(1)
-        self._refresh_stage_device_list()
+        # Stage enumeration can be slow on Windows (PowerShell CIM queries).
+        # Never block UI thread during panel construction — start async scan instead.
+        self._refresh_stage_device_list(async_scan=True)
         return tab
 
-    def _refresh_stage_device_list(self) -> None:
-        """Naplní combo seznamem XIMC URI (COM / USB)."""
+    def _refresh_stage_device_list(self, *, async_scan: bool = False) -> None:
+        """Naplní combo seznamem XIMC URI (COM / USB).
+
+        On Windows, querying friendly COM port descriptions via PowerShell can be
+        slow (seconds). If async_scan=True, the scan runs in a background thread
+        and the combo updates via a Qt signal.
+        """
         self._combo_stage_device.clear()
         if not _XIMC_AVAILABLE:
             self._combo_stage_device.addItem(
                 "(nainstaluj: pip install libximc v env barakuda)", None
             )
             return
-        devices = enumerate_ximc_devices()
-        com_desc = self._get_windows_com_descriptions()
+
+        if async_scan:
+            self._combo_stage_device.addItem("Scanning devices…", None)
+
+            def _scan() -> None:
+                try:
+                    devices = enumerate_ximc_devices()
+                except Exception:
+                    devices = []
+                try:
+                    com_desc = self._get_windows_com_descriptions()
+                except Exception:
+                    com_desc = {}
+                self._stage_list_ready_signal.emit(devices, com_desc)
+
+            threading.Thread(target=_scan, daemon=True, name="ximc-scan").start()
+            return
+
+        # Synchronous path (kept for explicit Refresh button if needed)
+        try:
+            devices = enumerate_ximc_devices()
+        except Exception:
+            devices = []
+        try:
+            com_desc = self._get_windows_com_descriptions()
+        except Exception:
+            com_desc = {}
+        self._on_stage_list_ready(devices, com_desc)
+
+    def _on_stage_list_ready(self, devices, com_desc) -> None:
+        """UI-thread slot: populate the stage device combo."""
+        # If user already disconnected the panel, widgets may be gone.
+        if not hasattr(self, "_combo_stage_device"):
+            return
+        self._combo_stage_device.clear()
 
         def _sort_key(info):
-            m = re.search(r"COM(\d+)", info.device_id, re.I)
-            return (0, int(m.group(1))) if m else (1, info.device_id)
+            try:
+                dev_id = getattr(info, "device_id", "") or ""
+            except Exception:
+                dev_id = ""
+            m = re.search(r"COM(\d+)", dev_id, re.I)
+            return (0, int(m.group(1))) if m else (1, dev_id)
 
-        devices = sorted(devices, key=_sort_key)
-        if not devices:
+        try:
+            devices_sorted = sorted(list(devices or []), key=_sort_key)
+        except Exception:
+            devices_sorted = list(devices or [])
+
+        if not devices_sorted:
             self._combo_stage_device.addItem("(žádné zařízení — Refresh)", None)
             return
-        for d in devices:
-            short = d.device_id
+
+        com_desc = com_desc or {}
+        for d in devices_sorted:
+            dev_id = getattr(d, "device_id", None)
+            if not dev_id:
+                continue
+            short = str(dev_id)
             if "COM" in short.upper():
                 m = re.search(r"COM\d+", short, re.I)
                 if m:
                     com = m.group(0).upper()
                     desc = com_desc.get(com)
-                    if desc:
-                        short = f"{com} — {desc}"
-                    else:
-                        short = com
-            self._combo_stage_device.addItem(f"{short}  —  {d.device_id}", d.device_id)
+                    short = f"{com} — {desc}" if desc else com
+            self._combo_stage_device.addItem(f"{short}  —  {dev_id}", dev_id)
 
     @staticmethod
     def _get_windows_com_descriptions() -> dict[str, str]:
@@ -1063,9 +1137,17 @@ class AcquisitionPanel(QWidget):
         self._btn_record.setEnabled(False)
         self._btn_start_preview.setEnabled(False)
         self._btn_stop_preview.setEnabled(False)
-        self._lbl_motion_run_status.setText("Record+Motion running…")
+        self._lbl_motion_run_status.setText("Record+Motion running… 0 s")
         self._lbl_motion_run_status.setStyleSheet("color: #cc4400; font-weight: bold;")
-        self._preview_timer.stop()
+        # Do NOT stop _preview_timer here.  During Record+Motion the camera
+        # recording grab loop (record_raw) feeds the shared preview buffer at a
+        # throttled rate, so the render timer can keep showing live frames.
+
+        # Elapsed-time heartbeat — updates every second so user sees the app is alive
+        self._motion_run_t0 = time.perf_counter()
+        self._motion_elapsed_timer = QTimer(self)
+        self._motion_elapsed_timer.timeout.connect(self._on_motion_elapsed_tick)
+        self._motion_elapsed_timer.start(1000)
 
         self._log(
             f"Record+Motion starting — axis={recipe.axis}  dir={recipe.direction:+d}  "
@@ -1078,7 +1160,7 @@ class AcquisitionPanel(QWidget):
             camera=self._camera,
             stage=self._stage,
             recipe=recipe,
-            output_dir=self._edit_output_dir.text(),
+            output_dir=str(self._get_run_output_dir()),
             basename=self._edit_basename.text(),
             duration_s=self._spin_duration.value(),
             roi=roi,
@@ -1105,6 +1187,10 @@ class AcquisitionPanel(QWidget):
     def _on_record_motion_done(
         self, record_result: RecordResult, motion_result: MotionRunResult
     ) -> None:
+        # #region agent log
+        import json as _j, pathlib as _pl, time as _t
+        _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"_on_record_motion_done ENTER","data":{}})+"\n")
+        # #endregion
         fps_str = (
             f"{record_result.fps_effective:.1f}"
             if record_result.fps_effective else "N/A"
@@ -1144,7 +1230,7 @@ class AcquisitionPanel(QWidget):
                 "motion_stop_s": motion_result.motion_stop_s,
             }
             qc_path = os.path.join(
-                self._edit_output_dir.text(),
+                str(self._get_run_output_dir()),
                 self._edit_basename.text() + "_qc.json",
             )
             with open(qc_path, "w", encoding="utf-8") as f:
@@ -1152,50 +1238,46 @@ class AcquisitionPanel(QWidget):
         except Exception:
             pass
 
-        # Create canonical dataset home (copies video + meta + timestamps +
-        # stage.json + stage_trace.csv into runs/acquisition/<item_id>/acquisition/)
-        try:
-            meta = record_result.meta or {}
-            ts_str = meta.get("timestamps_path")
-            item_root = create_acquisition_dataset_home(
-                item_id=self._edit_basename.text(),
-                video_path=Path(record_result.video_path),
-                meta_path=Path(record_result.meta_path) if record_result.meta_path else None,
-                timestamps_path=Path(ts_str) if ts_str else None,
-                qc_path=Path(qc_path) if qc_path else None,
-                stage_meta_path=motion_result.stage_json_path,
-                stage_trace_path=motion_result.stage_trace_path,
-                runs_root=_RUNS_ROOT,
-                fps_effective=record_result.fps_effective,
-                pixel_format=meta.get("pixel_format"),
-                roi=meta.get("record_roi"),
-                frame_count=record_result.frames_written,
-            )
-            self._log(f"Dataset home: {item_root}")
-            self._lbl_motion_run_status.setText(
-                f"Done. Dataset: {item_root.name}\n"
-                f"stage.json + stage_trace.csv saved."
-            )
-            self._lbl_motion_run_status.setStyleSheet("color: #00cc55;")
-        except Exception as e:
-            self._log(f"Dataset home creation failed (non-fatal): {e}")
-            self._lbl_motion_run_status.setText(
-                f"Done (video OK, dataset copy failed: {e})"
-            )
-            self._lbl_motion_run_status.setStyleSheet("color: #cc8800;")
-
+        self._stop_motion_elapsed_timer()
+        self._lbl_motion_run_status.setText(
+            f"Done — {record_result.frames_written} frames  "
+            f"stage.json + stage_trace.csv uloženy v Output dir"
+        )
+        self._lbl_motion_run_status.setStyleSheet("color: #00cc55;")
         self._btn_record_motion.setEnabled(True)
         self._btn_record.setEnabled(True)
         self._btn_start_preview.setEnabled(True)
+        # #region agent log
+        import json as _j, pathlib as _pl, time as _t
+        _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"scheduling start_preview singleShot","data":{}})+"\n")
+        # #endregion
         QTimer.singleShot(200, self._on_start_preview)
 
     def _on_record_motion_error(self, err: str) -> None:
+        self._stop_motion_elapsed_timer()
         self._log(f"Record+Motion FAILED — {err}")
         self._lbl_motion_run_status.setText(f"FAILED: {err}")
         self._lbl_motion_run_status.setStyleSheet("color: #cc3333; font-weight: bold;")
         self._btn_record_motion.setEnabled(True)
         self._btn_record.setEnabled(True)
         self._btn_start_preview.setEnabled(True)
+
+    def _on_motion_elapsed_tick(self) -> None:
+        elapsed = int(time.perf_counter() - self._motion_run_t0)
+        self._lbl_motion_run_status.setText(f"Record+Motion running… {elapsed} s")
+
+    def _stop_motion_elapsed_timer(self) -> None:
+        if self._motion_elapsed_timer is not None:
+            self._motion_elapsed_timer.stop()
+            self._motion_elapsed_timer = None
+
+    def _get_run_output_dir(self) -> Path:
+        """Per-run output directory: <output_dir>/<basename>/ (created)."""
+        base = Path(self._edit_output_dir.text())
+        bn = self._edit_basename.text().strip()
+        run_dir = base / (bn or "acquisition_run")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
 
     # ------------------------------------------------------------------ #
 
@@ -1468,6 +1550,10 @@ class AcquisitionPanel(QWidget):
         self._status.setText(msg)
 
     def _on_start_preview(self) -> None:
+        # #region agent log
+        import json as _j, pathlib as _pl, time as _t
+        _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"_on_start_preview ENTER","data":{"is_connected":self._camera.is_connected}})+"\n")
+        # #endregion
         if not self._camera.is_connected:
             return
         self._btn_start_preview.setEnabled(False)  # prevent double clicks
@@ -1476,6 +1562,9 @@ class AcquisitionPanel(QWidget):
         self._preview_fps_timer_start = time.perf_counter()
         self._preview_dropped = 0
         try:
+            # #region agent log
+            _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"start_preview CALL","data":{}})+"\n")
+            # #endregion
             self._camera.start_preview(
                 callback=self._on_preview_frame,
                 exposure_us=self._spin_exposure.value(),
@@ -1485,7 +1574,15 @@ class AcquisitionPanel(QWidget):
             self._image_view.setLevels(0, 255)
             self._preview_timer.start(40)
             self._status.setText("Preview running")
+            # #region agent log
+            import json as _j, pathlib as _pl, time as _t
+            _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"start_preview OK","data":{}})+"\n")
+            # #endregion
         except Exception as exc:
+            # #region agent log
+            import json as _j, pathlib as _pl, time as _t
+            _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"start_preview EXCEPTION","data":{"err":str(exc)}})+"\n")
+            # #endregion
             self._set_preview_ui(False)
             self._status.setText(f"Preview start failed: {exc}")
 
@@ -1635,7 +1732,7 @@ class AcquisitionPanel(QWidget):
         dur_s = self._spin_duration.value()
         fps_h = self._spin_fps_hint.value()
         dur_str = f"{dur_s:.1f}s" if dur_s > 0 else "unlimited"
-        out_path = self._edit_output_dir.text()
+        out_path = str(self._get_run_output_dir())
         bn = self._edit_basename.text()
         self._log(
             f"Recording requested — format={rec_fmt}  duration={dur_str}  "
@@ -1657,16 +1754,16 @@ class AcquisitionPanel(QWidget):
         self._on_countdown_tick()   # immediate first update
         self._countdown_timer.start()
 
-        # Stop the Qt render timer so no more frames are painted.
-        # The actual camera stop_preview() + join happens inside the worker
-        # thread (record_raw / record both call it on entry) — calling it here
-        # in the UI thread would block the event loop for up to 3 s.
-        self._preview_timer.stop()
+        # Do NOT stop _preview_timer here.  record_raw() feeds the shared
+        # preview buffer (_latest_preview_frame) at ~10 fps via the throttled
+        # path in the grab loop, so the render timer keeps displaying live
+        # frames while recording runs.  The timer is naturally reset by
+        # _on_start_preview() once recording finishes.
 
         self._record_thread = QThread()
         self._record_worker = _RecordWorker(
             camera=self._camera,
-            output_dir=self._edit_output_dir.text(),
+            output_dir=str(self._get_run_output_dir()),
             basename=self._edit_basename.text(),
             duration_s=self._spin_duration.value(),
             roi=roi,
@@ -1708,7 +1805,7 @@ class AcquisitionPanel(QWidget):
         roi = self._get_roi_tuple()
         w, h = roi[0], roi[1]
         fps_target = self._spin_fps_hint.value()
-        out_dir = self._edit_output_dir.text()
+        out_dir = str(self._get_run_output_dir())
         basename = self._edit_basename.text()
 
         self._btn_sim_raw.setEnabled(False)
@@ -1753,20 +1850,6 @@ class AcquisitionPanel(QWidget):
                 with open(qc_path, "w", encoding="utf-8") as f:
                     json.dump(qc, f, indent=2)
 
-                # Create canonical acquisition dataset home
-                try:
-                    create_acquisition_dataset_home(
-                        item_id=basename,
-                        video_path=Path(result["raw_path"]),
-                        meta_path=Path(result["meta_path"]) if result.get("meta_path") else None,
-                        timestamps_path=Path(result["ts_path"]) if result.get("ts_path") else None,
-                        qc_path=Path(qc_path),
-                        runs_root=_RUNS_ROOT,
-                        fps_effective=fps_eff,
-                        frame_count=frames,
-                    )
-                except Exception:
-                    pass
 
                 if fps_ratio < 0.90:
                     tag = "FAIL"
@@ -1854,33 +1937,13 @@ class AcquisitionPanel(QWidget):
                 "reasons": reasons,
             }
             qc_path = os.path.join(
-                self._edit_output_dir.text(),
+                str(self._get_run_output_dir()),
                 self._edit_basename.text() + "_qc.json",
             )
             with open(qc_path, "w", encoding="utf-8") as f:
                 json.dump(qc, f, indent=2)
         except Exception:
             pass
-
-        # --- Create canonical acquisition dataset home ---
-        try:
-            meta = result.meta or {}
-            ts_str = meta.get("timestamps_path")
-            item_root = create_acquisition_dataset_home(
-                item_id=self._edit_basename.text(),
-                video_path=Path(result.video_path),
-                meta_path=Path(result.meta_path) if result.meta_path else None,
-                timestamps_path=Path(ts_str) if ts_str else None,
-                qc_path=Path(qc_path) if qc_path else None,
-                runs_root=_RUNS_ROOT,
-                fps_effective=result.fps_effective,
-                pixel_format=meta.get("pixel_format"),
-                roi=meta.get("record_roi"),
-                frame_count=result.frames_written,
-            )
-            self._log(f"Dataset home: {item_root}")
-        except Exception as _e:
-            self._log(f"Dataset home creation failed (non-fatal): {_e}")
 
         self._btn_record.setEnabled(True)
         self._btn_stop_record.setEnabled(False)
