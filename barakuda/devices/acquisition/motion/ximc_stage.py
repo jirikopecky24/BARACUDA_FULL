@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 import threading
+from ctypes import byref
 from typing import Optional
 
 from .stage_base import AbstractStage, MotionResult, StageDeviceInfo
@@ -159,7 +160,7 @@ class XimcStage(AbstractStage):
         self._require_connected()
         if _BACKEND == "libximc":
             pos = _ll.get_position_t()
-            result = _ll.lib.get_position(self._device_id, pos)
+            result = _ll.lib.get_position(self._device_id, byref(pos))
             if result != _ll.Result.Ok:
                 raise RuntimeError(f"XIMC get_position failed: {result}")
             # XIMC reports position as integer steps + microsteps (uPosition, 1/256 step).
@@ -201,13 +202,13 @@ class XimcStage(AbstractStage):
         # Set speed profile
         if _BACKEND == "libximc":
             mvst = _ll.move_settings_t()
-            r = _ll.lib.get_move_settings(self._device_id, mvst)
+            r = _ll.lib.get_move_settings(self._device_id, byref(mvst))
             if r != _ll.Result.Ok:
                 raise RuntimeError(f"XIMC get_move_settings failed: {r}")
             mvst.Speed = max(1, int(round(abs(speed))))
             mvst.Accel = max(1, int(round(abs(accel))))
             mvst.Decel = max(1, int(round(abs(decel))))
-            r = _ll.lib.set_move_settings(self._device_id, mvst)
+            r = _ll.lib.set_move_settings(self._device_id, byref(mvst))
             if r != _ll.Result.Ok:
                 raise RuntimeError(f"XIMC set_move_settings failed: {r}")
         else:  # pragma: no cover
@@ -233,8 +234,9 @@ class XimcStage(AbstractStage):
             _running_flag = _ll.MvcmdStatus.MVCMD_RUNNING
             _result_ok = _ll.Result.Ok
 
+
             def _get_status() -> int:
-                return _ll.lib.get_status(self._device_id, status)
+                return _ll.lib.get_status(self._device_id, byref(status))
 
         else:  # pragma: no cover
             r = _lib.command_move(self._device_id, target, 0)
