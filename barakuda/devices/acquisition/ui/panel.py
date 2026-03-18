@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import time
 import threading
 from pathlib import Path
@@ -898,6 +899,7 @@ class AcquisitionPanel(QWidget):
             )
             return
         devices = enumerate_ximc_devices()
+        com_desc = self._get_windows_com_descriptions()
 
         def _sort_key(info):
             m = re.search(r"COM(\d+)", info.device_id, re.I)
@@ -912,8 +914,45 @@ class AcquisitionPanel(QWidget):
             if "COM" in short.upper():
                 m = re.search(r"COM\d+", short, re.I)
                 if m:
-                    short = m.group(0).upper()
+                    com = m.group(0).upper()
+                    desc = com_desc.get(com)
+                    if desc:
+                        short = f"{com} — {desc}"
+                    else:
+                        short = com
             self._combo_stage_device.addItem(f"{short}  —  {d.device_id}", d.device_id)
+
+    @staticmethod
+    def _get_windows_com_descriptions() -> dict[str, str]:
+        """Best-effort mapping: COMx -> friendly device description.
+
+        Uses Win32_SerialPort via PowerShell. This works even when XILab is running
+        (no need to open the device).
+        """
+        try:
+            cmd = (
+                "Get-CimInstance Win32_SerialPort | "
+                "Select-Object DeviceID, Description | "
+                "ConvertTo-Json -Compress"
+            )
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", cmd],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            if not out:
+                return {}
+            data = json.loads(out)
+            rows = data if isinstance(data, list) else [data]
+            result: dict[str, str] = {}
+            for r in rows:
+                dev = str((r or {}).get("DeviceID") or "").upper().strip()
+                desc = str((r or {}).get("Description") or "").strip()
+                if dev.startswith("COM") and desc:
+                    result[dev] = desc
+            return result
+        except Exception:
+            return {}
 
     def _on_motion_enable_toggled(self, enabled: bool) -> None:
         self._check_motion_enable.setText(
