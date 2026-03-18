@@ -848,28 +848,6 @@ class BatchController:
             tracking_params = device_panel.get_tracking_params()
             post_params_raw = device_panel.get_postprocess_params()
 
-            # #region agent log
-            try:
-                import json as _json
-                from time import time as _time
-                _payload = {
-                    "sessionId": "19fc6c",
-                    "runId": "batch-pre-normalize",
-                    "hypothesisId": "H1",
-                    "location": "batch_controller.py:run_batch_before_normalize",
-                    "message": "Raw postprocess params from device panel",
-                    "data": {
-                        "calibration_mode": str(post_params_raw.get("calibration_mode", "")),
-                        "brownian_baseline_folder": str(post_params_raw.get("brownian_baseline_folder", "")),
-                    },
-                    "timestamp": int(_time() * 1000),
-                }
-                with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
-                    _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-            # #endregion agent log
-
             post_params = self._normalize_ot_postprocess_params(post_params_raw)
             post_params.setdefault("temperature_c", 25.0)
             calibration_mode = str(post_params.get("calibration_mode", "Brownian"))
@@ -938,6 +916,8 @@ class BatchController:
 
             use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
             ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
+            use_dataset_stage_scale = bool(scale_params.get("use_dataset_stage_scale", True))
+            ui_stage_um_per_unit = float(scale_params.get("stage_um_per_unit", 1.25))
 
             try:
                 reader = VideoReader(file_path)
@@ -994,16 +974,33 @@ class BatchController:
                 # 1) If dataset sidecar exists and enabled → use it.
                 # 2) Otherwise fall back to UI value (default should be 0.060420 µm/px).
                 # This prevents silent "um_per_px=None" causing calibration exports to disappear.
-                if use_dataset_scale:
-                    info = load_dataset_scale(file_path)
-                    if info is not None and info.um_per_px is not None and float(info.um_per_px) > 0:
-                        um_per_px = float(info.um_per_px)
-                        um_src = str(info.source)
+                _sidecar_info = load_dataset_scale(file_path) if use_dataset_scale else None
+                if _sidecar_info is not None and _sidecar_info.um_per_px is not None and float(_sidecar_info.um_per_px) > 0:
+                    um_per_px = float(_sidecar_info.um_per_px)
+                    um_src = str(_sidecar_info.source)
 
                 # UI fallback (also used when use_dataset_scale=False)
                 if um_per_px is None and ui_um_per_px > 0:
                     um_per_px = float(ui_um_per_px)
                     um_src = "ui" if not use_dataset_scale else "ui_fallback"
+
+                # Stage µm/unit precedence:
+                # 1) UI override (use_dataset_stage_scale=False OR no sidecar value)
+                # 2) dataset *.scale.json sidecar
+                # 3) hard default 1.25
+                # Note: *_stage.json value is applied inside DragIo/DragAnalysisConfig at analysis time;
+                # we resolve the fallback here for legacy runs that lack it in *_stage.json.
+                stage_um_per_unit: float | None = None
+                stage_um_per_unit_src = "none"
+                if use_dataset_stage_scale and _sidecar_info is not None and _sidecar_info.stage_um_per_unit is not None and float(_sidecar_info.stage_um_per_unit) > 0:
+                    stage_um_per_unit = float(_sidecar_info.stage_um_per_unit)
+                    stage_um_per_unit_src = "dataset_scale"
+                if stage_um_per_unit is None and ui_stage_um_per_unit > 0:
+                    stage_um_per_unit = float(ui_stage_um_per_unit)
+                    stage_um_per_unit_src = "ui_override"
+                if stage_um_per_unit is None:
+                    stage_um_per_unit = 1.25
+                    stage_um_per_unit_src = "default"
 
                 config = {
                     "device": {"id": "optical_tweezers"},
@@ -1027,7 +1024,12 @@ class BatchController:
                         "start_frame": s,
                         "end_frame": e,
                     },
-                    "calibration": {"um_per_px": um_per_px, "source": um_src},
+                    "calibration": {
+                        "um_per_px": um_per_px,
+                        "source": um_src,
+                        "stage_um_per_unit": stage_um_per_unit,
+                        "stage_um_per_unit_source": stage_um_per_unit_src,
+                    },
                     "postprocess": {
                         "enabled": pp_enabled,
                         "qc_enabled": pp.qc_enabled,
@@ -1342,34 +1344,26 @@ class BatchController:
 
                 if pp_enabled:
                     if calibration_mode == "Drag":
+                        # Re-read Drag UI params after tracking — baseline folder etc. may have been
+                        # set while the long tracking phase was running (snapshot at loop start was stale).
+                        try:
+                            _fresh = device_panel.get_postprocess_params()
+                            if str(_fresh.get("calibration_mode", "")) == "Drag":
+                                for _k in (
+                                    "brownian_baseline_folder",
+                                    "stage_speed_um_s",
+                                    "drag_axis",
+                                    "viscosity_pa_s",
+                                ):
+                                    if _k in _fresh:
+                                        post_params[_k] = _fresh[_k]
+                        except Exception:
+                            pass
                         # DRAG mode: run dedicated DRAG pipeline using Brownian calibration imported from folder.
                         try:
                             baseline_folder = str(post_params.get("brownian_baseline_folder", "")).strip()
                             if not baseline_folder:
                                 raise ValueError("Brownian baseline folder is required for Drag calibration.")
-
-                            # #region agent log
-                            try:
-                                import json as _json
-                                from time import time as _time
-                                _payload = {
-                                    "sessionId": "19fc6c",
-                                    "runId": "batch-drag-start",
-                                    "hypothesisId": "H1",
-                                    "location": "batch_controller.py:drag_mode_entry",
-                                    "message": "Entering DRAG mode postprocess",
-                                    "data": {
-                                        "baseline_folder": baseline_folder,
-                                        "calibration_mode": calibration_mode,
-                                        "drag_axis_param": str(post_params.get("drag_axis", "")),
-                                    },
-                                    "timestamp": int(_time() * 1000),
-                                }
-                                with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
-                                    _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion agent log
 
                             brownian_cal = load_brownian_calibration_from_folder(Path(baseline_folder))
 
@@ -1390,33 +1384,39 @@ class BatchController:
 
                             from barakuda.devices.optical_tweezers.drag.schema import DragAnalysisConfig
 
-                            # #region agent log
-                            try:
-                                import json as _json
-                                from time import time as _time
-                                _payload = {
-                                    "sessionId": "19fc6c",
-                                    "runId": "batch-drag-module-info",
-                                    "hypothesisId": "H2",
-                                    "location": "batch_controller.py:drag_mode_entry",
-                                    "message": "run_drag_from_raw origin",
-                                    "data": {
-                                        "run_drag_from_raw_module": getattr(run_drag_from_raw, "__module__", ""),
-                                        "run_drag_from_raw_file": str(getattr(run_drag_from_raw, "__globals__", {}).get("__file__", "")),
-                                    },
-                                    "timestamp": int(_time() * 1000),
-                                }
-                                with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
-                                    _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion agent log
+                            # stage_um_per_unit precedence for Drag:
+                            # 1) UI/config (already resolved above as stage_um_per_unit)
+                            # 2) *_stage.json — DragIo reads this internally; DragAnalysisConfig
+                            #    value is used as fallback when *_stage.json lacks the field.
+                            # 3) dataset *.scale.json — already in stage_um_per_unit
+                            # 4) default 1.25 — already in stage_um_per_unit
+                            self._log(
+                                f"[DRAG] stage_um_per_unit={stage_um_per_unit:.4f} "
+                                f"(source={stage_um_per_unit_src})"
+                            )
 
+                            _mo_raw = post_params.get("drag_manual_offset_s")
+                            _manual_off: float | None = None
+                            if _mo_raw is not None:
+                                try:
+                                    _mf = float(_mo_raw)
+                                    if np.isfinite(_mf):
+                                        _manual_off = _mf
+                                except (TypeError, ValueError):
+                                    pass
                             drag_cfg = DragAnalysisConfig(
                                 analysis_axis=axis,
                                 um_per_px=drag_um_per_px,
                                 bead_diameter_um=float(pp.bead_diameter_um),
                                 kappa_n_per_m=float(kappa_n_per_m),
+                                stage_um_per_unit=stage_um_per_unit,
+                                onset_threshold_sigma=float(
+                                    post_params.get("drag_onset_threshold_sigma", 5.0)
+                                ),
+                                onset_min_hold_s=float(
+                                    post_params.get("drag_onset_min_hold_s", 0.3)
+                                ),
+                                manual_offset_s=_manual_off,
                             )
 
                             # DRAG expects the acquisition/run folder where RAW + stage files live.

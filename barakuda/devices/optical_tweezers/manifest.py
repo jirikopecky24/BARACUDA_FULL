@@ -88,10 +88,19 @@ def load_item_manifest(item_json_path: Path) -> OTItemManifest:
     m.meta_path = _resolve_meta(item_root, raw, m.video_path)
 
     # ── Acquisition timestamps CSV ───────────────────────────────────────────
-    m.timestamps_path = _first_existing(item_root, [
-        "acquisition/video_timestamps.csv",
-        "raw/video_timestamps.csv",
-    ])
+    # Prefer the canonical path recorded in item.json (acquisition.timestamps),
+    # which carries the true run basename (e.g. "ot_drag_water_rep01_timestamps.csv").
+    # Fall back to legacy hardcoded names for runs created before this change.
+    _acq_ts = raw.get("acquisition", {}).get("timestamps")
+    if _acq_ts:
+        _p = item_root / _acq_ts
+        if _p.exists():
+            m.timestamps_path = _p
+    if m.timestamps_path is None:
+        m.timestamps_path = _first_existing(item_root, [
+            "acquisition/video_timestamps.csv",
+            "raw/video_timestamps.csv",
+        ])
 
     # ── Analysis directory ───────────────────────────────────────────────────
     m.analysis_dir = _resolve_analysis_dir(item_root, raw)

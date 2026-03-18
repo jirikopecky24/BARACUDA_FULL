@@ -29,6 +29,10 @@ except ImportError:
     pylon = None  # type: ignore[assignment]
     PYPYLON_AVAILABLE = False
 
+# Throttle for feeding the shared preview buffer during recording.
+# ~0.033 s → ~30 fps preview; still avoids per-record-frame conversion/copy.
+_REC_PREVIEW_INTERVAL_S: float = 1.0 / 30.0
+
 
 # ---------- Data classes ----------
 
@@ -756,6 +760,7 @@ class BaslerCamera(AbstractCamera):
         dropped = 0
         timestamps: list[float] = []
         self._record_stop.clear()
+        _rec_preview_last: float = 0.0   # throttle tracker for live preview feed
 
         write_q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAXSIZE)
 
@@ -782,7 +787,7 @@ class BaslerCamera(AbstractCamera):
                     break
 
                 grab = self._cam.RetrieveResult(
-                    5000, pylon.TimeoutHandling_Return
+                    500, pylon.TimeoutHandling_Return
                 )
                 if grab is None:
                     continue
@@ -791,8 +796,26 @@ class BaslerCamera(AbstractCamera):
                     grab.Release()
                     continue
 
-                data = grab.Array.tobytes()
+                # Access grab.Array once before Release; used for disk write
+                # and, when throttle threshold is met, for preview update.
+                arr = grab.Array
+                data = arr.tobytes()
                 ts = time.perf_counter()
+
+                # Throttled preview feed: write to shared buffer so the Qt
+                # render timer can display live frames while recording runs.
+                if ts - _rec_preview_last >= _REC_PREVIEW_INTERVAL_S:
+                    _rec_preview_last = ts
+                    if arr.dtype == np.uint8:
+                        preview_img = arr.copy()
+                    elif arr.dtype == np.uint16:
+                        preview_img = (arr >> 8).astype(np.uint8)
+                    else:
+                        preview_img = np.clip(arr, 0, 255).astype(np.uint8)
+                    with self._preview_lock:
+                        self._latest_preview_frame = preview_img
+                        self._latest_preview_ts = ts
+
                 grab.Release()
 
                 try:

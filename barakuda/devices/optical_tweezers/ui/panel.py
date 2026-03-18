@@ -253,8 +253,26 @@ class PipelinePanel(QWidget):
         self._scale_status = QLabel("Scale: not set (px only)")
         self._scale_status.setStyleSheet("color: #666;")
 
+        self._use_dataset_stage_scale = QCheckBox("Use dataset stage scale (µm/unit)")
+        self._use_dataset_stage_scale.setToolTip(
+            "Use the stage µm/unit saved with this dataset, if available."
+        )
+        self._use_dataset_stage_scale.setChecked(True)
+
+        self._stage_um_per_unit = QDoubleSpinBox()
+        self._stage_um_per_unit.setRange(0.0, 10000.0)
+        self._stage_um_per_unit.setDecimals(4)
+        self._stage_um_per_unit.setSingleStep(0.0001)
+        self._stage_um_per_unit.setValue(1.25)
+        self._stage_um_per_unit.setToolTip(
+            "Stage conversion factor: micrometers per stage user unit.\n"
+            "For Standa 8MT167-25LS-MEn1 (0.25 mm pitch, 200 steps/rev): 1.25 µm/unit."
+        )
+
         self.btn_save_scale = QPushButton("Save current scale as dataset default")
-        self.btn_save_scale.setToolTip("Save the above scale value to the current dataset's sidecar file.")
+        self.btn_save_scale.setToolTip(
+            "Save µm/px and stage µm/unit to the current dataset's sidecar file."
+        )
         self.btn_save_scale.clicked.connect(self.save_dataset_scale_clicked.emit)
 
         # ── Export ───────────────────────────────────────────────
@@ -469,6 +487,8 @@ class PipelinePanel(QWidget):
         params_box_layout.addRow("", self._use_dataset_scale)
         params_box_layout.addRow("Scale (µm/px)", self._um_per_px)
         params_box_layout.addRow("", self._scale_status)
+        params_box_layout.addRow("", self._use_dataset_stage_scale)
+        params_box_layout.addRow("Stage (µm/unit)", self._stage_um_per_unit)
         params_box_layout.addRow("", self.btn_save_scale)
 
         post_box = QWidget()
@@ -539,6 +559,46 @@ class PipelinePanel(QWidget):
         row_brownian.addWidget(self._brownian_baseline_folder)
         row_brownian.addWidget(self._btn_browse_brownian)
         self.post_box_layout.addRow("Brownian baseline (folder)", row_brownian)
+
+        self._drag_onset_sigma = QDoubleSpinBox()
+        self._drag_onset_sigma.setRange(1.0, 20.0)
+        self._drag_onset_sigma.setValue(5.0)
+        self._drag_onset_sigma.setSingleStep(0.5)
+        self._drag_onset_sigma.setDecimals(2)
+        self._drag_onset_sigma.setToolTip(
+            "Bead must move this many × baseline noise (MAD) to count as motion start.\n"
+            "If auto alignment fails, try 2.5–3.0 (more sensitive) or use manual offset below."
+        )
+        self.post_box_layout.addRow("Drag: onset threshold (×σ)", self._drag_onset_sigma)
+
+        self._drag_onset_min_hold = QDoubleSpinBox()
+        self._drag_onset_min_hold.setRange(0.05, 3.0)
+        self._drag_onset_min_hold.setValue(0.3)
+        self._drag_onset_min_hold.setSingleStep(0.05)
+        self._drag_onset_min_hold.setDecimals(3)
+        self._drag_onset_min_hold.setToolTip(
+            "Minimum duration (s) the excursion must last to accept as onset.\n"
+            "Lower (e.g. 0.12) if motion is brief or detection fails."
+        )
+        self.post_box_layout.addRow("Drag: onset min hold (s)", self._drag_onset_min_hold)
+
+        self._drag_manual_offset_cb = QCheckBox("Use manual video–stage offset")
+        self._drag_manual_offset_cb.setToolTip(
+            "If automatic onset detection fails: offset (s) from stage motion start to video time\n"
+            "when the bead clearly moves (often ≈ t_video_first_motion − t_stage_motion_start)."
+        )
+        self._drag_manual_offset_s = QDoubleSpinBox()
+        self._drag_manual_offset_s.setRange(-600.0, 600.0)
+        self._drag_manual_offset_s.setValue(0.0)
+        self._drag_manual_offset_s.setDecimals(4)
+        self._drag_manual_offset_s.setToolTip("Seconds added to stage motion start to align with video timeline.")
+        _row_mo = QHBoxLayout()
+        _row_mo.setContentsMargins(0, 0, 0, 0)
+        _row_mo.addWidget(self._drag_manual_offset_cb)
+        _row_mo.addWidget(self._drag_manual_offset_s, 1)
+        self._drag_manual_offset_wrap = QWidget()
+        self._drag_manual_offset_wrap.setLayout(_row_mo)
+        self.post_box_layout.addRow("Drag: alignment", self._drag_manual_offset_wrap)
         
         self._calibration_mode = "Brownian"
 
@@ -747,6 +807,8 @@ class PipelinePanel(QWidget):
         # Scale Defaults
         self._use_dataset_scale.setChecked(True)
         self._um_per_px.setValue(0.060420)
+        self._use_dataset_stage_scale.setChecked(True)
+        self._stage_um_per_unit.setValue(1.25)
         self._run_output_root.setText(str(self._default_run_output_root))
         
         # Postprocess Defaults
@@ -845,6 +907,15 @@ class PipelinePanel(QWidget):
                 try: w.currentIndexChanged.disconnect()
                 except: pass
                 w.currentIndexChanged.connect(_emit)
+        # QLineEdit (baseline path, output root) — without this, per-item params stay stale
+        # and OTRunWorker's MockPanel serves empty brownian_baseline_folder forever.
+        for _le in (self._brownian_baseline_folder, self._run_output_root):
+            try:
+                _le.textChanged.disconnect()
+            except Exception:
+                pass
+            _le.textChanged.connect(_emit)
+        self._drag_manual_offset_cb.toggled.connect(_emit)
 
     def dump_ot_params(self) -> dict:
         return {
@@ -900,10 +971,26 @@ class PipelinePanel(QWidget):
             if idx >= 0: self._drag_axis.setCurrentIndex(idx)
         if "viscosity_pa_s" in pp:
             self._viscosity.setValue(pp.get("viscosity_pa_s", 0.001))
+        self._brownian_baseline_folder.setText(str(pp.get("brownian_baseline_folder", "") or ""))
+        if "drag_onset_threshold_sigma" in pp:
+            self._drag_onset_sigma.setValue(float(pp["drag_onset_threshold_sigma"]))
+        if "drag_onset_min_hold_s" in pp:
+            self._drag_onset_min_hold.setValue(float(pp["drag_onset_min_hold_s"]))
+        _mo = pp.get("drag_manual_offset_s", None)
+        if _mo is not None and str(_mo).strip() != "":
+            try:
+                self._drag_manual_offset_s.setValue(float(_mo))
+                self._drag_manual_offset_cb.setChecked(True)
+            except (TypeError, ValueError):
+                self._drag_manual_offset_cb.setChecked(False)
+        else:
+            self._drag_manual_offset_cb.setChecked(False)
 
         sp = d.get("scale", {})
         self._use_dataset_scale.setChecked(sp.get("use_dataset_scale", True))
         self._um_per_px.setValue(sp.get("um_per_px", 0.060420))
+        self._use_dataset_stage_scale.setChecked(sp.get("use_dataset_stage_scale", True))
+        self._stage_um_per_unit.setValue(sp.get("stage_um_per_unit", 1.25))
         
         fr = d.get("frame_range", [0, 0])
         self._start_frame.setValue(fr[0])
@@ -1057,29 +1144,14 @@ class PipelinePanel(QWidget):
                 "drag_axis": str(self._drag_axis.currentData()),
                 "viscosity_pa_s": float(self._viscosity.value()),
                 "brownian_baseline_folder": self._brownian_baseline_folder.text().strip(),
+                "drag_onset_threshold_sigma": float(self._drag_onset_sigma.value()),
+                "drag_onset_min_hold_s": float(self._drag_onset_min_hold.value()),
+                "drag_manual_offset_s": (
+                    float(self._drag_manual_offset_s.value())
+                    if self._drag_manual_offset_cb.isChecked()
+                    else None
+                ),
             })
-
-        # #region agent log
-        try:
-            import json as _json
-            from time import time as _time
-            _payload = {
-                "sessionId": "19fc6c",
-                "runId": "ui-get-postprocess",
-                "hypothesisId": "H1",
-                "location": "panel.py:get_postprocess_params",
-                "message": "OT get_postprocess_params snapshot",
-                "data": {
-                    "mode": mode,
-                    "brownian_baseline_folder": params.get("brownian_baseline_folder", ""),
-                },
-                "timestamp": int(_time() * 1000),
-            }
-            with open("debug-19fc6c.log", "a", encoding="utf-8") as _f:
-                _f.write(_json.dumps(_payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        # #endregion agent log
 
         return params
 
@@ -1103,6 +1175,8 @@ class PipelinePanel(QWidget):
         return {
             "use_dataset_scale": bool(self._use_dataset_scale.isChecked()),
             "um_per_px": float(self._um_per_px.value()),
+            "use_dataset_stage_scale": bool(self._use_dataset_stage_scale.isChecked()),
+            "stage_um_per_unit": float(self._stage_um_per_unit.value()),
         }
 
     def get_run_output_root(self) -> str:
@@ -1119,6 +1193,12 @@ class PipelinePanel(QWidget):
     def set_um_per_px(self, value: float) -> None:
         try:
             self._um_per_px.setValue(float(value))
+        except Exception:
+            pass
+
+    def set_stage_um_per_unit(self, value: float) -> None:
+        try:
+            self._stage_um_per_unit.setValue(float(value))
         except Exception:
             pass
 
@@ -1198,6 +1278,12 @@ class PipelinePanel(QWidget):
             self._set_row_visible(self._bead_diameter_um, True)
             self._set_row_visible(self._brownian_baseline_folder, False)
             self._set_row_visible(self._btn_browse_brownian, False)
+            for _w in (
+                self._drag_onset_sigma,
+                self._drag_onset_min_hold,
+                self._drag_manual_offset_wrap,
+            ):
+                self._set_row_visible(_w, False)
         elif mode == "Drag":
             self._set_row_visible(self._stage_speed, True)
             self._set_row_visible(self._drag_axis, True)
@@ -1205,6 +1291,9 @@ class PipelinePanel(QWidget):
             self._set_row_visible(self._bead_diameter_um, True)
             self._set_row_visible(self._brownian_baseline_folder, True)
             self._set_row_visible(self._btn_browse_brownian, True)
+            self._set_row_visible(self._drag_onset_sigma, True)
+            self._set_row_visible(self._drag_onset_min_hold, True)
+            self._set_row_visible(self._drag_manual_offset_wrap, True)
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()

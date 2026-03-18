@@ -4,6 +4,8 @@ import math
 import statistics
 from typing import Sequence
 
+import numpy as np
+
 from .schema import DragAlignmentResult, AlignmentDiagnostics
 
 
@@ -13,6 +15,22 @@ class DragAlignmentError(RuntimeError):
     def __init__(self, message: str, diagnostics: AlignmentDiagnostics | None = None):
         super().__init__(message)
         self.diagnostics = diagnostics
+
+
+def _boxcar_smooth(y: Sequence[float], window: int) -> list[float]:
+    """Centered moving average; reduces high-FPS noise so onset segments last longer."""
+    arr = np.asarray(y, dtype=np.float64)
+    n = int(arr.size)
+    w = max(1, min(window, n | 1))  # odd, at least 1
+    if w <= 1 or n < 3:
+        return list(arr)
+    if w % 2 == 0:
+        w += 1
+    pad = w // 2
+    xp = np.pad(arr, (pad, pad), mode="edge")
+    k = np.ones(w, dtype=np.float64) / float(w)
+    sm = np.convolve(xp, k, mode="valid")
+    return [float(x) for x in sm[:n]]
 
 
 def _robust_sigma(values: Sequence[float]) -> tuple[float, float, float]:
@@ -95,15 +113,26 @@ def detect_motion_onset(
     thresh_abs = abs(float(onset_threshold_sigma)) * sigma
     min_hold = max(float(onset_min_hold_s), 0.0)
 
+    # High-FPS tracking: raw |x - baseline| flickers across threshold every few samples.
+    # ~20–40 ms boxcar preserves real drift while merging noise spikes into longer runs.
+    dt_med = float(np.median(np.diff(np.asarray(t_s[: min(n, 5000)], dtype=np.float64)))) if n > 2 else 1e-3
+    if not math.isfinite(dt_med) or dt_med <= 0:
+        dt_med = 1e-3
+    win = int(round(0.035 / dt_med))  # ~35 ms boxcar @ FPS
+    win = max(5, min(win, 401))
+    if win % 2 == 0:
+        win += 1
+    signal_use = _boxcar_smooth(signal, win)
+
     i = 0
     chosen_onset: float | None = None
     while i < n:
-        dt = abs(signal[i] - baseline_med)
+        dt = abs(signal_use[i] - baseline_med)
         if dt > thresh_abs:
             n_outside += 1
             t_start = t_s[i]
             j = i
-            while j < n and abs(signal[j] - baseline_med) > thresh_abs:
+            while j < n and abs(signal_use[j] - baseline_med) > thresh_abs:
                 n_outside += 1
                 j += 1
             t_end = t_s[j - 1] if j > i else t_s[i]
@@ -115,6 +144,39 @@ def detect_motion_onset(
             i = j
         else:
             i += 1
+
+    # Merge micro-segments (noise flicker at high FPS) into bursts; then allow slightly
+    # shorter hold than min_hold for merged-only acceptance.
+    merged_pairs: list[tuple[float, float]] = []
+    if chosen_onset is None and len(candidate_onset_times) >= 2:
+        merge_gap = max(12.0 * dt_med, min(0.35, max(min_hold * 2.5, 0.2)))
+        ms = float(candidate_onset_times[0])
+        me = ms + float(candidate_durations[0])
+        for k in range(1, len(candidate_onset_times)):
+            ts = float(candidate_onset_times[k])
+            te = ts + float(candidate_durations[k])
+            if ts - me <= merge_gap:
+                me = max(me, te)
+            else:
+                merged_pairs.append((ms, me))
+                ms, me = ts, te
+        merged_pairs.append((ms, me))
+        merged_min = max(0.05, min_hold * 0.42)
+        t_baseline = float(baseline_end_s)
+        for ms_i, me_i in merged_pairs:
+            dur = me_i - ms_i
+            if dur >= min_hold and chosen_onset is None:
+                chosen_onset = ms_i
+            elif (
+                chosen_onset is None
+                and dur >= merged_min
+                and ms_i >= t_baseline - 4 * dt_med
+            ):
+                chosen_onset = ms_i
+        if merged_pairs:
+            for ms_i, me_i in merged_pairs:
+                candidate_onset_times.append(ms_i)
+                candidate_durations.append(me_i - ms_i)
 
     if chosen_onset is not None:
         diag = AlignmentDiagnostics(

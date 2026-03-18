@@ -35,9 +35,22 @@ class MockPanel:
         p = self._get_params_for_path()
         return p.get("tracking") if p.get("tracking") is not None else self.fallback_tp
         
-    def get_postprocess_params(self): 
+    def get_postprocess_params(self):
         p = self._get_params_for_path()
-        return p.get("postprocess") if p.get("postprocess") is not None else self.fallback_pp
+        fb = dict(self.fallback_pp)
+        item_pp = p.get("postprocess") if p else None
+        if item_pp is not None:
+            out = dict(fb)
+            out.update(item_pp)
+        else:
+            out = fb
+        # Per-item dump often lacks brownian_baseline_folder updates (LineEdit was not wired).
+        # Prefer non-empty baseline from UI snapshot at Start.
+        bi = str(out.get("brownian_baseline_folder") or "").strip()
+        bf = str(fb.get("brownian_baseline_folder") or "").strip()
+        if not bi and bf:
+            out["brownian_baseline_folder"] = bf
+        return out
         
     def get_scale_params(self): 
         p = self._get_params_for_path()

@@ -129,25 +129,26 @@ def analyze_drag_run(
         onset_threshold_sigma=config.onset_threshold_sigma,
         onset_min_hold_s=config.onset_min_hold_s,
     )
-    # Fallback: relax threshold and min_hold if first pass failed with recoverable reason
+    # Fallback: progressively relax threshold (weak bead excursion vs noise)
     used_relaxed_onset = False
-    if (
-        onset_video_s is None
-        and alignment_diag.failure_reason in ("no_excursion_above_threshold", "no_segment_long_enough")
-    ):
-        relaxed_sigma = max(2.5, config.onset_threshold_sigma - 1.0)
-        relaxed_hold = max(0.1, config.onset_min_hold_s * 0.5)
-        onset_relaxed, diag_relaxed = detect_motion_onset(
-            t_s=t_video,
-            signal=traj_px,
-            baseline_end_s=baseline_end_for_onset,
-            onset_threshold_sigma=relaxed_sigma,
-            onset_min_hold_s=relaxed_hold,
-        )
-        if onset_relaxed is not None:
-            onset_video_s = onset_relaxed
-            alignment_diag = diag_relaxed
-            used_relaxed_onset = True
+    _fail = ("no_excursion_above_threshold", "no_segment_long_enough")
+    if onset_video_s is None and alignment_diag.failure_reason in _fail:
+        for relaxed_sigma, relaxed_hold in (
+            (max(1.8, float(config.onset_threshold_sigma) - 2.0), max(0.12, config.onset_min_hold_s * 0.45)),
+            (max(1.35, float(config.onset_threshold_sigma) * 0.38), max(0.08, config.onset_min_hold_s * 0.3)),
+        ):
+            onset_relaxed, diag_relaxed = detect_motion_onset(
+                t_s=t_video,
+                signal=traj_px,
+                baseline_end_s=baseline_end_for_onset,
+                onset_threshold_sigma=float(relaxed_sigma),
+                onset_min_hold_s=float(relaxed_hold),
+            )
+            if onset_relaxed is not None:
+                onset_video_s = onset_relaxed
+                alignment_diag = diag_relaxed
+                used_relaxed_onset = True
+                break
 
     qc = DragQCFlags()
     warnings: list[str] = []
