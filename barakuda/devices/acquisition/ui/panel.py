@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import threading
 from pathlib import Path
@@ -730,13 +731,28 @@ class AcquisitionPanel(QWidget):
         grp_stage = QGroupBox("Stage (XIMC)")
         stage_form = QFormLayout(grp_stage)
 
+        self._combo_stage_device = QComboBox()
+        self._combo_stage_device.setMinimumWidth(320)
+        self._combo_stage_device.setToolTip(
+            "Vyber COM port, na kterém je připojený motor stolku.\n"
+            "V seznamu může být víc portů — ten správný obvykle odpovídá XILabu.\n"
+            "Před připojením zavři XILab, jinak port bývá obsazený."
+        )
+        stage_form.addRow("Device:", self._combo_stage_device)
+
+        row_stage_btns = QHBoxLayout()
+        self._btn_stage_refresh = QPushButton("Refresh list")
+        self._btn_stage_refresh.setToolTip("Znovu vyhledat XIMC zařízení (USB i COM).")
+        self._btn_stage_refresh.clicked.connect(self._refresh_stage_device_list)
+        row_stage_btns.addWidget(self._btn_stage_refresh)
+
         self._btn_stage_connect = QPushButton("Connect Stage")
         self._btn_stage_connect.setToolTip(
-            "Connect to the first available XIMC stage device.\n"
-            "pyximc SDK must be installed."
+            "Připojí vybrané zařízení. XILab musí být zavřený, jinak open_device často selže."
         )
         self._btn_stage_connect.clicked.connect(self._on_stage_connect)
-        stage_form.addRow("", self._btn_stage_connect)
+        row_stage_btns.addWidget(self._btn_stage_connect)
+        stage_form.addRow("", row_stage_btns)
 
         self._lbl_stage_status = QLabel("Not connected")
         self._lbl_stage_status.setWordWrap(True)
@@ -870,7 +886,34 @@ class AcquisitionPanel(QWidget):
         layout.addWidget(self._lbl_motion_run_status)
 
         layout.addStretch(1)
+        self._refresh_stage_device_list()
         return tab
+
+    def _refresh_stage_device_list(self) -> None:
+        """Naplní combo seznamem XIMC URI (COM / USB)."""
+        self._combo_stage_device.clear()
+        if not _XIMC_AVAILABLE:
+            self._combo_stage_device.addItem(
+                "(nainstaluj: pip install libximc v env barakuda)", None
+            )
+            return
+        devices = enumerate_ximc_devices()
+
+        def _sort_key(info):
+            m = re.search(r"COM(\d+)", info.device_id, re.I)
+            return (0, int(m.group(1))) if m else (1, info.device_id)
+
+        devices = sorted(devices, key=_sort_key)
+        if not devices:
+            self._combo_stage_device.addItem("(žádné zařízení — Refresh)", None)
+            return
+        for d in devices:
+            short = d.device_id
+            if "COM" in short.upper():
+                m = re.search(r"COM\d+", short, re.I)
+                if m:
+                    short = m.group(0).upper()
+            self._combo_stage_device.addItem(f"{short}  —  {d.device_id}", d.device_id)
 
     def _on_motion_enable_toggled(self, enabled: bool) -> None:
         self._check_motion_enable.setText(
@@ -910,27 +953,31 @@ class AcquisitionPanel(QWidget):
 
         if not _XIMC_AVAILABLE:
             self._lbl_stage_status.setText(
-                "pyximc not installed. Install Standa XILab SDK + pip install pyximc."
+                "Chybí libximc. V env barakuda: pip install libximc"
             )
             return
 
-        devices = enumerate_ximc_devices()
-        if not devices:
-            self._lbl_stage_status.setText("No XIMC devices found.")
+        uri = self._combo_stage_device.currentData()
+        if not uri:
+            self._lbl_stage_status.setText(
+                "Vyber zařízení v seznamu nebo klikni Refresh list."
+            )
             return
 
-        # Connect to first device (for MVP — no selection dialog yet)
-        dev = devices[0]
         um_per_unit = self._spin_stage_um_per_unit.value()
         try:
             stage = XimcStage(stage_um_per_unit=um_per_unit if um_per_unit > 0 else None)
-            stage.connect(dev.device_id)
+            stage.connect(uri)
             self._stage = stage
             self._btn_stage_connect.setText("Disconnect Stage")
-            self._lbl_stage_status.setText(f"Connected: {dev.display_name}")
-            self._log(f"Stage connected: {dev}")
+            self._lbl_stage_status.setText(f"Připojeno: {uri}")
+            self._log(f"Stage connected: {uri}")
         except Exception as exc:
-            self._lbl_stage_status.setText(f"Connect failed: {exc}")
+            hint = (
+                "Tip: Zavři XILab — drží COM port a Python ho pak neotevře.\n"
+                "Nebo zvol jiný port v seznamu (stolek nemusí být na prvním COM)."
+            )
+            self._lbl_stage_status.setText(f"Connect failed: {exc}\n\n{hint}")
             self._log(f"Stage connect failed: {exc}")
 
         self._update_motion_run_button()
