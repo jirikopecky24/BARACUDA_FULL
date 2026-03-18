@@ -37,6 +37,21 @@ from barakuda.devices.acquisition.camera_base import AbstractCamera
 from barakuda.devices.acquisition.camera_factory import enumerate_all, create as create_camera
 from barakuda.devices.acquisition.dataset import create_acquisition_dataset_home
 
+# Motion integration (lazy — only imported if pyximc is available)
+from barakuda.devices.acquisition.motion.recipes import ConstantVelocityDragRecipe
+from barakuda.devices.acquisition.motion.motion_run import (
+    run_record_and_motion,
+    MotionRunResult,
+    MotionRunError,
+)
+try:
+    from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
+    _XIMC_AVAILABLE = True
+except Exception:
+    _XIMC_AVAILABLE = False
+    XimcStage = None  # type: ignore
+    enumerate_ximc_devices = lambda: []  # type: ignore
+
 # Project runs/ root — two levels above the package root (barakuda/)
 _RUNS_ROOT = Path(__file__).resolve().parents[4] / "runs"
 
@@ -175,6 +190,76 @@ class _RecordWorker(QObject):
 
 
 # ------------------------------------------------------------------ #
+#  Worker: Record + Motion (synchronized run in background thread)
+# ------------------------------------------------------------------ #
+
+class _RecordMotionWorker(QObject):
+    """Runs run_record_and_motion() in a QThread.
+
+    Shares signal contract with _RecordWorker so _on_record_done /
+    _on_record_error callbacks can be reused for the recording part.
+    Stage-specific result is passed through the motion_finished signal.
+    """
+
+    # Emits (RecordResult, MotionRunResult)
+    motion_finished = pyqtSignal(object, object)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int, float)
+
+    def __init__(
+        self,
+        camera: BaslerCamera,
+        stage,                         # AbstractStage (typed loosely to avoid import cycles)
+        recipe: ConstantVelocityDragRecipe,
+        output_dir: str,
+        basename: str,
+        duration_s: float,
+        roi: tuple,
+        exposure_us: float,
+        gain,
+        fps_hint: float,
+        pixel_format: str,
+        log_fn=None,
+    ) -> None:
+        super().__init__()
+        self._cam = camera
+        self._stage = stage
+        self._recipe = recipe
+        self._output_dir = output_dir
+        self._basename = basename
+        self._duration_s = duration_s
+        self._roi = roi
+        self._exposure_us = exposure_us
+        self._gain = gain
+        self._fps_hint = fps_hint
+        self._pixel_format = pixel_format
+        self._log_fn = log_fn
+
+    def run(self) -> None:
+        try:
+            result = run_record_and_motion(
+                camera=self._cam,
+                stage=self._stage,
+                recipe=self._recipe,
+                output_dir=self._output_dir,
+                basename=self._basename,
+                duration_s=self._duration_s,
+                roi=self._roi,
+                exposure_us=self._exposure_us,
+                gain=self._gain,
+                fps_hint=self._fps_hint,
+                pixel_format=self._pixel_format,
+                progress_callback=lambda f, t: self.progress.emit(f, t),
+                log_fn=self._log_fn,
+            )
+            self.motion_finished.emit(result.record_result, result)
+        except MotionRunError as exc:
+            self.error.emit(str(exc))
+        except Exception as exc:
+            self.error.emit(f"Unexpected error in Record+Motion worker: {exc}")
+
+
+# ------------------------------------------------------------------ #
 #  AcquisitionPanel
 # ------------------------------------------------------------------ #
 
@@ -210,6 +295,11 @@ class AcquisitionPanel(QWidget):
         self._record_thread: QThread | None = None
         self._record_worker: _RecordWorker | None = None
         self._log_fn = None  # set via set_log_fn() from shell
+
+        # Motion integration — stage instance and motion worker
+        self._stage = None          # XimcStage or None (lazy connect)
+        self._motion_thread: QThread | None = None
+        self._motion_worker: _RecordMotionWorker | None = None
 
         # Connect thread-safe fps signals to UI slots (always run in main thread)
         self._fps_done_signal.connect(self._on_fps_done)
@@ -581,7 +671,11 @@ class AcquisitionPanel(QWidget):
         tab_rec_layout.addStretch(1)
         tabs.addTab(tab_rec, "Recording")
 
-        # Tab 3: Status
+        # Tab 3: Motion
+        tab_motion = self._build_motion_tab()
+        tabs.addTab(tab_motion, "Motion")
+
+        # Tab 4: Status
         tab_status = QWidget()
         tab_status_layout = QVBoxLayout(tab_status)
         tab_status_layout.setContentsMargins(4, 4, 4, 4)
@@ -620,6 +714,404 @@ class AcquisitionPanel(QWidget):
 
         # Initial info render
         QTimer.singleShot(0, self._render_info_text)
+
+    # ------------------------------------------------------------------ #
+    #  Motion tab builder
+    # ------------------------------------------------------------------ #
+
+    def _build_motion_tab(self) -> QWidget:
+        """Build the Motion configuration tab (constant_velocity_drag preset)."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        # -- Stage connection group --
+        grp_stage = QGroupBox("Stage (XIMC)")
+        stage_form = QFormLayout(grp_stage)
+
+        self._btn_stage_connect = QPushButton("Connect Stage")
+        self._btn_stage_connect.setToolTip(
+            "Connect to the first available XIMC stage device.\n"
+            "pyximc SDK must be installed."
+        )
+        self._btn_stage_connect.clicked.connect(self._on_stage_connect)
+        stage_form.addRow("", self._btn_stage_connect)
+
+        self._lbl_stage_status = QLabel("Not connected")
+        self._lbl_stage_status.setWordWrap(True)
+        stage_form.addRow("Stage:", self._lbl_stage_status)
+
+        self._spin_stage_um_per_unit = _NoScrollDoubleSpinBox()
+        self._spin_stage_um_per_unit.setRange(0.0, 10000.0)
+        self._spin_stage_um_per_unit.setValue(0.0)
+        self._spin_stage_um_per_unit.setDecimals(4)
+        self._spin_stage_um_per_unit.setToolTip(
+            "Micrometers per stage user unit. 0 = unknown (leave blank).\n"
+            "Used for unit conversion in DRAG analysis."
+        )
+        stage_form.addRow("µm/unit:", self._spin_stage_um_per_unit)
+
+        layout.addWidget(grp_stage)
+
+        # -- Motion mode group --
+        grp_motion = QGroupBox("Motion — constant_velocity_drag")
+        motion_form = QFormLayout(grp_motion)
+
+        self._check_motion_enable = QPushButton("Enable Motion")
+        self._check_motion_enable.setCheckable(True)
+        self._check_motion_enable.setChecked(False)
+        self._check_motion_enable.setToolTip(
+            "When enabled, Record button starts a synchronized Record+Motion run.\n"
+            "Stage must be connected first."
+        )
+        self._check_motion_enable.toggled.connect(self._on_motion_enable_toggled)
+        motion_form.addRow("", self._check_motion_enable)
+
+        self._combo_motion_axis = QComboBox()
+        self._combo_motion_axis.addItems(["x", "y"])
+        self._combo_motion_axis.setToolTip("Stage axis to drive during the drag run.")
+        motion_form.addRow("Axis:", self._combo_motion_axis)
+
+        self._combo_motion_direction = QComboBox()
+        self._combo_motion_direction.addItems(["+1 (positive)", "-1 (negative)"])
+        self._combo_motion_direction.setToolTip("Stage movement direction relative to positive axis.")
+        motion_form.addRow("Direction:", self._combo_motion_direction)
+
+        self._spin_motion_travel = _NoScrollDoubleSpinBox()
+        self._spin_motion_travel.setRange(0.1, 1_000_000.0)
+        self._spin_motion_travel.setValue(200.0)
+        self._spin_motion_travel.setDecimals(1)
+        self._spin_motion_travel.setSuffix(" units")
+        self._spin_motion_travel.setToolTip("Total travel distance in stage user units.")
+        motion_form.addRow("Travel:", self._spin_motion_travel)
+
+        self._spin_motion_speed = _NoScrollDoubleSpinBox()
+        self._spin_motion_speed.setRange(1.0, 1_000_000.0)
+        self._spin_motion_speed.setValue(50.0)
+        self._spin_motion_speed.setDecimals(1)
+        self._spin_motion_speed.setSuffix(" u/s")
+        self._spin_motion_speed.setToolTip("Target constant velocity in stage user units per second.")
+        motion_form.addRow("Speed:", self._spin_motion_speed)
+
+        self._spin_motion_accel = _NoScrollDoubleSpinBox()
+        self._spin_motion_accel.setRange(1.0, 1_000_000.0)
+        self._spin_motion_accel.setValue(100.0)
+        self._spin_motion_accel.setDecimals(1)
+        self._spin_motion_accel.setSuffix(" u/s²")
+        self._spin_motion_accel.setToolTip("Acceleration in stage user units per second squared.")
+        motion_form.addRow("Accel:", self._spin_motion_accel)
+
+        self._spin_motion_decel = _NoScrollDoubleSpinBox()
+        self._spin_motion_decel.setRange(1.0, 1_000_000.0)
+        self._spin_motion_decel.setValue(100.0)
+        self._spin_motion_decel.setDecimals(1)
+        self._spin_motion_decel.setSuffix(" u/s²")
+        self._spin_motion_decel.setToolTip("Deceleration in stage user units per second squared.")
+        motion_form.addRow("Decel:", self._spin_motion_decel)
+
+        self._spin_motion_pre_delay = _NoScrollDoubleSpinBox()
+        self._spin_motion_pre_delay.setRange(0.0, 60.0)
+        self._spin_motion_pre_delay.setValue(2.0)
+        self._spin_motion_pre_delay.setDecimals(1)
+        self._spin_motion_pre_delay.setSuffix(" s")
+        self._spin_motion_pre_delay.setToolTip(
+            "Hold time after recording starts before stage begins moving.\n"
+            "Used to establish Brownian baseline window."
+        )
+        motion_form.addRow("Pre-delay:", self._spin_motion_pre_delay)
+
+        self._spin_motion_post_delay = _NoScrollDoubleSpinBox()
+        self._spin_motion_post_delay.setRange(0.0, 60.0)
+        self._spin_motion_post_delay.setValue(2.0)
+        self._spin_motion_post_delay.setDecimals(1)
+        self._spin_motion_post_delay.setSuffix(" s")
+        self._spin_motion_post_delay.setToolTip(
+            "Hold time after stage stops before recording ends.\n"
+            "Allows bead to relax back to equilibrium."
+        )
+        motion_form.addRow("Post-delay:", self._spin_motion_post_delay)
+
+        self._spin_motion_sign_x = _NoScrollSpinBox()
+        self._spin_motion_sign_x.setRange(-1, 1)
+        self._spin_motion_sign_x.setValue(1)
+        self._spin_motion_sign_x.setSingleStep(2)
+        self._spin_motion_sign_x.setToolTip(
+            "+1 = positive stage X motion → positive image X direction.\n"
+            "-1 = inverted (stage moves right, image appears to move left)."
+        )
+        motion_form.addRow("Sign stage→image X:", self._spin_motion_sign_x)
+
+        self._spin_motion_sign_y = _NoScrollSpinBox()
+        self._spin_motion_sign_y.setRange(-1, 1)
+        self._spin_motion_sign_y.setValue(1)
+        self._spin_motion_sign_y.setSingleStep(2)
+        self._spin_motion_sign_y.setToolTip(
+            "+1 = positive stage Y motion → positive image Y direction.\n"
+            "-1 = inverted."
+        )
+        motion_form.addRow("Sign stage→image Y:", self._spin_motion_sign_y)
+
+        layout.addWidget(grp_motion)
+
+        # -- Record+Motion button --
+        self._btn_record_motion = QPushButton("⏺ Record + Motion")
+        self._btn_record_motion.setToolTip(
+            "Start synchronized recording + stage motion run.\n"
+            "Motion must be enabled and stage must be connected."
+        )
+        self._btn_record_motion.setEnabled(False)
+        self._btn_record_motion.clicked.connect(self._on_record_motion)
+        layout.addWidget(self._btn_record_motion)
+
+        self._lbl_motion_run_status = QLabel("")
+        self._lbl_motion_run_status.setWordWrap(True)
+        self._lbl_motion_run_status.setStyleSheet("color: #888;")
+        layout.addWidget(self._lbl_motion_run_status)
+
+        layout.addStretch(1)
+        return tab
+
+    def _on_motion_enable_toggled(self, enabled: bool) -> None:
+        self._check_motion_enable.setText(
+            "Motion ENABLED" if enabled else "Enable Motion"
+        )
+        self._check_motion_enable.setStyleSheet(
+            "QPushButton { color: #00cc55; font-weight: bold; }"
+            if enabled else ""
+        )
+        self._update_motion_run_button()
+
+    def _update_motion_run_button(self) -> None:
+        enabled = (
+            self._check_motion_enable.isChecked()
+            and self._stage is not None
+            and self._camera.is_connected
+        )
+        self._btn_record_motion.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    #  Stage connect
+    # ------------------------------------------------------------------ #
+
+    def _on_stage_connect(self) -> None:
+        if self._stage is not None:
+            # Disconnect
+            try:
+                self._stage.disconnect()
+            except Exception:
+                pass
+            self._stage = None
+            self._btn_stage_connect.setText("Connect Stage")
+            self._lbl_stage_status.setText("Not connected")
+            self._update_motion_run_button()
+            self._log("Stage disconnected.")
+            return
+
+        if not _XIMC_AVAILABLE:
+            self._lbl_stage_status.setText(
+                "pyximc not installed. Install Standa XILab SDK + pip install pyximc."
+            )
+            return
+
+        devices = enumerate_ximc_devices()
+        if not devices:
+            self._lbl_stage_status.setText("No XIMC devices found.")
+            return
+
+        # Connect to first device (for MVP — no selection dialog yet)
+        dev = devices[0]
+        um_per_unit = self._spin_stage_um_per_unit.value()
+        try:
+            stage = XimcStage(stage_um_per_unit=um_per_unit if um_per_unit > 0 else None)
+            stage.connect(dev.device_id)
+            self._stage = stage
+            self._btn_stage_connect.setText("Disconnect Stage")
+            self._lbl_stage_status.setText(f"Connected: {dev.display_name}")
+            self._log(f"Stage connected: {dev}")
+        except Exception as exc:
+            self._lbl_stage_status.setText(f"Connect failed: {exc}")
+            self._log(f"Stage connect failed: {exc}")
+
+        self._update_motion_run_button()
+
+    # ------------------------------------------------------------------ #
+    #  Record + Motion run
+    # ------------------------------------------------------------------ #
+
+    def _get_motion_recipe(self) -> ConstantVelocityDragRecipe:
+        direction_text = self._combo_motion_direction.currentText()
+        direction = 1 if "+1" in direction_text else -1
+        return ConstantVelocityDragRecipe(
+            axis=self._combo_motion_axis.currentText(),
+            direction=direction,
+            travel=self._spin_motion_travel.value(),
+            speed=self._spin_motion_speed.value(),
+            accel=self._spin_motion_accel.value(),
+            decel=self._spin_motion_decel.value(),
+            pre_delay_s=self._spin_motion_pre_delay.value(),
+            post_delay_s=self._spin_motion_post_delay.value(),
+            sign_stage_to_image_x=self._spin_motion_sign_x.value(),
+            sign_stage_to_image_y=self._spin_motion_sign_y.value(),
+        )
+
+    def _on_record_motion(self) -> None:
+        if not self._camera.is_connected:
+            self._lbl_motion_run_status.setText("Camera not connected.")
+            return
+        if self._stage is None:
+            self._lbl_motion_run_status.setText("Stage not connected.")
+            return
+
+        recipe = self._get_motion_recipe()
+        errors = recipe.validate()
+        if errors:
+            self._lbl_motion_run_status.setText(f"Recipe error: {'; '.join(errors)}")
+            return
+
+        requested_roi = self._get_roi_tuple()
+        roi = self._sync_roi_to_camera(requested_roi)
+        gain = self._spin_gain.value() if self._spin_gain.isEnabled() else None
+
+        self._btn_record_motion.setEnabled(False)
+        self._btn_record.setEnabled(False)
+        self._btn_start_preview.setEnabled(False)
+        self._btn_stop_preview.setEnabled(False)
+        self._lbl_motion_run_status.setText("Record+Motion running…")
+        self._lbl_motion_run_status.setStyleSheet("color: #cc4400; font-weight: bold;")
+        self._preview_timer.stop()
+
+        self._log(
+            f"Record+Motion starting — axis={recipe.axis}  dir={recipe.direction:+d}  "
+            f"travel={recipe.travel}  speed={recipe.speed}  "
+            f"pre={recipe.pre_delay_s}s  post={recipe.post_delay_s}s"
+        )
+
+        self._motion_thread = QThread()
+        self._motion_worker = _RecordMotionWorker(
+            camera=self._camera,
+            stage=self._stage,
+            recipe=recipe,
+            output_dir=self._edit_output_dir.text(),
+            basename=self._edit_basename.text(),
+            duration_s=self._spin_duration.value(),
+            roi=roi,
+            exposure_us=self._spin_exposure.value(),
+            gain=gain,
+            fps_hint=self._spin_fps_hint.value(),
+            pixel_format="Mono8",
+            log_fn=self._log,
+        )
+        self._motion_worker.moveToThread(self._motion_thread)
+        self._motion_thread.started.connect(self._motion_worker.run)
+        self._motion_worker.motion_finished.connect(self._on_record_motion_done)
+        self._motion_worker.error.connect(self._on_record_motion_error)
+        self._motion_worker.progress.connect(self._on_record_progress)
+
+        self._motion_worker.motion_finished.connect(self._motion_thread.quit)
+        self._motion_worker.error.connect(self._motion_thread.quit)
+        self._motion_thread.finished.connect(self._motion_worker.deleteLater)
+        self._motion_thread.finished.connect(
+            lambda: setattr(self, "_motion_thread", None)
+        )
+        self._motion_thread.start()
+
+    def _on_record_motion_done(
+        self, record_result: RecordResult, motion_result: MotionRunResult
+    ) -> None:
+        fps_str = (
+            f"{record_result.fps_effective:.1f}"
+            if record_result.fps_effective else "N/A"
+        )
+        self._log(
+            f"Record+Motion done — frames={record_result.frames_written}  "
+            f"fps_eff={fps_str}  dropped={record_result.dropped}  "
+            f"motion_start={motion_result.motion_start_s:.3f}s  "
+            f"motion_stop={motion_result.motion_stop_s:.3f}s"
+            if motion_result.motion_stop_s is not None else
+            f"Record+Motion done — frames={record_result.frames_written}  "
+            f"fps_eff={fps_str}  dropped={record_result.dropped}  "
+            f"motion_start={motion_result.motion_start_s:.3f}s  motion_stop=N/A"
+        )
+
+        # Write QC
+        qc_path: str | None = None
+        try:
+            fps_target = self._spin_fps_hint.value()
+            fps_eff = record_result.fps_effective or 0.0
+            fps_ratio = fps_eff / fps_target if fps_target > 0 else 0.0
+            reasons: list[str] = []
+            if record_result.dropped > 0:
+                reasons.append(f"dropped_frames={record_result.dropped}")
+            if fps_ratio < 0.95:
+                reasons.append(f"fps_ratio={fps_ratio:.3f} < 0.95")
+            qc = {
+                "pass": len(reasons) == 0,
+                "fps_target": fps_target,
+                "fps_effective": round(fps_eff, 2),
+                "fps_ratio": round(fps_ratio, 4),
+                "frames_written": record_result.frames_written,
+                "dropped_frames": record_result.dropped,
+                "reasons": reasons,
+                "motion_mode": "constant_velocity_drag",
+                "motion_start_s": motion_result.motion_start_s,
+                "motion_stop_s": motion_result.motion_stop_s,
+            }
+            qc_path = os.path.join(
+                self._edit_output_dir.text(),
+                self._edit_basename.text() + "_qc.json",
+            )
+            with open(qc_path, "w", encoding="utf-8") as f:
+                json.dump(qc, f, indent=2)
+        except Exception:
+            pass
+
+        # Create canonical dataset home (copies video + meta + timestamps +
+        # stage.json + stage_trace.csv into runs/acquisition/<item_id>/acquisition/)
+        try:
+            meta = record_result.meta or {}
+            ts_str = meta.get("timestamps_path")
+            item_root = create_acquisition_dataset_home(
+                item_id=self._edit_basename.text(),
+                video_path=Path(record_result.video_path),
+                meta_path=Path(record_result.meta_path) if record_result.meta_path else None,
+                timestamps_path=Path(ts_str) if ts_str else None,
+                qc_path=Path(qc_path) if qc_path else None,
+                stage_meta_path=motion_result.stage_json_path,
+                stage_trace_path=motion_result.stage_trace_path,
+                runs_root=_RUNS_ROOT,
+                fps_effective=record_result.fps_effective,
+                pixel_format=meta.get("pixel_format"),
+                roi=meta.get("record_roi"),
+                frame_count=record_result.frames_written,
+            )
+            self._log(f"Dataset home: {item_root}")
+            self._lbl_motion_run_status.setText(
+                f"Done. Dataset: {item_root.name}\n"
+                f"stage.json + stage_trace.csv saved."
+            )
+            self._lbl_motion_run_status.setStyleSheet("color: #00cc55;")
+        except Exception as e:
+            self._log(f"Dataset home creation failed (non-fatal): {e}")
+            self._lbl_motion_run_status.setText(
+                f"Done (video OK, dataset copy failed: {e})"
+            )
+            self._lbl_motion_run_status.setStyleSheet("color: #cc8800;")
+
+        self._btn_record_motion.setEnabled(True)
+        self._btn_record.setEnabled(True)
+        self._btn_start_preview.setEnabled(True)
+        QTimer.singleShot(200, self._on_start_preview)
+
+    def _on_record_motion_error(self, err: str) -> None:
+        self._log(f"Record+Motion FAILED — {err}")
+        self._lbl_motion_run_status.setText(f"FAILED: {err}")
+        self._lbl_motion_run_status.setStyleSheet("color: #cc3333; font-weight: bold;")
+        self._btn_record_motion.setEnabled(True)
+        self._btn_record.setEnabled(True)
+        self._btn_start_preview.setEnabled(True)
+
+    # ------------------------------------------------------------------ #
 
     def _apply_default_splitter_sizes(self) -> None:
         """Set default splitter sizes (60/40) after widget geometry is resolved."""
@@ -692,6 +1184,7 @@ class AcquisitionPanel(QWidget):
                 f"Connected — {info.display_name}  {sensor[0]}×{sensor[1]}"
             )
             self._update_roi_ranges_from_camera()
+            self._update_motion_run_button()
         except Exception as exc:
             # Connect failed — restore to safe disconnected state
             self._btn_connect.setText("Connect")
