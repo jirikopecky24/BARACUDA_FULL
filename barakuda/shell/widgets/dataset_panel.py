@@ -43,12 +43,15 @@ class DatasetPanel(QWidget):
 
         # Buttons (order: Import -> Select All -> Remove)
         self._btn_import = QPushButton("Import Files…")
+        self._btn_import.setToolTip("Import individual data files into the dataset list.")
         self._btn_import.clicked.connect(self._on_import)
 
         self._btn_import_folder = QPushButton("Import Folder…")
+        self._btn_import_folder.setToolTip("Import all supported files (or item.json manifests) from a folder.")
         self._btn_import_folder.clicked.connect(self._on_import_folder)
 
         self._btn_select_all = QPushButton("Select All")
+        self._btn_select_all.setToolTip("Select all listed dataset items.")
         self._btn_select_all.clicked.connect(self.select_all)
 
         self._btn_remove_selected = QPushButton("Remove Selected")
@@ -62,6 +65,10 @@ class DatasetPanel(QWidget):
         header.addWidget(self._btn_remove_selected)
 
         self._list = QListWidget()
+        self._list.setToolTip(
+            "Dataset items used for Preview Gate and batch runs.\n"
+            "Checkbox = included in checked-path workflows."
+        )
         self._list.itemSelectionChanged.connect(self._on_selection_changed)
         self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)

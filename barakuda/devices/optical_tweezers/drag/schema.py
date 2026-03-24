@@ -45,6 +45,9 @@ class DragStageMeta:
     post_delay_s: float
     # Optional conversion from stage user units to micrometers.
     stage_um_per_unit: float | None = None
+    # Protocol-specific parameters (future step/oscillatory/active rheology).
+    # Kept generic so stage JSON can evolve without breaking the loader.
+    protocol_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,9 @@ class DragAnalysisConfig:
     manual_offset_s: float | None = None
     stage_um_per_unit: float | None = None
     strict_steady: bool = False
+    # Debug/export knobs. Keep plots opt-in to avoid overhead.
+    export_alignment_diagnostics_json: bool = True
+    export_alignment_debug_plot: bool = False
 
 
 @dataclass
@@ -220,6 +226,7 @@ class DragAnalysisResult:
     qc_flags: DragQCFlags = field(default_factory=DragQCFlags)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    alignment_diagnostics: AlignmentDiagnostics | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:

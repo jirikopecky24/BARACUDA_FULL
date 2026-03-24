@@ -8,10 +8,18 @@ from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrateg
 
 class DragConstantVelocityStrategy(CalibrationStrategy):
     """
-    Drag force calibration using constant-velocity stage pulling.
-    
-    Detects the steady-state segment by taking the median displacement 
-    of the second half of the trajectory. Assumes the trap center is at 0.
+    LEGACY drag calibration strategy (NOT stage-aware).
+
+    This implementation historically used a time-only heuristic:
+    - steady-state taken as the median of the second half of the trajectory
+    - assumes trap center at 0
+
+    Current (NOW) stage-aware DRAG analysis lives in `drag/` and uses:
+    - stage trace timing + onset detection
+    - baseline / steady windows on video time axis
+    - measured stage speed via stage metadata
+
+    Keep this strategy for backwards compatibility and OT shadow/preview workflows.
     """
 
     name = "Drag_ConstantVelocity"

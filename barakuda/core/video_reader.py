@@ -27,9 +27,9 @@ class VideoMeta:
 class VideoReader:
     """
     Preview + tracking reader:
-      - otevře video jednou
-      - get_frame(i): náhodný přístup
-      - optimalizace: pokud i == last_i+1 → čte sekvenčně bez seeku
+      - opens the video once
+      - get_frame(i): random frame access
+      - optimization: if i == last_i+1, reads sequentially without seek
     """
 
     def __init__(self, path: Path) -> None:
@@ -62,7 +62,7 @@ class VideoReader:
     @property
     def meta(self) -> VideoMeta:
         if self._meta is None:
-            raise RuntimeError("Video meta nejsou dostupná (reader není otevřen).")
+            raise RuntimeError("Video metadata are not available (reader is not open).")
         return self._meta
 
     def get_frame(self, i: int) -> np.ndarray:
@@ -84,7 +84,7 @@ class VideoReader:
 
             # --- AVI / standard video path ---
             if self._cap is None:
-                raise RuntimeError("VideoReader není otevřený (cap=None).")
+                raise RuntimeError("VideoReader is not open (cap=None).")
 
             import cv2
 
@@ -97,11 +97,11 @@ class VideoReader:
             if self._last_i == i and self._last_rgb is not None:
                 return self._last_rgb
 
-            # rychlá cesta: sekvenční čtení
+            # Fast path: sequential read
             if self._last_i is not None and i == self._last_i + 1:
                 ok, frame_bgr = self._cap.read()
                 if not ok or frame_bgr is None:
-                    raise RuntimeError(f"Nelze načíst frame {i} (sekvenčně) z videa: {self.path}")
+                    raise RuntimeError(f"Failed to read frame {i} (sequential) from video: {self.path}")
             else:
                 # seek
                 ok = self._cap.set(cv2.CAP_PROP_POS_FRAMES, float(i))
@@ -109,7 +109,7 @@ class VideoReader:
                     pass
                 ok, frame_bgr = self._cap.read()
                 if not ok or frame_bgr is None:
-                    raise RuntimeError(f"Nelze načíst frame {i} z videa: {self.path}")
+                    raise RuntimeError(f"Failed to read frame {i} from video: {self.path}")
 
             frame_rgb = frame_bgr[:, :, ::-1].copy()
 
@@ -128,13 +128,13 @@ class VideoReader:
             import cv2
         except Exception as e:
             raise RuntimeError(
-                "OpenCV (cv2) není dostupné, ale je potřeba pro video preview/tracking. "
-                "Nainstaluj opencv-python."
+                "OpenCV (cv2) is not available, but required for video preview/tracking. "
+                "Install opencv-python."
             ) from e
 
         cap = cv2.VideoCapture(str(self.path))
         if not cap.isOpened():
-            raise RuntimeError(f"Video nejde otevřít: {self.path}")
+            raise RuntimeError(f"Cannot open video: {self.path}")
 
         fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -165,7 +165,7 @@ class VideoReader:
         ok, frame_bgr = cap.read()
         if not ok or frame_bgr is None:
             cap.release()
-            raise RuntimeError(f"Nelze načíst první snímek z videa: {self.path}")
+            raise RuntimeError(f"Failed to read the first frame from video: {self.path}")
 
         frame_rgb = frame_bgr[:, :, ::-1].copy()
         if width <= 0:

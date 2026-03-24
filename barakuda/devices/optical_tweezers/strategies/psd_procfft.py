@@ -13,6 +13,7 @@ from barakuda.devices.optical_tweezers.pipeline.derived_newtonian import (
     compute_mean_derived
 )
 from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrategy
+from barakuda.devices.optical_tweezers.strategies.time_resampling import resample_to_uniform_timebase
 
 
 def compute_psd_procfft(x: np.ndarray, fs_hz: float, segments: int) -> tuple[np.ndarray, np.ndarray]:
@@ -67,10 +68,16 @@ class PsdProcFftStrategy(CalibrationStrategy):
         
         x_um = np.asarray(traj["x_corr_um"], dtype=np.float64)
         y_um = np.asarray(traj["y_corr_um"], dtype=np.float64)
-        
-        valid = np.isfinite(x_um) & np.isfinite(y_um)
-        x_val = x_um[valid]
-        y_val = y_um[valid]
+        t_s = np.asarray(traj.get("t_s", []), dtype=np.float64)
+        if t_s.size != x_um.size:
+            return {"status": "SKIPPED", "reason": "Missing/invalid t_s for timestamp-based PSD."}, {}
+
+        try:
+            rs = resample_to_uniform_timebase(t_s=t_s, x=x_um, y=y_um)
+        except Exception as e:  # noqa: BLE001
+            return {"status": "SKIPPED", "reason": f"Timestamp resampling failed: {e}"}, {}
+        x_val = np.asarray(rs["x_uniform"], dtype=np.float64)
+        y_val = np.asarray(rs["y_uniform"], dtype=np.float64)
 
         segments = int(params.get("segments", 50))
         if x_val.size < segments * 2:  # extremely short
@@ -81,10 +88,10 @@ class PsdProcFftStrategy(CalibrationStrategy):
         if lenps < 256:
             return {"status": "SKIPPED", "reason": f"lenps={lenps} < 256 (not enough points per segment)", "n_valid": x_val.size}, {}
 
-        fps = float(camera_meta.get("fps", 1.0))
+        fs_uniform = float(rs["fs_uniform_hz"])
 
-        fx, pxx = compute_psd_procfft(x_val, fps, segments=segments)
-        fy, pyy = compute_psd_procfft(y_val, fps, segments=segments)
+        fx, pxx = compute_psd_procfft(x_val, fs_uniform, segments=segments)
+        fy, pyy = compute_psd_procfft(y_val, fs_uniform, segments=segments)
 
         # Fit Lorentzian (ignoring first few bins by setting fmin_hz)
         fit_x = fit_lorentzian_psd(fx, pxx, fmin_hz=1.0)
@@ -138,6 +145,17 @@ class PsdProcFftStrategy(CalibrationStrategy):
             "procfft_params": {
                 "segments": segments,
                 "lenps": lenps,
+            },
+            "time_processing": {
+                "input_time_axis_source": str(camera_meta.get("time_axis", {}).get("time_axis_source", "unknown")),
+                "resampling": {
+                    "enabled": True,
+                    "fs_uniform_hz": fs_uniform,
+                    "n_in": int(rs["n_in"]),
+                    "n_valid": int(rs["n_valid"]),
+                    "n_out": int(rs["n_out"]),
+                    "dt_stats": rs["dt_stats"],
+                },
             },
             "fit_model": "lorentzian",
             "fit_domain": "linear",

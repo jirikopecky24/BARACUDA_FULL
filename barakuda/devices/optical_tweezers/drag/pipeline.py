@@ -149,7 +149,11 @@ def run_drag_from_raw(
     # analysis_axis here is only a default; stage metadata ultimately defines the physical axis.
     cfg = drag_config or DragAnalysisConfig(analysis_axis="x")
 
-    from .export import export_drag_summary_csv, export_drag_summary_json
+    from .export import (
+        export_alignment_diagnostics_json,
+        export_drag_summary_csv,
+        export_drag_summary_json,
+    )
     from .plotting import plot_drag_diagnostic
     from .analysis import _interp_time_for_frames  # reuse helper
     from barakuda.core.trajectory_csv_io import read_trajectory_csv
@@ -161,6 +165,7 @@ def run_drag_from_raw(
     # Exports
     summary_json = export_drag_summary_json(result, paths.run_dir)
     summary_csv = export_drag_summary_csv(result, paths.run_dir)
+    alignment_diag_json = export_alignment_diagnostics_json(result, paths.run_dir)
 
     # Diagnostic plot needs full time axis and px signal
     traj_table = read_trajectory_csv(traj_path)
@@ -189,6 +194,7 @@ def run_drag_from_raw(
         "summary_json": summary_json,
         "summary_csv": summary_csv,
         "diagnostic_png": diagnostic_png,
+        "alignment_diagnostics_json": alignment_diag_json,
     }
     return result, outputs
 

@@ -743,15 +743,15 @@ class AcquisitionPanel(QWidget):
         self._combo_stage_device = QComboBox()
         self._combo_stage_device.setMinimumWidth(320)
         self._combo_stage_device.setToolTip(
-            "Vyber COM port, na kterém je připojený motor stolku.\n"
-            "V seznamu může být víc portů — ten správný obvykle odpovídá XILabu.\n"
-            "Před připojením zavři XILab, jinak port bývá obsazený."
+            "Select the COM/USB stage device used for motion control.\n"
+            "If multiple ports are listed, choose the one matching your XILab device.\n"
+            "Close XILab before connecting so Python can open the device."
         )
         stage_form.addRow("Device:", self._combo_stage_device)
 
         row_stage_btns = QHBoxLayout()
         self._btn_stage_refresh = QPushButton("Refresh list")
-        self._btn_stage_refresh.setToolTip("Znovu vyhledat XIMC zařízení (USB i COM).")
+        self._btn_stage_refresh.setToolTip("Rescan available XIMC devices (USB and COM).")
         self._btn_stage_refresh.clicked.connect(
             lambda: self._refresh_stage_device_list(async_scan=True)
         )
@@ -759,7 +759,7 @@ class AcquisitionPanel(QWidget):
 
         self._btn_stage_connect = QPushButton("Connect Stage")
         self._btn_stage_connect.setToolTip(
-            "Připojí vybrané zařízení. XILab musí být zavřený, jinak open_device často selže."
+            "Connect the selected stage device. XILab must be closed, otherwise open_device may fail."
         )
         self._btn_stage_connect.clicked.connect(self._on_stage_connect)
         row_stage_btns.addWidget(self._btn_stage_connect)
@@ -917,7 +917,7 @@ class AcquisitionPanel(QWidget):
         return tab
 
     def _refresh_stage_device_list(self, *, async_scan: bool = False) -> None:
-        """Naplní combo seznamem XIMC URI (COM / USB).
+        """Populate the device combo with XIMC URIs (COM / USB).
 
         On Windows, querying friendly COM port descriptions via PowerShell can be
         slow (seconds). If async_scan=True, the scan runs in a background thread
@@ -926,7 +926,7 @@ class AcquisitionPanel(QWidget):
         self._combo_stage_device.clear()
         if not _XIMC_AVAILABLE:
             self._combo_stage_device.addItem(
-                "(nainstaluj: pip install libximc v env barakuda)", None
+                "(install with: pip install libximc in the barakuda environment)", None
             )
             return
 
@@ -979,7 +979,7 @@ class AcquisitionPanel(QWidget):
             devices_sorted = list(devices or [])
 
         if not devices_sorted:
-            self._combo_stage_device.addItem("(žádné zařízení — Refresh)", None)
+            self._combo_stage_device.addItem("(no device found - click Refresh list)", None)
             return
 
         com_desc = com_desc or {}
@@ -1066,14 +1066,14 @@ class AcquisitionPanel(QWidget):
 
         if not _XIMC_AVAILABLE:
             self._lbl_stage_status.setText(
-                "Chybí libximc. V env barakuda: pip install libximc"
+                "Missing dependency: libximc. In the barakuda environment run: pip install libximc"
             )
             return
 
         uri = self._combo_stage_device.currentData()
         if not uri:
             self._lbl_stage_status.setText(
-                "Vyber zařízení v seznamu nebo klikni Refresh list."
+                "Select a device from the list or click Refresh list."
             )
             return
 
@@ -1083,12 +1083,12 @@ class AcquisitionPanel(QWidget):
             stage.connect(uri)
             self._stage = stage
             self._btn_stage_connect.setText("Disconnect Stage")
-            self._lbl_stage_status.setText(f"Připojeno: {uri}")
+            self._lbl_stage_status.setText(f"Connected: {uri}")
             self._log(f"Stage connected: {uri}")
         except Exception as exc:
             hint = (
-                "Tip: Zavři XILab — drží COM port a Python ho pak neotevře.\n"
-                "Nebo zvol jiný port v seznamu (stolek nemusí být na prvním COM)."
+                "Tip: close XILab because it may lock the COM port.\n"
+                "If needed, select a different COM port from the list."
             )
             self._lbl_stage_status.setText(f"Connect failed: {exc}\n\n{hint}")
             self._log(f"Stage connect failed: {exc}")
@@ -1187,10 +1187,6 @@ class AcquisitionPanel(QWidget):
     def _on_record_motion_done(
         self, record_result: RecordResult, motion_result: MotionRunResult
     ) -> None:
-        # #region agent log
-        import json as _j, pathlib as _pl, time as _t
-        _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"_on_record_motion_done ENTER","data":{}})+"\n")
-        # #endregion
         fps_str = (
             f"{record_result.fps_effective:.1f}"
             if record_result.fps_effective else "N/A"
@@ -1241,16 +1237,12 @@ class AcquisitionPanel(QWidget):
         self._stop_motion_elapsed_timer()
         self._lbl_motion_run_status.setText(
             f"Done — {record_result.frames_written} frames  "
-            f"stage.json + stage_trace.csv uloženy v Output dir"
+            f"stage.json + stage_trace.csv saved to the output folder"
         )
         self._lbl_motion_run_status.setStyleSheet("color: #00cc55;")
         self._btn_record_motion.setEnabled(True)
         self._btn_record.setEnabled(True)
         self._btn_start_preview.setEnabled(True)
-        # #region agent log
-        import json as _j, pathlib as _pl, time as _t
-        _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"scheduling start_preview singleShot","data":{}})+"\n")
-        # #endregion
         QTimer.singleShot(200, self._on_start_preview)
 
     def _on_record_motion_error(self, err: str) -> None:
@@ -1550,10 +1542,6 @@ class AcquisitionPanel(QWidget):
         self._status.setText(msg)
 
     def _on_start_preview(self) -> None:
-        # #region agent log
-        import json as _j, pathlib as _pl, time as _t
-        _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"_on_start_preview ENTER","data":{"is_connected":self._camera.is_connected}})+"\n")
-        # #endregion
         if not self._camera.is_connected:
             return
         self._btn_start_preview.setEnabled(False)  # prevent double clicks
@@ -1562,9 +1550,6 @@ class AcquisitionPanel(QWidget):
         self._preview_fps_timer_start = time.perf_counter()
         self._preview_dropped = 0
         try:
-            # #region agent log
-            _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"start_preview CALL","data":{}})+"\n")
-            # #endregion
             self._camera.start_preview(
                 callback=self._on_preview_frame,
                 exposure_us=self._spin_exposure.value(),
@@ -1574,15 +1559,7 @@ class AcquisitionPanel(QWidget):
             self._image_view.setLevels(0, 255)
             self._preview_timer.start(40)
             self._status.setText("Preview running")
-            # #region agent log
-            import json as _j, pathlib as _pl, time as _t
-            _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"start_preview OK","data":{}})+"\n")
-            # #endregion
         except Exception as exc:
-            # #region agent log
-            import json as _j, pathlib as _pl, time as _t
-            _pl.Path("debug-a34608.log").open("a").write(_j.dumps({"sessionId":"a34608","ts":_t.perf_counter(),"step":"start_preview EXCEPTION","data":{"err":str(exc)}})+"\n")
-            # #endregion
             self._set_preview_ui(False)
             self._status.setText(f"Preview start failed: {exc}")
 

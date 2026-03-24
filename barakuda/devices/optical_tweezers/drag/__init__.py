@@ -11,6 +11,7 @@ from .schema import (
     DragStageMeta,
     DragWindowParams,
 )
+from .active_umbrella import ActiveUmbrellaConfig, ActiveUmbrellaProtocolType, analyze_active_umbrella_run
 
 __all__ = [
     "analyze_drag_run",
@@ -24,5 +25,8 @@ __all__ = [
     "DragRunPaths",
     "DragStageMeta",
     "DragWindowParams",
+    "ActiveUmbrellaConfig",
+    "ActiveUmbrellaProtocolType",
+    "analyze_active_umbrella_run",
 ]
 

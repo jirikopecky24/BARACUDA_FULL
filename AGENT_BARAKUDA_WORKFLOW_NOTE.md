@@ -1,5 +1,16 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
+## 0. CURRENT PHASE OVERRIDE — MAIN BASELINE FREEZE
+- current priority = freeze `main` as the last clean stable baseline
+- no new features on `main`
+- no architecture rewrite
+- no scientific logic rewrite
+- preserve behavior
+- maintain English-only user-facing UI baseline
+- no broad cleanup sweep; only tiny presentation fixes if found in final sanity check
+- future development must continue only on separate feature branches
+- current task = baseline freeze confirmation and branch-only continuation
+
 ## 1. PROJECT MODE
 - BARAKUDA is deterministic scientific software
 - same input + same config + same version = same output
@@ -8,6 +19,8 @@
 
 ## 2. BRANCH MODEL
 - `main` must remain the stable branch
+- `main` is now treated as frozen baseline (clean, stable, English user-facing)
+- no new feature work should be committed directly on `main`
 - `staging/barakuda-next` is the current integration/testing branch
 - new feature/fix branches should branch from staging unless explicitly told otherwise
 - merge to `main` only after human verification

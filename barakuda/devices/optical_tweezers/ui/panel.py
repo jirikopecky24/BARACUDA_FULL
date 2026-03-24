@@ -88,9 +88,9 @@ class PipelinePanel(QWidget):
         self.btn_gate_report = QPushButton("Report\u2026")
         self.btn_gate_report.setToolTip("View detailed report of the Preview Gate results.")
         self.btn_gate_report.setEnabled(False)
-        self.btn_run = QPushButton("RUN")
+        self.btn_run = QPushButton("Run")
         self.btn_run.setToolTip("Start processing the selected files.")
-        self.btn_stop = QPushButton("STOP")
+        self.btn_stop = QPushButton("Stop")
         self.btn_stop.setToolTip("Stop the current batch processing.")
         self.btn_reset = QPushButton("Reset OT Defaults")
         self.btn_reset.setToolTip("Reset all settings to their default values.")
@@ -248,7 +248,10 @@ class PipelinePanel(QWidget):
         self._um_per_px.setSingleStep(0.000001)
         # Default scale for OT (µm/px) — requested baseline.
         self._um_per_px.setValue(0.060420)
-        self._um_per_px.setToolTip("Manual pixel scale in micrometers per pixel.")
+        self._um_per_px.setToolTip(
+            "Image scale in micrometers per pixel (um_per_px).\n"
+            "Used to convert tracked displacement from pixels to physical units."
+        )
 
         self._scale_status = QLabel("Scale: not set (px only)")
         self._scale_status.setStyleSheet("color: #666;")
@@ -328,7 +331,7 @@ class PipelinePanel(QWidget):
         _exp_bulk_row.addStretch(1)
         _exp_layout.addLayout(_exp_bulk_row)
 
-        self._btn_export_all = QPushButton("EXPORT")
+        self._btn_export_all = QPushButton("Export")
         self._btn_export_all.setToolTip(
             "Export selected artifacts to this dataset's exports/ folder."
         )
@@ -400,13 +403,19 @@ class PipelinePanel(QWidget):
         self._stage_speed.setDecimals(6)
         self._stage_speed.setSingleStep(1.0)
         self._stage_speed.setValue(0.0)
-        self._stage_speed.setToolTip("Stage speed in µm/s (used for Drag calibration).")
+        self._stage_speed.setToolTip(
+            "Stage speed in micrometers per second (µm/s) used in Drag analysis.\n"
+            "This value affects force and viscosity estimation."
+        )
 
         self._drag_axis = QComboBox()
         self._drag_axis.addItem("x", "x")
         self._drag_axis.addItem("y", "y")
         self._drag_axis.setCurrentIndex(0)
-        self._drag_axis.setToolTip("Axis along which the manual drag was performed.")
+        self._drag_axis.setToolTip(
+            "Analysis axis used for Drag evaluation (x or y).\n"
+            "Use the axis aligned with stage motion and Stage Metadata."
+        )
 
         self._viscosity = QDoubleSpinBox()
         self._viscosity.setRange(0.0, 10.0)
@@ -523,7 +532,7 @@ class PipelinePanel(QWidget):
 
         self.post_box_layout.addRow("Drift mode", self._drift_mode)
         self.post_box_layout.addRow("Drift window (old, s)", self._drift_window_s)
-        self.post_box_layout.addRow("Calibration Strategy", self._strategy_selector)
+        self.post_box_layout.addRow("Calibration strategy", self._strategy_selector)
         self.post_box_layout.addRow("Temperature (°C)", self._temperature_c)
         self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         self.post_box_layout.addRow("Drag axis", self._drag_axis)
@@ -538,6 +547,9 @@ class PipelinePanel(QWidget):
         )
         self._btn_browse_brownian = QToolButton()
         self._btn_browse_brownian.setText("Browse…")
+        self._btn_browse_brownian.setToolTip(
+            "Select the Brownian baseline folder used to import trap stiffness and optional scale metadata."
+        )
 
         def _on_browse_brownian() -> None:
             from PyQt6.QtWidgets import QFileDialog

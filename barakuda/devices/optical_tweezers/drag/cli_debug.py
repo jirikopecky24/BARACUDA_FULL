@@ -4,7 +4,11 @@ import argparse
 from pathlib import Path
 
 from .analysis import analyze_drag_run
-from .export import export_drag_summary_csv, export_drag_summary_json
+from .export import (
+    export_alignment_diagnostics_json,
+    export_drag_summary_csv,
+    export_drag_summary_json,
+)
 from .plotting import plot_drag_diagnostic
 from .schema import DragAnalysisConfig, DragWindowParams
 from .io import DragIoError
@@ -108,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     json_path = export_drag_summary_json(result, output_dir)
     csv_path = export_drag_summary_csv(result, output_dir)
+    alignment_diag_json = export_alignment_diagnostics_json(result, output_dir)
 
     # For the diagnostic plot we need the time axis and px signal again.
     from barakuda.core.trajectory_csv_io import read_trajectory_csv
@@ -141,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[DRAG] Summary JSON: {json_path}")
     print(f"[DRAG] Summary CSV:  {csv_path}")
+    if alignment_diag_json is not None:
+        print(f"[DRAG] Alignment Diagnostics JSON: {alignment_diag_json}")
     print(f"[DRAG] Diagnostic:   {png_path}")
     print(f"[DRAG] Status:       {result.analysis_status} / {result.alignment_status} / {result.physics_status}")
     if result.warnings:

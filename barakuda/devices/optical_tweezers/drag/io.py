@@ -130,6 +130,25 @@ def _load_stage_meta(stage_meta_path: Path) -> DragStageMeta:
     data = json.loads(stage_meta_path.read_text(encoding="utf-8"))
 
     try:
+        # Keep all unknown keys so active protocols (oscillatory/step) can evolve
+        # without breaking DRAG v1 stage loading.
+        protocol_params: dict[str, Any] = {}
+        known_keys = {
+            "axis",
+            "direction",
+            "actual_travel_user",
+            "actual_motion_duration_s",
+            "actual_speed_user_s",
+            "sign_stage_to_image_x",
+            "sign_stage_to_image_y",
+            "pre_delay_s",
+            "post_delay_s",
+            "stage_um_per_unit",
+        }
+        for k, v in data.items():
+            if k not in known_keys:
+                protocol_params[str(k)] = v
+
         axis_raw = str(data["axis"]).lower().strip()
         if axis_raw not in ("x", "y"):
             raise ValueError(f"axis must be 'x' or 'y', got {axis_raw!r}")
@@ -167,6 +186,7 @@ def _load_stage_meta(stage_meta_path: Path) -> DragStageMeta:
         pre_delay_s=pre_delay_s,
         post_delay_s=post_delay_s,
         stage_um_per_unit=stage_um_per_unit,
+        protocol_params=protocol_params,
     )
 
 

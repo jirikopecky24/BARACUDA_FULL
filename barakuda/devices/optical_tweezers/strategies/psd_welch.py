@@ -15,6 +15,7 @@ from barakuda.devices.optical_tweezers.pipeline.derived_newtonian import (
     compute_mean_derived
 )
 from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrategy
+from barakuda.devices.optical_tweezers.strategies.time_resampling import resample_to_uniform_timebase
 
 
 class PsdWelchStrategy(CalibrationStrategy):
@@ -40,21 +41,26 @@ class PsdWelchStrategy(CalibrationStrategy):
         
         x_um = np.asarray(traj["x_corr_um"], dtype=np.float64)
         y_um = np.asarray(traj["y_corr_um"], dtype=np.float64)
-        
-        # Valid data
-        valid = np.isfinite(x_um) & np.isfinite(y_um)
-        x_val = x_um[valid]
-        y_val = y_um[valid]
+        t_s = np.asarray(traj.get("t_s", []), dtype=np.float64)
+        if t_s.size != x_um.size:
+            return {"status": "SKIPPED", "reason": "Missing/invalid t_s for timestamp-based PSD."}, {}
+
+        try:
+            rs = resample_to_uniform_timebase(t_s=t_s, x=x_um, y=y_um)
+        except Exception as e:  # noqa: BLE001
+            return {"status": "SKIPPED", "reason": f"Timestamp resampling failed: {e}"}, {}
+        x_val = np.asarray(rs["x_uniform"], dtype=np.float64)
+        y_val = np.asarray(rs["y_uniform"], dtype=np.float64)
 
         if x_val.size < 256:
             return {"status": "SKIPPED", "reason": "Not enough valid points (<256)", "n_valid": x_val.size}, {}
 
         nperseg = 1024 if x_val.size >= 1024 else x_val.size
         noverlap = nperseg // 2
-        fps = float(camera_meta.get("fps", 1.0))
+        fs_uniform = float(rs["fs_uniform_hz"])
 
         # 2. Compute PSD
-        psd_p = PsdParams(fs_hz=fps, nperseg=nperseg, noverlap=noverlap, detrend=True, window="hann")
+        psd_p = PsdParams(fs_hz=fs_uniform, nperseg=nperseg, noverlap=noverlap, detrend=True, window="hann")
         fx, pxx = compute_psd_welch(x_val, psd_p)
         fy, pyy = compute_psd_welch(y_val, psd_p)
 
@@ -114,6 +120,17 @@ class PsdWelchStrategy(CalibrationStrategy):
                 "noverlap": noverlap,
                 "window": "hann",
                 "detrend": True
+            },
+            "time_processing": {
+                "input_time_axis_source": str(camera_meta.get("time_axis", {}).get("time_axis_source", "unknown")),
+                "resampling": {
+                    "enabled": True,
+                    "fs_uniform_hz": fs_uniform,
+                    "n_in": int(rs["n_in"]),
+                    "n_valid": int(rs["n_valid"]),
+                    "n_out": int(rs["n_out"]),
+                    "dt_stats": rs["dt_stats"],
+                },
             },
             "fit_model": "lorentzian",
             "fit_domain": "linear",

@@ -1154,6 +1154,7 @@ class BatchController:
                         pipeline = OTPipeline(strat, exporter, self._log)
                         
                         shadow_config = {
+                            "execution_mode": "batch",
                             "runtime": ot_runtime,
                             "tracking": config["tracking"],
                             "calibration": config["calibration"],
@@ -1395,6 +1396,32 @@ class BatchController:
                                 f"(source={stage_um_per_unit_src})"
                             )
 
+                            # Drag physics should prefer stage_um_per_unit from stage metadata
+                            # when available in *_stage.json (new Acquisition runs).
+                            # Otherwise keep UI/dataset-scale fallback so legacy runs
+                            # still remain analyzable.
+                            run_dir_drag = file_path.parent
+                            drag_stage_um_per_unit: float | None = stage_um_per_unit
+                            try:
+                                stage_json_path = run_dir_drag / f"{stem}_stage.json"
+                                if stage_json_path.is_file():
+                                    stage_payload = json.loads(
+                                        stage_json_path.read_text(encoding="utf-8")
+                                    )
+                                    stage_um_from_stage = stage_payload.get("stage_um_per_unit", None)
+                                    stage_um_from_stage_f: float | None = None
+                                    if stage_um_from_stage is not None:
+                                        stage_um_from_stage_f = float(stage_um_from_stage)
+                                    if (
+                                        stage_um_from_stage_f is not None
+                                        and np.isfinite(stage_um_from_stage_f)
+                                        and stage_um_from_stage_f > 0
+                                    ):
+                                        drag_stage_um_per_unit = None  # force DragIo/analysis to use stage.json
+                            except Exception:
+                                # Best-effort only: on any parse/load error keep resolved fallback.
+                                pass
+
                             _mo_raw = post_params.get("drag_manual_offset_s")
                             _manual_off: float | None = None
                             if _mo_raw is not None:
@@ -1409,7 +1436,7 @@ class BatchController:
                                 um_per_px=drag_um_per_px,
                                 bead_diameter_um=float(pp.bead_diameter_um),
                                 kappa_n_per_m=float(kappa_n_per_m),
-                                stage_um_per_unit=stage_um_per_unit,
+                                stage_um_per_unit=drag_stage_um_per_unit,
                                 onset_threshold_sigma=float(
                                     post_params.get("drag_onset_threshold_sigma", 5.0)
                                 ),
@@ -1420,7 +1447,6 @@ class BatchController:
                             )
 
                             # DRAG expects the acquisition/run folder where RAW + stage files live.
-                            run_dir_drag = file_path.parent
 
                             drag_result, drag_outputs = run_drag_from_raw(
                                 run_dir=run_dir_drag,
@@ -1441,6 +1467,10 @@ class BatchController:
                                 summary_csv = drag_outputs.get("summary_csv")
                                 if summary_csv and Path(summary_csv).is_file():
                                     shutil.copy2(summary_csv, dir_csv / Path(summary_csv).name)
+
+                                alignment_diag_json = drag_outputs.get("alignment_diagnostics_json")
+                                if alignment_diag_json and Path(alignment_diag_json).is_file():
+                                    shutil.copy2(alignment_diag_json, dir_audit / Path(alignment_diag_json).name)
 
                                 diagnostic_png = drag_outputs.get("diagnostic_png")
                                 if diagnostic_png and Path(diagnostic_png).is_file():

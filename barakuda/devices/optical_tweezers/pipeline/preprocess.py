@@ -119,7 +119,24 @@ def preprocess_trajectory(
         })
         
     elif mode == "detrend_linear":
-        t_s = np.asarray(traj.get("t_s", np.arange(n_frames)/fps))
+        t_src = traj.get("t_s")
+        exec_mode = str(params.get("execution_mode", "interactive")).strip().lower()
+        if t_src is None:
+            if exec_mode == "batch":
+                raise ValueError("Batch mode requires trajectory 't_s' from validated timestamps.")
+            t_s = np.arange(n_frames) / fps
+            audit_dict["time_axis_warning"] = "Missing t_s -> fallback to uniform fps axis in interactive mode."
+            audit_dict["time_axis_source"] = "fps_fallback"
+        else:
+            t_s = np.asarray(t_src, dtype=np.float64)
+            if t_s.shape[0] != n_frames:
+                if exec_mode == "batch":
+                    raise ValueError("Batch mode requires time axis length equal to trajectory length.")
+                t_s = np.arange(n_frames) / fps
+                audit_dict["time_axis_warning"] = "Invalid t_s length -> fallback to uniform fps axis in interactive mode."
+                audit_dict["time_axis_source"] = "fps_fallback"
+            else:
+                audit_dict["time_axis_source"] = str(params.get("time_axis_source", "trajectory_t_s"))
         
         # Fit only on valid data
         t_v = t_s[valid]

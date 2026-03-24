@@ -28,24 +28,24 @@ def is_video_file(path: Path) -> bool:
 
 def read_first_frame(path: Path) -> Tuple[np.ndarray, VideoMeta]:
     """
-    Načte první snímek z videa přes OpenCV (VideoCapture).
-    Vrací:
+    Read the first video frame using OpenCV (VideoCapture).
+    Returns:
       - frame_rgb: (H,W,3) uint8 (RGB)
       - meta: fps, size, frame_count
 
-    Chyby hází jako RuntimeError s jasnou hláškou.
+    Raises RuntimeError with a clear message on failure.
     """
     try:
         import cv2
     except Exception as e:
         raise RuntimeError(
-            "OpenCV (cv2) není dostupné, ale je potřeba pro načítání videa. "
-            "Nainstaluj opencv-python."
+            "OpenCV (cv2) is not available, but required for video loading. "
+            "Install opencv-python."
         ) from e
 
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
-        raise RuntimeError(f"Video nejde otevřít: {path}")
+        raise RuntimeError(f"Cannot open video: {path}")
 
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -56,7 +56,7 @@ def read_first_frame(path: Path) -> Tuple[np.ndarray, VideoMeta]:
     cap.release()
 
     if not ok or frame_bgr is None:
-        raise RuntimeError(f"Nelze načíst první snímek z videa: {path}")
+        raise RuntimeError(f"Failed to read the first frame from video: {path}")
 
     # BGR -> RGB
     frame_rgb = frame_bgr[:, :, ::-1].copy()

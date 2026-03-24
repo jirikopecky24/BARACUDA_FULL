@@ -212,6 +212,23 @@ def analyze_drag_run(
         manual_offset_s=config.manual_offset_s,
     )
 
+    if config.export_alignment_debug_plot:
+        # Debug-only output: keep plots opt-in (can be heavy in batch).
+        try:
+            from .plotting import plot_alignment_debug
+
+            out_png = Path(loaded.paths.run_dir) / f"{loaded.paths.basename}_alignment_debug.png"
+            plot_alignment_debug(
+                t_s=t_video,
+                signal_px=traj_px,
+                diagnostics=alignment_diag,
+                motion_start_stage_s=motion_start_stage_s,
+                motion_stop_stage_s=motion_stop_stage_s,
+                output_path=out_png,
+            )
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"alignment_debug_plot failed: {e!r}")
+
     # 4) Windows
     try:
         windows = compute_windows(
@@ -392,5 +409,6 @@ def analyze_drag_run(
         qc_flags=qc,
         warnings=warnings,
         notes=[],
+        alignment_diagnostics=(alignment_diag if config.export_alignment_diagnostics_json else None),
     )
 

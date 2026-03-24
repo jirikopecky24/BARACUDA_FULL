@@ -61,6 +61,16 @@ class OTExporter:
             # Audit headers
             f.write(f"# source_file={Path(video_path).name}\n")
             f.write(f"# um_columns={um_audit_note}\n")
+            time_axis = camera_meta.get("time_axis", {}) if isinstance(camera_meta, dict) else {}
+            f.write(f"# time_axis_source={time_axis.get('time_axis_source', 'unknown')}\n")
+            if isinstance(time_axis.get("dt_stats"), dict):
+                _dt = time_axis["dt_stats"]
+                f.write(f"# dt_median_s={_dt.get('median_s', 'nan')}\n")
+                f.write(f"# dt_min_s={_dt.get('min_s', 'nan')}\n")
+                f.write(f"# dt_max_s={_dt.get('max_s', 'nan')}\n")
+                f.write(f"# dt_std_s={_dt.get('std_s', 'nan')}\n")
+            for _warn in camera_meta.get("time_axis_warnings", []) if isinstance(camera_meta, dict) else []:
+                f.write(f"# time_axis_warning={_warn}\n")
             if has_um:
                 f.write(f"# um_per_px={camera_meta['um_per_px']}\n")
                 

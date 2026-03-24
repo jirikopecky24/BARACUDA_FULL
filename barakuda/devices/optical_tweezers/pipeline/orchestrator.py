@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 import time
 import numpy as np
 from typing import Any, Callable
+from pathlib import Path
 
 # Load
 from barakuda.core.video_reader import VideoReader
@@ -17,6 +19,111 @@ from barakuda.devices.optical_tweezers import perf as ot_perf
 
 # Strategies
 from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrategy
+
+
+class _TimeAxisError(RuntimeError):
+    """Raised when OT time-axis cannot be validated/resolved."""
+
+
+def _load_timestamp_map(video_path: str) -> dict[int, float]:
+    """Load frame->timestamp map from sidecar timestamps CSV."""
+    vp = Path(video_path)
+    candidates = [
+        vp.with_name(f"{vp.stem}_timestamps.csv"),
+        vp.with_name("video_timestamps.csv"),
+    ]
+    ts_path = next((p for p in candidates if p.is_file()), None)
+    if ts_path is None:
+        raise _TimeAxisError("Missing timestamps CSV next to input video.")
+
+    frame_to_ts: dict[int, float] = {}
+    with ts_path.open("r", encoding="utf-8", newline="") as f:
+        rdr = csv.DictReader(f)
+        if "frame" not in (rdr.fieldnames or []) or "timestamp_s" not in (rdr.fieldnames or []):
+            raise _TimeAxisError(f"Invalid timestamps CSV format: {ts_path.name} (need frame,timestamp_s)")
+        for row in rdr:
+            if not row:
+                continue
+            try:
+                fi = int(float(row.get("frame", "nan")))
+                ts = float(row.get("timestamp_s", "nan"))
+            except Exception:
+                continue
+            if not np.isfinite(ts):
+                continue
+            if fi in frame_to_ts:
+                raise _TimeAxisError(f"Duplicate frame in timestamps CSV: frame={fi}")
+            frame_to_ts[fi] = ts
+    if len(frame_to_ts) < 2:
+        raise _TimeAxisError("Timestamps CSV has too few valid rows (<2).")
+    return frame_to_ts
+
+
+def _resolve_time_axis(
+    *,
+    video_path: str,
+    s: int,
+    e: int,
+    fps: float,
+    execution_mode: str,
+) -> tuple[list[float], dict[str, Any], list[str]]:
+    """Resolve per-frame time axis with batch/interative policy."""
+    warnings: list[str] = []
+    mode = str(execution_mode).strip().lower()
+    strict = mode == "batch"
+    frame_ids = list(range(int(s), int(e) + 1))
+
+    def _fps_axis() -> list[float]:
+        if fps <= 0:
+            raise _TimeAxisError("FPS fallback unavailable (fps<=0).")
+        return [fi / float(fps) for fi in frame_ids]
+
+    try:
+        ts_map = _load_timestamp_map(video_path)
+        t_s = [float(ts_map[fi]) for fi in frame_ids]
+        dt = np.diff(np.asarray(t_s, dtype=np.float64))
+        if dt.size == 0:
+            raise _TimeAxisError("Resolved time axis has too few points.")
+        if not np.all(np.isfinite(dt)):
+            raise _TimeAxisError("Resolved time axis contains non-finite dt.")
+        if np.any(dt <= 0):
+            raise _TimeAxisError("Resolved time axis is not strictly increasing.")
+        info = {
+            "time_axis_source": "timestamps_csv",
+            "execution_mode": mode,
+            "dt_stats": {
+                "min_s": float(np.min(dt)),
+                "max_s": float(np.max(dt)),
+                "median_s": float(np.median(dt)),
+                "mean_s": float(np.mean(dt)),
+                "std_s": float(np.std(dt)),
+            },
+            "fallback_used": False,
+        }
+        return t_s, info, warnings
+    except Exception as ex:  # noqa: BLE001
+        if strict:
+            raise _TimeAxisError(
+                "Batch mode requires valid timestamps; cannot continue. "
+                f"Reason: {ex}"
+            ) from ex
+        warnings.append(f"timestamps unavailable/invalid -> fps fallback ({ex})")
+        t_s = _fps_axis()
+        dt = np.diff(np.asarray(t_s, dtype=np.float64))
+        info = {
+            "time_axis_source": "fps_fallback",
+            "execution_mode": mode,
+            "dt_stats": {
+                "min_s": float(np.min(dt)) if dt.size else None,
+                "max_s": float(np.max(dt)) if dt.size else None,
+                "median_s": float(np.median(dt)) if dt.size else None,
+                "mean_s": float(np.mean(dt)) if dt.size else None,
+                "std_s": float(np.std(dt)) if dt.size else None,
+            },
+            "fallback_used": True,
+            "fallback_reason": str(ex),
+        }
+        return t_s, info, warnings
 
 
 class OTPipeline:
@@ -78,6 +185,7 @@ class OTPipeline:
         sc = run_config.get("strategy_params", {})
         cal_c = run_config.get("calibration", {})
         runtime = run_config.get("runtime", {})
+        execution_mode = str(run_config.get("execution_mode", "interactive"))
         if runtime and "resolved_device" in runtime and "resolved_profile" in runtime:
             resolved_runtime = dict(runtime)
         else:
@@ -136,6 +244,7 @@ class OTPipeline:
             "timestamp_end_iso": str(t_end) if t_end is not None else None,
             "binning": getattr(reader.meta, "binning", None),
         }
+        time_axis_warnings: list[str] = []
         
         # Check if um_per_px is available
         um_per_px = cal_c.get("um_per_px")
@@ -163,6 +272,17 @@ class OTPipeline:
         last_heartbeat = time.monotonic()
         locked_invert = bool(tc.get("invert", True))
         locked_det = None
+        t_axis, t_axis_info, t_axis_warnings = _resolve_time_axis(
+            video_path=video_path,
+            s=s,
+            e=e,
+            fps=fps,
+            execution_mode=execution_mode,
+        )
+        time_axis_warnings.extend(t_axis_warnings)
+        camera_meta["time_axis"] = t_axis_info
+        if time_axis_warnings:
+            camera_meta["time_axis_warnings"] = list(time_axis_warnings)
         
         try:
             for fi in range(s, e + 1):
@@ -203,7 +323,7 @@ class OTPipeline:
                         annulus_profile_smooth=tc.get("annulus_profile_smooth", 3),
                     )
                 
-                t_s.append(fi / fps if fps > 0 else 0.0)
+                t_s.append(float(t_axis[fi - s]))
                 x_px.append(det.x_px)
                 y_px.append(det.y_px)
                 quality.append(det.quality)
@@ -245,7 +365,10 @@ class OTPipeline:
             raise InterruptedError("OT shadow stopped before preprocess.")
         _emit_progress(75, "preprocess")
         drift_mode = pc.get("drift_mode", "none")
-        traj_pp, drift_audit = preprocess_trajectory(traj_raw, fps, drift_mode, pc)
+        pp_with_time = dict(pc)
+        pp_with_time["execution_mode"] = execution_mode
+        pp_with_time["time_axis_source"] = str(t_axis_info.get("time_axis_source", "unknown"))
+        traj_pp, drift_audit = preprocess_trajectory(traj_raw, fps, drift_mode, pp_with_time)
             
         # 4. QC
         self.log_fn("  - QC...")
@@ -265,6 +388,12 @@ class OTPipeline:
         # In a real app we'd strictly namespace, but here we pass merged run_config for simplicity, 
         # or the specific sc dictionary. We'll pass sc.
         result_dict, artifacts_dict = self.strategy.compute(traj_pp, camera_meta, sc)
+        if time_axis_warnings:
+            result_dict.setdefault("qc_warnings", [])
+            try:
+                result_dict["qc_warnings"].extend(time_axis_warnings)
+            except Exception:
+                pass
         
         # 6. Export
         self.log_fn("  - Exporting...")

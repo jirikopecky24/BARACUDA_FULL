@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .schema import DragAnalysisResult, DragQCFlags, iter_qc_flags
+from .schema import DragAnalysisResult, DragQCFlags, iter_qc_flags, AlignmentDiagnostics
 
 
 def _qc_flags_dict(flags: DragQCFlags) -> dict[str, bool]:
@@ -50,9 +50,79 @@ def drag_result_to_dict(result: DragAnalysisResult) -> dict[str, Any]:
         "warnings": list(result.warnings),
         "notes": list(result.notes),
     }
+
+    if result.alignment_diagnostics is not None:
+        diag = result.alignment_diagnostics
+        d.update(
+            {
+                "align_baseline_end_s": diag.baseline_end_s,
+                "align_baseline_median": diag.baseline_median,
+                "align_baseline_mad": diag.baseline_mad,
+                "align_baseline_sigma": diag.baseline_sigma,
+                "align_onset_threshold_sigma": diag.onset_threshold_sigma,
+                "align_onset_threshold_abs": diag.onset_threshold_abs,
+                "align_onset_min_hold_s": diag.onset_min_hold_s,
+                "align_n_baseline_samples": diag.n_baseline_samples,
+                "align_n_total_samples": diag.n_total_samples,
+                "align_n_frames_outside_baseline": diag.n_frames_outside_baseline,
+                "align_failure_reason": diag.failure_reason,
+                "align_message": diag.message,
+                "align_n_candidates": len(diag.candidate_onset_times_s),
+            }
+        )
+    else:
+        d.update(
+            {
+                "align_baseline_end_s": None,
+                "align_baseline_median": None,
+                "align_baseline_mad": None,
+                "align_baseline_sigma": None,
+                "align_onset_threshold_sigma": None,
+                "align_onset_threshold_abs": None,
+                "align_onset_min_hold_s": None,
+                "align_n_baseline_samples": None,
+                "align_n_total_samples": None,
+                "align_n_frames_outside_baseline": None,
+                "align_failure_reason": None,
+                "align_message": None,
+                "align_n_candidates": None,
+            }
+        )
     for name, value in iter_qc_flags(result.qc_flags):
         d[f"qc_{name}"] = value
     return d
+
+
+def _alignment_diagnostics_to_payload(diag: AlignmentDiagnostics) -> dict[str, Any]:
+    return {
+        "baseline_end_s": diag.baseline_end_s,
+        "baseline_median": diag.baseline_median,
+        "baseline_mad": diag.baseline_mad,
+        "baseline_sigma": diag.baseline_sigma,
+        "onset_threshold_sigma": diag.onset_threshold_sigma,
+        "onset_threshold_abs": diag.onset_threshold_abs,
+        "onset_min_hold_s": diag.onset_min_hold_s,
+        "n_baseline_samples": diag.n_baseline_samples,
+        "n_total_samples": diag.n_total_samples,
+        "n_frames_outside_baseline": diag.n_frames_outside_baseline,
+        "candidate_onset_times_s": list(diag.candidate_onset_times_s),
+        "candidate_durations_s": list(diag.candidate_durations_s),
+        "failure_reason": diag.failure_reason,
+        "message": diag.message,
+    }
+
+
+def export_alignment_diagnostics_json(result: DragAnalysisResult, output_dir: Path) -> Path | None:
+    """Export full alignment diagnostics (can include candidate onset lists)."""
+    if result.alignment_diagnostics is None:
+        return None
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{result.basename}_alignment_diagnostics.json"
+    payload = _alignment_diagnostics_to_payload(result.alignment_diagnostics)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def export_drag_summary_json(result: DragAnalysisResult, output_dir: Path) -> Path:

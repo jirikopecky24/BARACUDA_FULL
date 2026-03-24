@@ -93,11 +93,13 @@ class ShellMainWindow(QMainWindow):
         ml.setSpacing(8)
 
         self.device_combo = QComboBox()
+        self.device_combo.setToolTip("Select the active BARAKUDA module.")
         for d in self._devices:
             self.device_combo.addItem(d.display_name, d.device_id)
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
 
         self.method_combo = QComboBox()
+        self.method_combo.setToolTip("Select the analysis method available for the current module.")
         self.method_combo.setVisible(False)
 
         self.method_label = QLabel("Method:")
