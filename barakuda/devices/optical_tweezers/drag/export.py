@@ -17,6 +17,19 @@ def drag_result_to_dict(result: DragAnalysisResult) -> dict[str, Any]:
     d: dict[str, Any] = {
         "basename": result.basename,
         "axis": result.axis,
+        "protocol_type": result.protocol_type,
+        "analysis_axis": result.analysis_axis,
+        "stage_axis": result.stage_axis,
+        # Provenance / auditability
+        "um_per_px_source": result.um_per_px_source,
+        "stage_um_per_unit_source": result.stage_um_per_unit_source,
+        "kappa_source": result.kappa_source,
+        "selected_calibration_path": result.selected_calibration_path,
+        "selected_stage_meta_path": result.selected_stage_meta_path,
+        "selected_stage_trace_path": result.selected_stage_trace_path,
+        "selected_timestamps_path": result.selected_timestamps_path,
+        "used_fallbacks": result.used_fallbacks,
+        "timing_source": result.timing_source,
         "motion_start_stage_s": result.motion_start_stage_s,
         "motion_stop_stage_s": result.motion_stop_stage_s,
         "motion_start_video_s_detected": result.motion_start_video_s_detected,
@@ -139,10 +152,15 @@ def export_drag_summary_csv(result: DragAnalysisResult, output_dir: Path) -> Pat
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_drag_summary.csv"
     payload = drag_result_to_dict(result)
+    # Convert nested structures (e.g. used_fallbacks) into JSON strings for stable CSV cells.
+    flat = {
+        k: (json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v)
+        for k, v in payload.items()
+    }
     fieldnames = list(payload.keys())
     with path.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
-        w.writerow(payload)
+        w.writerow(flat)
     return path
 

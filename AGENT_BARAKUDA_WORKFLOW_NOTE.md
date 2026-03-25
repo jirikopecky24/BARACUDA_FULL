@@ -1,15 +1,30 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — MAIN BASELINE FREEZE
-- current priority = freeze `main` as the last clean stable baseline
-- no new features on `main`
+## 0. CURRENT PHASE OVERRIDE — PHASED HARDENING (AUDIT-DRIVEN)
+- current priority = phased hardening based on the propagation/provenance audit results
+- preserve stabilized `main` as clean frozen baseline
+- no new feature work on `main`
+- do all new work only on dedicated feature branches
 - no architecture rewrite
+- one risk class at a time (dangerous-success first)
+- complete each phase fully, then STOP pending explicit approval
+- commit after every phase (no combined multi-phase commits)
 - no scientific logic rewrite
-- preserve behavior
-- maintain English-only user-facing UI baseline
-- no broad cleanup sweep; only tiny presentation fixes if found in final sanity check
-- future development must continue only on separate feature branches
-- current task = baseline freeze confirmation and branch-only continuation
+- preserve physics behaviors explicitly listed in the user audit request:
+  - preserve constant_velocity behavior
+  - preserve stage-aware Drag direction
+  - preserve Brownian calibration logic
+  - preserve shared tracking vs method-specific analysis separation
+- apply only minimal safe fixes if (and only if) the audit reveals a real propagation bug:
+  - wrong field name causing propagation break
+  - UI value not serialized into metadata
+  - saved metadata not read back by analysis
+  - analysis using a default instead of stored metadata
+  - incorrect axis/sign mapping due to wiring bug
+- do not change scientific logic outside the minimal propagation fixes needed for correctness
+- maintain English-only user-facing UI
+- keep changes small, explicit, and reviewable
+- current task = phased hardening with strict commit/stop discipline (audit-driven)
 
 ## 1. PROJECT MODE
 - BARAKUDA is deterministic scientific software
@@ -34,6 +49,11 @@
 - no broad refactors
 - no "also changed"
 - if another file is needed -> STOP and report it
+
+## 3.0 AUDIT/HARDENING MODE
+- During each hardening phase: prefer fail-loud for the specific risk class.
+- Do not proceed to the next phase without explicit approval.
+- Any edits must be minimal, isolated to the specific propagation mismatch for that phase, and accompanied by targeted verification.
 
 ## 3.1. AUTHORITATIVE RUNTIME ENVIRONMENT
 - The canonical BARAKUDA Python environment is `C:/Users/jirik/anaconda3/envs/barakuda/python.exe`
