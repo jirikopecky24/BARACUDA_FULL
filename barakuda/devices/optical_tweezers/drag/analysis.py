@@ -99,6 +99,14 @@ def analyze_drag_run(
     loaded: DragRunLoaded = load_drag_run(Path(run_dir), trajectory_path=trajectory_path)
 
     axis = config.analysis_axis
+    stage_axis = loaded.stage_meta.axis
+    if stage_axis != axis:
+        raise ValueError(
+            "DRAG axis mismatch: configured analysis_axis="
+            f"{axis!r} but loaded stage metadata axis={stage_axis!r}. "
+            "Stage motion axis must match the analysis axis to preserve sign conventions "
+            "and compute offsets/physics from the intended displacement component."
+        )
     um_per_px = config.um_per_px
 
     # 1) Extract trajectory along requested axis
