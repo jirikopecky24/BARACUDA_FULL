@@ -53,6 +53,7 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
         raise DragIoError(f"Run folder does not exist or is not a directory: {run_dir}")
 
     basename, raw_path = _require_single_raw(run_dir)
+    used_fallbacks: dict[str, str] = {}
 
     # --- video meta / timestamps ---
     meta_path = run_dir / f"{basename}_meta.json"
@@ -61,6 +62,7 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
         fallback = run_dir / "video_meta.json"
         if fallback.is_file():
             meta_path = fallback
+            used_fallbacks["meta_path"] = "video_meta.json"
         else:
             raise DragIoError("Missing required file for DRAG run: video_meta.json")
 
@@ -70,6 +72,7 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
         fallback = run_dir / "video_timestamps.csv"
         if fallback.is_file():
             timestamps_path = fallback
+            used_fallbacks["timestamps_path"] = "video_timestamps.csv"
         else:
             raise DragIoError("Missing required file for DRAG run: video_timestamps.csv")
 
@@ -78,41 +81,89 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
     if preferred_stage_meta.is_file():
         stage_meta_path = preferred_stage_meta
     else:
-        # Fallback: any ot_drag*.json or *stage*.json
-        candidates = sorted(run_dir.glob("ot_drag*.json")) or sorted(run_dir.glob("*stage*.json"))
+        # Fallback: any ot_drag*.json or *stage*.json (but require uniqueness)
+        candidates_a = sorted(run_dir.glob("ot_drag*.json"))
+        candidates_b = sorted(run_dir.glob("*stage*.json"))
+        candidates = sorted({*candidates_a, *candidates_b})
         if not candidates:
-            raise DragIoError("Missing required file for DRAG run: stage metadata JSON (e.g. ot_drag*.json)")
+            raise DragIoError(
+                "Missing required file for DRAG run: stage metadata JSON (e.g. ot_drag*.json)"
+            )
+        if len(candidates) != 1:
+            names = ", ".join(p.name for p in candidates)
+            raise DragIoError(
+                "Ambiguous DRAG run stage metadata: canonical "
+                f"{preferred_stage_meta.name!r} is missing but multiple fallback candidates exist: {names}"
+            )
         stage_meta_path = candidates[0]
+        if stage_meta_path in candidates_a:
+            used_fallbacks["stage_meta_path"] = "ot_drag*.json fallback"
+        else:
+            used_fallbacks["stage_meta_path"] = "*stage*.json fallback"
 
     preferred_stage_trace = run_dir / f"{basename}_stage_trace.csv"
     stage_trace_path = preferred_stage_trace if preferred_stage_trace.is_file() else None
     if stage_trace_path is None:
         # Try to find a trace file matching the stage meta stem with csv/txt
         stem = stage_meta_path.stem
+        stem_candidates: list[Path] = []
         for ext in (".csv", ".txt"):
             cand = run_dir / f"{stem}{ext}"
             if cand.is_file():
-                stage_trace_path = cand
-                break
+                stem_candidates.append(cand)
+
+        if len(stem_candidates) == 1:
+            stage_trace_path = stem_candidates[0]
+            used_fallbacks["stage_trace_path"] = "stage_meta stem csv/txt fallback"
+        elif len(stem_candidates) > 1:
+            names = ", ".join(p.name for p in stem_candidates)
+            raise DragIoError(
+                "Ambiguous DRAG run stage trace: canonical "
+                f"{preferred_stage_trace.name!r} is missing and multiple trace files match "
+                f"stage meta stem {stem!r}: {names}"
+            )
+
     if stage_trace_path is None:
-        # Last resort: any ot_drag*.csv/txt
-        candidates = (
-            sorted(run_dir.glob("ot_drag*.csv"))
-            or sorted(run_dir.glob("ot_drag*.txt"))
-        )
+        # Last resort: any ot_drag*.csv/txt (but require uniqueness)
+        candidates_csv = sorted(run_dir.glob("ot_drag*.csv"))
+        candidates_txt = sorted(run_dir.glob("ot_drag*.txt"))
+        candidates = sorted({*candidates_csv, *candidates_txt})
         if not candidates:
-            raise DragIoError("Missing required file for DRAG run: stage trace CSV/TXT (e.g. ot_drag*.txt)")
+            raise DragIoError(
+                "Missing required file for DRAG run: stage trace CSV/TXT (e.g. ot_drag*.txt)"
+            )
+        if len(candidates) != 1:
+            names = ", ".join(p.name for p in candidates)
+            raise DragIoError(
+                "Ambiguous DRAG run stage trace: canonical "
+                f"{preferred_stage_trace.name!r} is missing but multiple fallback candidates exist: {names}"
+            )
         stage_trace_path = candidates[0]
+        used_fallbacks["stage_trace_path"] = "ot_drag*.csv/txt fallback"
 
     resolved_traj: Path | None = None
     if trajectory_path is not None:
         resolved_traj = Path(trajectory_path).resolve()
         if not resolved_traj.is_file():
             raise DragIoError(f"Provided trajectory CSV does not exist: {resolved_traj}")
+        used_fallbacks["trajectory_path"] = "provided"
     else:
         candidate = run_dir / f"{basename}_trajectory.csv"
         if candidate.is_file():
             resolved_traj = candidate
+        else:
+            candidates = sorted(run_dir.glob("*_trajectory.csv"))
+            if len(candidates) == 1:
+                resolved_traj = candidates[0]
+                used_fallbacks["trajectory_path"] = "non-canonical *_trajectory.csv fallback"
+            else:
+                if not candidates:
+                    raise DragIoError("Missing required file for DRAG run: trajectory CSV (_trajectory.csv)")
+                names = ", ".join(p.name for p in candidates)
+                raise DragIoError(
+                    "Ambiguous DRAG run trajectory CSV: canonical "
+                    f"{candidate.name!r} is missing but multiple fallback candidates exist: {names}"
+                )
 
     return DragRunPaths(
         run_dir=run_dir,
@@ -123,6 +174,7 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
         stage_meta_path=stage_meta_path,
         stage_trace_path=stage_trace_path,
         trajectory_path=resolved_traj,
+        used_fallbacks=used_fallbacks,
     )
 
 

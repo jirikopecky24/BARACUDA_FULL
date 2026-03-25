@@ -28,6 +28,10 @@ class DragRunPaths:
     stage_meta_path: Path
     stage_trace_path: Path
     trajectory_path: Path | None = None
+    # Provenance hint for later export: which sidecars were resolved via a fallback
+    # instead of the preferred canonical filename.
+    # Keys: meta_path, timestamps_path, stage_meta_path, stage_trace_path, trajectory_path
+    used_fallbacks: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
