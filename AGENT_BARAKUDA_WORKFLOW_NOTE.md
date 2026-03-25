@@ -1,30 +1,14 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — PHASED HARDENING (AUDIT-DRIVEN)
-- current priority = phased hardening based on the propagation/provenance audit results
-- preserve stabilized `main` as clean frozen baseline
-- no new feature work on `main`
-- do all new work only on dedicated feature branches
-- no architecture rewrite
-- one risk class at a time (dangerous-success first)
-- complete each phase fully, then STOP pending explicit approval
-- commit after every phase (no combined multi-phase commits)
-- no scientific logic rewrite
-- preserve physics behaviors explicitly listed in the user audit request:
-  - preserve constant_velocity behavior
-  - preserve stage-aware Drag direction
-  - preserve Brownian calibration logic
-  - preserve shared tracking vs method-specific analysis separation
-- apply only minimal safe fixes if (and only if) the audit reveals a real propagation bug:
-  - wrong field name causing propagation break
-  - UI value not serialized into metadata
-  - saved metadata not read back by analysis
-  - analysis using a default instead of stored metadata
-  - incorrect axis/sign mapping due to wiring bug
-- do not change scientific logic outside the minimal propagation fixes needed for correctness
-- maintain English-only user-facing UI
-- keep changes small, explicit, and reviewable
-- current task = phased hardening with strict commit/stop discipline (audit-driven)
+## 0. CURRENT PHASE OVERRIDE — PHASED TRUSTWORTHINESS & VALIDATION (MISSION-DRIVEN)
+- current priority = phased trustworthiness and validation program (audit-first, then minimal hardening)
+- one phase at a time (no parallel phase work)
+- stop after each phase and wait for explicit approval before continuing
+- no proceeding without explicit approval
+- no broad architecture rewrite
+- preserve scientific behavior unless a narrow fix is clearly justified for correctness/safety of the audited path
+- keep changes minimal, explicit, reviewable, and reversible
+- commit after each phase only if any code/doc note was minimally updated in that phase
 
 ## 1. PROJECT MODE
 - BARAKUDA is deterministic scientific software
