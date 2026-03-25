@@ -387,6 +387,8 @@ def analyze_drag_run(
     return DragAnalysisResult(
         basename=loaded.paths.basename,
         axis=axis,
+        analysis_axis=axis,
+        stage_axis=stage_axis,
         alignment_offset_s=alignment.alignment_offset_s,
         motion_start_stage_s=alignment.motion_start_stage_s,
         motion_stop_stage_s=alignment.motion_stop_stage_s,
@@ -418,5 +420,16 @@ def analyze_drag_run(
         warnings=warnings,
         notes=[],
         alignment_diagnostics=(alignment_diag if config.export_alignment_diagnostics_json else None),
+        # Provenance/auditability (paths resolved by DRAG loader + scale origins from pipeline).
+        protocol_type="constant_velocity",
+        um_per_px_source=config.um_per_px_source,
+        stage_um_per_unit_source=config.stage_um_per_unit_source,
+        kappa_source=config.kappa_source,
+        selected_calibration_path=config.selected_calibration_path,
+        selected_stage_meta_path=str(loaded.paths.stage_meta_path),
+        selected_stage_trace_path=str(loaded.paths.stage_trace_path),
+        selected_timestamps_path=str(loaded.paths.timestamps_path),
+        used_fallbacks=dict(loaded.paths.used_fallbacks),
+        timing_source=f"timestamps_csv:{loaded.paths.timestamps_path.name}",
     )
 

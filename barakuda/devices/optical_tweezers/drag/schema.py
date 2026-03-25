@@ -163,6 +163,11 @@ class DragAnalysisConfig:
     # Debug/export knobs. Keep plots opt-in to avoid overhead.
     export_alignment_diagnostics_json: bool = True
     export_alignment_debug_plot: bool = False
+    # Provenance/auditability (filled by pipeline; do not affect calculations).
+    um_per_px_source: str | None = None
+    stage_um_per_unit_source: str | None = None
+    kappa_source: str | None = None
+    selected_calibration_path: str | None = None
 
 
 @dataclass
@@ -231,6 +236,20 @@ class DragAnalysisResult:
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     alignment_diagnostics: AlignmentDiagnostics | None = None
+
+    # Provenance/auditability fields for exported summaries.
+    protocol_type: str = "constant_velocity"
+    analysis_axis: Axis = "x"
+    stage_axis: Axis = "x"
+    um_per_px_source: str | None = None
+    stage_um_per_unit_source: str | None = None
+    kappa_source: str | None = None
+    selected_calibration_path: str | None = None
+    selected_stage_meta_path: str | None = None
+    selected_stage_trace_path: str | None = None
+    selected_timestamps_path: str | None = None
+    used_fallbacks: dict[str, str] = field(default_factory=dict)
+    timing_source: str | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:

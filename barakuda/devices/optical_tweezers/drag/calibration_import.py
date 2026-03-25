@@ -14,6 +14,8 @@ class BrownianCalibration:
     kappa_x_n_per_m: float | None
     kappa_y_n_per_m: float | None
     um_per_px: float | None
+    # Selected calibration file path (for provenance).
+    calibration_path: str | None = None
 
 
 def _to_float_or_none(value: Any) -> float | None:
@@ -80,5 +82,6 @@ def load_brownian_calibration_from_folder(folder: Path | str) -> BrownianCalibra
         kappa_x_n_per_m=kappa_x,
         kappa_y_n_per_m=kappa_y,
         um_per_px=um_per_px,
+        calibration_path=str(cal_path),
     )
 

@@ -46,6 +46,16 @@ from barakuda.devices.optical_tweezers.drag.pipeline import (
     run_drag_from_raw,
 )
 from barakuda.devices.optical_tweezers.drag.alignment import DragAlignmentError
+from barakuda.devices.optical_tweezers.drag.active_umbrella import (
+    ActiveUmbrellaConfig,
+    analyze_active_umbrella_run,
+)
+from barakuda.devices.optical_tweezers.drag.active_umbrella.protocols.oscillatory import (
+    OscillatoryProtocolConfig,
+    export_oscillatory_summary_json,
+    export_oscillatory_summary_csv,
+    plot_oscillatory_diagnostic,
+)
 
 
 
@@ -922,6 +932,13 @@ class BatchController:
             try:
                 reader = VideoReader(file_path)
                 fps = float(reader.meta.fps)
+                
+                # UI→runtime propagation: respect FPS Override (0=auto) when enabled.
+                # This affects time axis `t_s` written into the canonical trajectory CSV
+                # and is therefore an input to PSD/drag timing-based physics.
+                fps_override_ui = float(tracking_params.get("fps_override", 0.0))
+                if fps_override_ui > 0:
+                    fps = fps_override_ui
                 fc = int(reader.meta.frame_count)
                 _reader_w = int(getattr(reader.meta, "width", 0)) or None
                 _reader_h = int(getattr(reader.meta, "height", 0)) or None
@@ -1382,6 +1399,11 @@ class BatchController:
 
                             # Prefer Brownian um_per_px if available, otherwise keep the resolved um_per_px.
                             drag_um_per_px = brownian_cal.um_per_px if brownian_cal.um_per_px is not None else um_per_px
+                            drag_um_per_px_source = (
+                                "brownian_calibration.audit/run.json.config.calibration.um_per_px"
+                                if brownian_cal.um_per_px is not None
+                                else um_src
+                            )
 
                             from barakuda.devices.optical_tweezers.drag.schema import DragAnalysisConfig
 
@@ -1402,12 +1424,20 @@ class BatchController:
                             # still remain analyzable.
                             run_dir_drag = file_path.parent
                             drag_stage_um_per_unit: float | None = stage_um_per_unit
+                            stage_protocol_type = "constant_velocity"
+                            stage_payload: dict[str, Any] = {}
+                            stage_um_per_unit_for_drag_source = stage_um_per_unit_src
                             try:
                                 stage_json_path = run_dir_drag / f"{stem}_stage.json"
                                 if stage_json_path.is_file():
                                     stage_payload = json.loads(
                                         stage_json_path.read_text(encoding="utf-8")
                                     )
+                                    stage_protocol_type = str(
+                                        stage_payload.get("protocol_type")
+                                        or stage_payload.get("mode")
+                                        or "constant_velocity"
+                                    ).strip().lower()
                                     stage_um_from_stage = stage_payload.get("stage_um_per_unit", None)
                                     stage_um_from_stage_f: float | None = None
                                     if stage_um_from_stage is not None:
@@ -1418,6 +1448,7 @@ class BatchController:
                                         and stage_um_from_stage_f > 0
                                     ):
                                         drag_stage_um_per_unit = None  # force DragIo/analysis to use stage.json
+                                        stage_um_per_unit_for_drag_source = "stage_json"
                             except Exception:
                                 # Best-effort only: on any parse/load error keep resolved fallback.
                                 pass
@@ -1444,6 +1475,12 @@ class BatchController:
                                     post_params.get("drag_onset_min_hold_s", 0.3)
                                 ),
                                 manual_offset_s=_manual_off,
+                                um_per_px_source=drag_um_per_px_source,
+                                stage_um_per_unit_source=stage_um_per_unit_for_drag_source,
+                                kappa_source=(
+                                    f"brownian_calibration.kappa_{'x' if axis == 'x' else 'y'}_n_per_m"
+                                ),
+                                selected_calibration_path=brownian_cal.calibration_path,
                             )
 
                             # DRAG expects the acquisition/run folder where RAW + stage files live.
@@ -1453,6 +1490,61 @@ class BatchController:
                                 drag_config=drag_cfg,
                                 tracking_config=config["tracking"],
                             )
+
+                            if "oscillatory" in stage_protocol_type:
+                                osc_cfg = OscillatoryProtocolConfig(
+                                    frequency_hz=(
+                                        float(stage_payload.get("commanded_frequency_hz"))
+                                        if stage_payload.get("commanded_frequency_hz") is not None
+                                        else None
+                                    ),
+                                    drive_amplitude_um=(
+                                        float(stage_payload.get("commanded_amplitude_um"))
+                                        if stage_payload.get("commanded_amplitude_um") is not None
+                                        else None
+                                    ),
+                                    require_min_cycles_used=3,
+                                )
+                                umbrella_cfg = ActiveUmbrellaConfig(
+                                    protocol_type="oscillatory",
+                                    drag_config=drag_cfg,
+                                    oscillatory=osc_cfg,
+                                )
+                                osc_result = analyze_active_umbrella_run(
+                                    run_dir_drag,
+                                    umbrella_cfg,
+                                    trajectory_path=drag_outputs.get("trajectory"),
+                                )
+                                osc_summary_json = export_oscillatory_summary_json(osc_result, run_dir_drag)
+                                osc_summary_csv = export_oscillatory_summary_csv(osc_result, run_dir_drag)
+                                try:
+                                    traj_for_osc = drag_outputs.get("trajectory")
+                                    if not traj_for_osc:
+                                        raise ValueError("Missing trajectory for oscillatory diagnostics.")
+                                    traj_tbl = read_trajectory_csv(Path(traj_for_osc))
+                                    axis_col = f"{osc_result.axis}_um"
+                                    if axis_col not in traj_tbl.header:
+                                        axis_col = f"{osc_result.axis}_px"
+                                    t_arr = np.asarray(
+                                        [float(r.get("t_s", "nan")) for r in traj_tbl.rows],
+                                        dtype=np.float64,
+                                    )
+                                    y_arr = np.asarray(
+                                        [float(r.get(axis_col, "nan")) for r in traj_tbl.rows],
+                                        dtype=np.float64,
+                                    )
+                                    m = np.isfinite(t_arr) & np.isfinite(y_arr)
+                                    osc_diag_png = plot_oscillatory_diagnostic(
+                                        t_video_s=t_arr[m],
+                                        response_um=y_arr[m],
+                                        result=osc_result,
+                                        output_dir=run_dir_drag,
+                                    )
+                                except Exception:
+                                    osc_diag_png = None
+                                drag_outputs["oscillatory_summary_json"] = osc_summary_json
+                                drag_outputs["oscillatory_summary_csv"] = osc_summary_csv
+                                drag_outputs["oscillatory_diagnostic_png"] = osc_diag_png
 
                             # Mirror key DRAG artifacts into analysis directories for reports.
                             try:
@@ -1475,6 +1567,18 @@ class BatchController:
                                 diagnostic_png = drag_outputs.get("diagnostic_png")
                                 if diagnostic_png and Path(diagnostic_png).is_file():
                                     shutil.copy2(diagnostic_png, dir_results / Path(diagnostic_png).name)
+
+                                osc_summary_json = drag_outputs.get("oscillatory_summary_json")
+                                if osc_summary_json and Path(osc_summary_json).is_file():
+                                    shutil.copy2(osc_summary_json, dir_audit / Path(osc_summary_json).name)
+
+                                osc_summary_csv = drag_outputs.get("oscillatory_summary_csv")
+                                if osc_summary_csv and Path(osc_summary_csv).is_file():
+                                    shutil.copy2(osc_summary_csv, dir_csv / Path(osc_summary_csv).name)
+
+                                osc_diag_png = drag_outputs.get("oscillatory_diagnostic_png")
+                                if osc_diag_png and Path(osc_diag_png).is_file():
+                                    shutil.copy2(osc_diag_png, dir_results / Path(osc_diag_png).name)
                             except Exception as copy_err:  # noqa: BLE001
                                 self._log(f"WARN: DRAG artifacts copy failed ({file_path.name}): {copy_err!r}")
 

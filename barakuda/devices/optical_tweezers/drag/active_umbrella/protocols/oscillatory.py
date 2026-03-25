@@ -3,8 +3,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from typing import Literal
+from pathlib import Path
+import json
+import csv
 
 import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
 
 from ...analysis import analyze_drag_run
 from ...io import load_drag_run
@@ -66,21 +73,40 @@ class OscillatoryAnalysisResult:
     # Cycle stats
     n_cycles_total_available: int
     n_cycles_used: int
+    number_of_cycles_detected: int
+    number_of_cycles_used: int
 
     # Alignment context (from DRAG v1 foundation)
     motion_start_stage_s: float
     motion_start_video_s_detected: float
     alignment_offset_s: float
 
+    # Provenance/auditability (copied from DRAG v1 foundation).
+    stage_axis: Axis
+    um_per_px_source: str | None
+    stage_um_per_unit_source: str | None
+    kappa_source: str | None
+    selected_calibration_path: str | None
+    selected_stage_meta_path: str | None
+    selected_stage_trace_path: str | None
+    selected_timestamps_path: str | None
+    used_fallbacks: dict[str, str] = field(default_factory=dict)
+    timing_source: str | None = None
+
     # Per-cycle results (kept with defaults for backward compatibility)
     cycle_phases_rad: list[float] = field(default_factory=list)
     cycle_amplitudes_um: list[float] = field(default_factory=list)
+    cycle_start_times_s: list[float] = field(default_factory=list)
+    cycle_end_times_s: list[float] = field(default_factory=list)
 
     # Rheology target placeholder (for future G' / G'')
     # Here we only package complex response from amplitude ratio and phase lag.
     rheology_target: dict[str, float] = field(default_factory=dict)
 
     analysis_status: str = "ok"
+    physics_status: str = "response_only_not_full_rheology"
+    averaging_summary: dict[str, float | int] = field(default_factory=dict)
+    qc_flags: dict[str, bool] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -105,6 +131,18 @@ def analyze_oscillatory_drag_run(
 
     axis = drag_result.axis
     um_per_px = drag_config.um_per_px
+
+    # Provenance copied from DRAG v1 foundation.
+    stage_axis = drag_result.stage_axis
+    um_per_px_source = drag_result.um_per_px_source
+    stage_um_per_unit_source = drag_result.stage_um_per_unit_source
+    kappa_source = drag_result.kappa_source
+    selected_calibration_path = drag_result.selected_calibration_path
+    selected_stage_meta_path = drag_result.selected_stage_meta_path
+    selected_stage_trace_path = drag_result.selected_stage_trace_path
+    selected_timestamps_path = drag_result.selected_timestamps_path
+    used_fallbacks = dict(drag_result.used_fallbacks)
+    timing_source = drag_result.timing_source
 
     traj_frames, traj_px, traj_um = _extract_axis_series(
         loaded.paths.trajectory_path, axis=axis, um_per_px=um_per_px
@@ -177,11 +215,25 @@ def analyze_oscillatory_drag_run(
             phase_lag_deg=None,
             n_cycles_total_available=0,
             n_cycles_used=0,
+            number_of_cycles_detected=0,
+            number_of_cycles_used=0,
             motion_start_stage_s=drag_result.motion_start_stage_s,
             motion_start_video_s_detected=drag_result.motion_start_video_s_detected,
             alignment_offset_s=drag_result.alignment_offset_s,
+            stage_axis=stage_axis,
+            um_per_px_source=um_per_px_source,
+            stage_um_per_unit_source=stage_um_per_unit_source,
+            kappa_source=kappa_source,
+            selected_calibration_path=selected_calibration_path,
+            selected_stage_meta_path=selected_stage_meta_path,
+            selected_stage_trace_path=selected_stage_trace_path,
+            selected_timestamps_path=selected_timestamps_path,
+            used_fallbacks=used_fallbacks,
+            timing_source=timing_source,
             rheology_target={},
             analysis_status="warning",
+            averaging_summary={},
+            qc_flags={"cycle_detection_ok": False, "phase_estimation_stable": False},
             warnings=["Not enough time span for oscillatory analysis."],
         )
 
@@ -202,6 +254,8 @@ def analyze_oscillatory_drag_run(
 
     cycle_phases: list[float] = []
     cycle_amplitudes: list[float] = []
+    cycle_start_times: list[float] = []
+    cycle_end_times: list[float] = []
 
     used_warns: list[str] = []
     for k in range(k_first, k_last_exclusive):
@@ -229,6 +283,8 @@ def analyze_oscillatory_drag_run(
 
         cycle_amplitudes.append(amp)
         cycle_phases.append(phi)
+        cycle_start_times.append(float(start))
+        cycle_end_times.append(float(end))
 
     if not cycle_amplitudes or not cycle_phases:
         return OscillatoryAnalysisResult(
@@ -243,11 +299,25 @@ def analyze_oscillatory_drag_run(
             phase_lag_deg=None,
             n_cycles_total_available=n_cycles_total,
             n_cycles_used=0,
+            number_of_cycles_detected=n_cycles_total,
+            number_of_cycles_used=0,
             motion_start_stage_s=drag_result.motion_start_stage_s,
             motion_start_video_s_detected=drag_result.motion_start_video_s_detected,
             alignment_offset_s=drag_result.alignment_offset_s,
+            stage_axis=stage_axis,
+            um_per_px_source=um_per_px_source,
+            stage_um_per_unit_source=stage_um_per_unit_source,
+            kappa_source=kappa_source,
+            selected_calibration_path=selected_calibration_path,
+            selected_stage_meta_path=selected_stage_meta_path,
+            selected_stage_trace_path=selected_stage_trace_path,
+            selected_timestamps_path=selected_timestamps_path,
+            used_fallbacks=used_fallbacks,
+            timing_source=timing_source,
             rheology_target={},
             analysis_status="warning",
+            averaging_summary={},
+            qc_flags={"cycle_detection_ok": False, "phase_estimation_stable": False},
             warnings=["No usable cycles for oscillatory fitting."],
         )
 
@@ -266,6 +336,7 @@ def analyze_oscillatory_drag_run(
     # Convert fitted phase to phase lag relative to signed drive reference.
     phi_lag = _wrap_phase_to_pi(phi_avg - phase_sign_adjust)
     phi_lag_deg = float(phi_lag * 180.0 / math.pi)
+    phase_stable = abs(float(np.angle(phasor_mean))) <= math.pi and abs(complex(phasor_mean).real) + abs(complex(phasor_mean).imag) > 0
 
     amp_ratio: float | None = None
     if drive_amp_um is not None and math.isfinite(drive_amp_um) and abs(drive_amp_um) > 0:
@@ -287,6 +358,22 @@ def analyze_oscillatory_drag_run(
         )
 
     status = "ok" if not used_warns else "warning"
+    avg_summary = {
+        "mean_response_amplitude_um": float(resp_amp),
+        "std_response_amplitude_um": float(np.std(np.asarray(cycle_amplitudes, dtype=np.float64))),
+        "phase_lag_rad": float(phi_lag),
+        "phase_lag_deg": float(phi_lag_deg),
+        "n_cycles_used": int(n_used),
+    }
+    qc_flags = {
+        "cycle_detection_ok": n_used >= int(osc_config.require_min_cycles_used),
+        "phase_estimation_stable": bool(phase_stable),
+        "drive_amplitude_available": drive_amp_um is not None,
+    }
+    notes = [
+        "Response-level oscillatory metrics only; full rheology inversion is not yet validated."
+    ]
+    used_warns.extend(notes)
     return OscillatoryAnalysisResult(
         basename=drag_result.basename,
         axis=axis,
@@ -299,13 +386,115 @@ def analyze_oscillatory_drag_run(
         phase_lag_deg=phi_lag_deg,
         n_cycles_total_available=n_cycles_total,
         n_cycles_used=n_used,
+        number_of_cycles_detected=n_cycles_total,
+        number_of_cycles_used=n_used,
         cycle_phases_rad=cycle_phases,
         cycle_amplitudes_um=cycle_amplitudes,
+        cycle_start_times_s=cycle_start_times,
+        cycle_end_times_s=cycle_end_times,
         motion_start_stage_s=drag_result.motion_start_stage_s,
         motion_start_video_s_detected=drag_result.motion_start_video_s_detected,
         alignment_offset_s=drag_result.alignment_offset_s,
+        stage_axis=stage_axis,
+        um_per_px_source=um_per_px_source,
+        stage_um_per_unit_source=stage_um_per_unit_source,
+        kappa_source=kappa_source,
+        selected_calibration_path=selected_calibration_path,
+        selected_stage_meta_path=selected_stage_meta_path,
+        selected_stage_trace_path=selected_stage_trace_path,
+        selected_timestamps_path=selected_timestamps_path,
+        used_fallbacks=used_fallbacks,
+        timing_source=timing_source,
         rheology_target=rheology_target,
         analysis_status=status,
+        averaging_summary=avg_summary,
+        qc_flags=qc_flags,
         warnings=used_warns,
     )
+
+
+def oscillatory_result_to_dict(result: OscillatoryAnalysisResult) -> dict:
+    return {
+        "basename": result.basename,
+        "protocol_type": "oscillatory",
+        "analysis_axis": result.axis,
+        "stage_axis": result.stage_axis,
+        "frequency_hz": result.frequency_hz,
+        "omega_rad_s": result.omega_rad_s,
+        "motion_start_stage_s": result.motion_start_stage_s,
+        "motion_start_video_s_detected": result.motion_start_video_s_detected,
+        "alignment_offset_s": result.alignment_offset_s,
+        "drive_amplitude_um": result.drive_amplitude_um,
+        "response_amplitude_um": result.response_amplitude_um,
+        "amplitude_ratio": result.amplitude_ratio,
+        "phase_lag_rad": result.phase_lag_rad,
+        "phase_lag_deg": result.phase_lag_deg,
+        "number_of_cycles_detected": result.number_of_cycles_detected,
+        "number_of_cycles_used": result.number_of_cycles_used,
+        # Provenance / auditability
+        "um_per_px_source": result.um_per_px_source,
+        "stage_um_per_unit_source": result.stage_um_per_unit_source,
+        "kappa_source": result.kappa_source,
+        "selected_calibration_path": result.selected_calibration_path,
+        "selected_stage_meta_path": result.selected_stage_meta_path,
+        "selected_stage_trace_path": result.selected_stage_trace_path,
+        "selected_timestamps_path": result.selected_timestamps_path,
+        "used_fallbacks": result.used_fallbacks,
+        "timing_source": result.timing_source,
+        "analysis_status": result.analysis_status,
+        "physics_status": result.physics_status,
+        "averaging_summary": result.averaging_summary,
+        "qc_flags": result.qc_flags,
+        "warnings": list(result.warnings),
+    }
+
+
+def export_oscillatory_summary_json(result: OscillatoryAnalysisResult, output_dir: Path) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{result.basename}_oscillatory_summary.json"
+    path.write_text(json.dumps(oscillatory_result_to_dict(result), indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def export_oscillatory_summary_csv(result: OscillatoryAnalysisResult, output_dir: Path) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{result.basename}_oscillatory_summary.csv"
+    payload = oscillatory_result_to_dict(result)
+    flat = {
+        k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+        for k, v in payload.items()
+    }
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(flat.keys()))
+        w.writeheader()
+        w.writerow(flat)
+    return path
+
+
+def plot_oscillatory_diagnostic(
+    *,
+    t_video_s: np.ndarray,
+    response_um: np.ndarray,
+    result: OscillatoryAnalysisResult,
+    output_dir: Path,
+) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{result.basename}_oscillatory_diagnostic.png"
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(t_video_s, response_um, color="#1F6AA5", alpha=0.8, label="response")
+    for i, (t0, t1) in enumerate(zip(result.cycle_start_times_s, result.cycle_end_times_s)):
+        ax.axvspan(t0, t1, color="#A5D6A7", alpha=0.15, label="used cycles" if i == 0 else None)
+    ax.axvline(result.motion_start_video_s_detected, color="#000", linestyle="--", label="motion start")
+    ax.set_title("Oscillatory active drag diagnostic")
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel("response [um or px-equivalent]")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
 
