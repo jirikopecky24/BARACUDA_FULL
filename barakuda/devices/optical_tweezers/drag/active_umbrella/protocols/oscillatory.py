@@ -124,6 +124,7 @@ def analyze_oscillatory_drag_run(
 ) -> OscillatoryAnalysisResult:
     # 1) Use DRAG v1 stage-aware alignment and baseline statistics as shared foundation.
     drag_result = analyze_drag_run(run_dir, drag_config, trajectory_path=trajectory_path)
+    provenance_warns = [w for w in drag_result.warnings if w.startswith("PROVENANCE_WARNING:")]
 
     # 2) Reload trajectory and authoritative time axis for oscillatory cycle analysis.
     loaded: DragRunLoaded = load_drag_run(run_dir, trajectory_path=trajectory_path)
@@ -234,7 +235,7 @@ def analyze_oscillatory_drag_run(
             analysis_status="warning",
             averaging_summary={},
             qc_flags={"cycle_detection_ok": False, "phase_estimation_stable": False},
-            warnings=["Not enough time span for oscillatory analysis."],
+            warnings=provenance_warns + ["Not enough time span for oscillatory analysis."],
         )
 
     n_cycles_total = int(math.floor((t_end - t0) / T)) if T > 0 else 0
@@ -258,6 +259,7 @@ def analyze_oscillatory_drag_run(
     cycle_end_times: list[float] = []
 
     used_warns: list[str] = []
+    used_warns.extend(provenance_warns)
     for k in range(k_first, k_last_exclusive):
         start = t0 + k * T
         end = start + T
@@ -318,7 +320,7 @@ def analyze_oscillatory_drag_run(
             analysis_status="warning",
             averaging_summary={},
             qc_flags={"cycle_detection_ok": False, "phase_estimation_stable": False},
-            warnings=["No usable cycles for oscillatory fitting."],
+            warnings=provenance_warns + ["No usable cycles for oscillatory fitting."],
         )
 
     n_used = len(cycle_amplitudes)

@@ -164,6 +164,25 @@ def analyze_drag_run(
     if used_relaxed_onset:
         warnings.append("Alignment used relaxed onset detection (lower threshold or shorter min_hold).")
 
+    # Provenance visibility: surface non-authoritative scale/timing inputs explicitly.
+    # These warnings are prefixed so oscillatory exports can selectively propagate them.
+    if config.um_per_px_source is not None:
+        if "default" in str(config.um_per_px_source) or "fallback" in str(config.um_per_px_source) or str(config.um_per_px_source) == "ui_fallback":
+            warnings.append(
+                f"PROVENANCE_WARNING: um_per_px_source={config.um_per_px_source!r}; "
+                "absolute µm physics depends on scale provenance."
+            )
+    if loaded.paths.used_fallbacks.get("timestamps_path") is not None:
+        warnings.append(
+            "PROVENANCE_WARNING: Using fallback timestamps sidecar "
+            f"({loaded.paths.used_fallbacks['timestamps_path']}); timebase may be legacy-aligned."
+        )
+    if loaded.paths.used_fallbacks.get("stage_meta_path") is not None:
+        warnings.append(
+            "PROVENANCE_WARNING: Using fallback stage metadata sidecar "
+            f"({loaded.paths.used_fallbacks['stage_meta_path']}); sign/protocol context may differ."
+        )
+
     if onset_video_s is None and config.manual_offset_s is None:
         qc.alignment_confident = False
         run_dir_path = Path(loaded.paths.run_dir)
@@ -311,6 +330,18 @@ def analyze_drag_run(
 
     stage_um_per_unit = config.stage_um_per_unit or loaded.stage_meta.stage_um_per_unit
     actual_travel_um = actual_speed_um_s = None
+    stage_um_per_unit_source_actual = config.stage_um_per_unit_source
+    if config.stage_um_per_unit is None or not bool(config.stage_um_per_unit):
+        stage_um_per_unit_source_actual = "stage_meta_fallback" if "stage_meta_path" in loaded.paths.used_fallbacks else "stage_meta"
+    if stage_um_per_unit_source_actual is not None and (
+        stage_um_per_unit_source_actual == "default"
+        or "fallback" in str(stage_um_per_unit_source_actual)
+        or stage_um_per_unit_source_actual == "ui_override"
+    ):
+        warnings.append(
+            "PROVENANCE_WARNING: stage_um_per_unit derived from non-authoritative source "
+            f"({stage_um_per_unit_source_actual!r}); absolute drag physics may be scientifically risky."
+        )
     if stage_um_per_unit is not None and stage_um_per_unit > 0:
         actual_travel_um = actual_travel_user * stage_um_per_unit
         actual_speed_um_s = actual_speed_user_s * stage_um_per_unit
@@ -423,13 +454,16 @@ def analyze_drag_run(
         # Provenance/auditability (paths resolved by DRAG loader + scale origins from pipeline).
         protocol_type="constant_velocity",
         um_per_px_source=config.um_per_px_source,
-        stage_um_per_unit_source=config.stage_um_per_unit_source,
+        stage_um_per_unit_source=stage_um_per_unit_source_actual,
         kappa_source=config.kappa_source,
         selected_calibration_path=config.selected_calibration_path,
         selected_stage_meta_path=str(loaded.paths.stage_meta_path),
         selected_stage_trace_path=str(loaded.paths.stage_trace_path),
         selected_timestamps_path=str(loaded.paths.timestamps_path),
         used_fallbacks=dict(loaded.paths.used_fallbacks),
-        timing_source=f"timestamps_csv:{loaded.paths.timestamps_path.name}",
+        timing_source=(
+            f"timestamps_csv:{loaded.paths.timestamps_path.name}"
+            + (" (fallback)" if loaded.paths.used_fallbacks.get("timestamps_path") is not None else "")
+        ),
     )
 
