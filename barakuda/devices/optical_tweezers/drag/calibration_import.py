@@ -40,8 +40,8 @@ def load_brownian_calibration_from_folder(folder: Path | str) -> BrownianCalibra
           <stem>_calibration.json
 
     The function is intentionally tolerant:
-      - picks the first *_calibration.json in audit/
       - treats missing fields as None
+      - but never silently chooses between multiple *_calibration.json candidates
     """
     analysis_dir = Path(folder).resolve()
     if not analysis_dir.is_dir():
@@ -51,19 +51,35 @@ def load_brownian_calibration_from_folder(folder: Path | str) -> BrownianCalibra
     if not audit_dir.is_dir():
         raise FileNotFoundError(f"Brownian audit subfolder not found: {audit_dir}")
 
-    # Choose a representative calibration file
+    # Choose a representative calibration file (ambiguity is fail-loud).
     cal_files = sorted(audit_dir.glob("*_calibration.json"))
     if not cal_files:
         raise FileNotFoundError(f"No *_calibration.json found in {audit_dir}")
 
-    cal_path = cal_files[0]
+    viable: list[tuple[Path, float | None, float | None]] = []
+    for p in cal_files:
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+            kappa_payload = payload.get("kappa") or {}
+            kappa_x = _to_float_or_none(kappa_payload.get("kappa_x_n_per_m"))
+            kappa_y = _to_float_or_none(kappa_payload.get("kappa_y_n_per_m"))
+            if kappa_x is not None or kappa_y is not None:
+                viable.append((p, kappa_x, kappa_y))
+        except Exception:  # noqa: BLE001
+            continue
+
+    if not viable:
+        raise ValueError(f"No viable *_calibration.json found in {audit_dir} (missing kappa fields).")
+
+    if len(viable) != 1:
+        names = ", ".join(p.name for p, _kx, _ky in viable)
+        raise ValueError(
+            "Ambiguous Brownian calibration selection: expected exactly one viable *_calibration.json "
+            f"in {audit_dir}, but found {len(viable)} viable candidates: {names}"
+        )
+
+    cal_path, kappa_x, kappa_y = viable[0]
     base_name = cal_path.stem.replace("_calibration", "")
-
-    payload = json.loads(cal_path.read_text(encoding="utf-8"))
-    kappa_payload = payload.get("kappa") or {}
-
-    kappa_x = _to_float_or_none(kappa_payload.get("kappa_x_n_per_m"))
-    kappa_y = _to_float_or_none(kappa_payload.get("kappa_y_n_per_m"))
 
     # Optional um_per_px from audit/run.json → config.calibration.um_per_px
     um_per_px: float | None = None
