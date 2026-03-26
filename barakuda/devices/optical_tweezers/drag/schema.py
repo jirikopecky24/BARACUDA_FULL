@@ -49,6 +49,10 @@ class DragStageMeta:
     post_delay_s: float
     # Optional conversion from stage user units to micrometers.
     stage_um_per_unit: float | None = None
+    # Optional metric kinematics (preferred when present and valid).
+    actual_travel_um: float | None = None
+    actual_speed_um_s: float | None = None
+    kinematics_source: str | None = None
     # Protocol-specific parameters (future step/oscillatory/active rheology).
     # Kept generic so stage JSON can evolve without breaking the loader.
     protocol_params: dict[str, Any] = field(default_factory=dict)

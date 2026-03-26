@@ -191,6 +191,11 @@ def _load_stage_meta(stage_meta_path: Path) -> DragStageMeta:
             "actual_travel_user",
             "actual_motion_duration_s",
             "actual_speed_user_s",
+            "actual_metric",
+            "commanded_metric",
+            "raw_internal",
+            "metric_schema_version",
+            "metric_provenance",
             "sign_stage_to_image_x",
             "sign_stage_to_image_y",
             "pre_delay_s",
@@ -212,6 +217,17 @@ def _load_stage_meta(stage_meta_path: Path) -> DragStageMeta:
         actual_speed_user_s = float(
             data.get("actual_speed_user_s", actual_travel_user / actual_motion_duration_s)
         )
+        # Metric-first kinematics (optional): prefer explicit actual_metric if present and valid.
+        actual_metric = data.get("actual_metric") if isinstance(data.get("actual_metric"), dict) else {}
+        _atu = actual_metric.get("actual_travel_um") if isinstance(actual_metric, dict) else None
+        _asu = actual_metric.get("actual_speed_um_s") if isinstance(actual_metric, dict) else None
+        actual_travel_um = float(_atu) if _atu is not None else None
+        actual_speed_um_s = float(_asu) if _asu is not None else None
+        if actual_travel_um is not None and not (actual_travel_um == actual_travel_um):  # NaN
+            actual_travel_um = None
+        if actual_speed_um_s is not None and not (actual_speed_um_s == actual_speed_um_s):  # NaN
+            actual_speed_um_s = None
+        kinematics_source = "actual_metric" if (actual_travel_um is not None or actual_speed_um_s is not None) else "legacy_user_units"
         sign_stage_to_image_x = int(data.get("sign_stage_to_image_x", 1))
         sign_stage_to_image_y = int(data.get("sign_stage_to_image_y", 1))
         pre_delay_s = float(data.get("pre_delay_s", 0.0))
@@ -233,6 +249,9 @@ def _load_stage_meta(stage_meta_path: Path) -> DragStageMeta:
         actual_travel_user=actual_travel_user,
         actual_motion_duration_s=actual_motion_duration_s,
         actual_speed_user_s=actual_speed_user_s,
+        actual_travel_um=actual_travel_um,
+        actual_speed_um_s=actual_speed_um_s,
+        kinematics_source=kinematics_source,
         sign_stage_to_image_x=sign_stage_to_image_x,
         sign_stage_to_image_y=sign_stage_to_image_y,
         pre_delay_s=pre_delay_s,

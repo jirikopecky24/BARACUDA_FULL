@@ -340,7 +340,8 @@ def analyze_drag_run(
     actual_speed_user_s = loaded.stage_meta.actual_speed_user_s
 
     stage_um_per_unit = config.stage_um_per_unit or loaded.stage_meta.stage_um_per_unit
-    actual_travel_um = actual_speed_um_s = None
+    actual_travel_um = loaded.stage_meta.actual_travel_um
+    actual_speed_um_s = loaded.stage_meta.actual_speed_um_s
     stage_um_per_unit_source_actual = config.stage_um_per_unit_source
     if config.stage_um_per_unit is None or not bool(config.stage_um_per_unit):
         stage_um_per_unit_source_actual = "stage_meta_fallback" if "stage_meta_path" in loaded.paths.used_fallbacks else "stage_meta"
@@ -353,12 +354,15 @@ def analyze_drag_run(
             "PROVENANCE_WARNING: stage_um_per_unit derived from non-authoritative source "
             f"({stage_um_per_unit_source_actual!r}); absolute drag physics may be scientifically risky."
         )
-    if stage_um_per_unit is not None and stage_um_per_unit > 0:
-        actual_travel_um = actual_travel_user * stage_um_per_unit
-        actual_speed_um_s = actual_speed_user_s * stage_um_per_unit
-    else:
-        qc.stage_speed_available = True  # user-speed exists, but not in µm
-        warnings.append("stage_um_per_unit not provided; absolute drag physics may be incomplete.")
+    if actual_speed_um_s is None:
+        if stage_um_per_unit is not None and stage_um_per_unit > 0:
+            actual_travel_um = actual_travel_user * stage_um_per_unit
+            actual_speed_um_s = actual_speed_user_s * stage_um_per_unit
+        else:
+            qc.stage_speed_available = True  # user-speed exists, but not in µm
+            warnings.append("stage_um_per_unit not provided; absolute drag physics may be incomplete.")
+    # If actual_speed_um_s is still missing, we can proceed with signal-level outputs
+    # but physics requiring SI units will remain incomplete.
 
     # 7) Physics layer (optional)
     drag_force_n = kappa_n_per_m = kappa_pn_per_um = eta_pa_s = None
