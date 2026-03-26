@@ -889,37 +889,10 @@ class AcquisitionPanel(QWidget):
         )
         cv_form.addRow("Decel:", self._spin_motion_decel_um_s2)
 
-        # Advanced/debug: raw controller registers (kept explicit; NOT primary UI model)
-        self._spin_motion_speed_reg = _NoScrollDoubleSpinBox()
-        self._spin_motion_speed_reg.setRange(1.0, 1_000_000.0)
-        self._spin_motion_speed_reg.setValue(1.0)
-        self._spin_motion_speed_reg.setDecimals(0)
-        self._spin_motion_speed_reg.setSuffix(" (reg)")
-        self._spin_motion_speed_reg.setToolTip(
-            "DEBUG: XIMC Speed register (firmware value).\n"
-            "This is not a metric value. It is used until a validated µm/s mapping exists."
-        )
-        cv_form.addRow("Speed (debug):", self._spin_motion_speed_reg)
-
-        self._spin_motion_accel_reg = _NoScrollDoubleSpinBox()
-        self._spin_motion_accel_reg.setRange(1.0, 1_000_000.0)
-        self._spin_motion_accel_reg.setValue(20.0)
-        self._spin_motion_accel_reg.setDecimals(0)
-        self._spin_motion_accel_reg.setSuffix(" (reg)")
-        self._spin_motion_accel_reg.setToolTip(
-            "DEBUG: XIMC Accel register (firmware value). Not metric."
-        )
-        cv_form.addRow("Accel (debug):", self._spin_motion_accel_reg)
-
-        self._spin_motion_decel_reg = _NoScrollDoubleSpinBox()
-        self._spin_motion_decel_reg.setRange(1.0, 1_000_000.0)
-        self._spin_motion_decel_reg.setValue(20.0)
-        self._spin_motion_decel_reg.setDecimals(0)
-        self._spin_motion_decel_reg.setSuffix(" (reg)")
-        self._spin_motion_decel_reg.setToolTip(
-            "DEBUG: XIMC Decel register (firmware value). Not metric."
-        )
-        cv_form.addRow("Decel (debug):", self._spin_motion_decel_reg)
+        self._lbl_metric_mapping_status = QLabel("")
+        self._lbl_metric_mapping_status.setWordWrap(True)
+        self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
+        cv_form.addRow("", self._lbl_metric_mapping_status)
 
         self._motion_protocol_stack.addWidget(cvw)
 
@@ -1032,6 +1005,7 @@ class AcquisitionPanel(QWidget):
         layout.addStretch(1)
         # Stage enumeration can be slow on Windows (PowerShell CIM queries).
         # Never block UI thread during panel construction — start async scan instead.
+        self._update_motion_run_button()
         self._refresh_stage_device_list(async_scan=True)
         return tab
 
@@ -1172,14 +1146,67 @@ class AcquisitionPanel(QWidget):
         except Exception:
             scale_ok = False
 
+        mapping_profile, mapping_err = self._load_metric_mapping_profile()
+        mapping_ok = mapping_profile is not None
+
         enabled = (
             self._check_motion_enable.isChecked()
             and protocol_ok
             and scale_ok
+            and mapping_ok
             and self._stage is not None
             and self._camera.is_connected
         )
         self._btn_record_motion.setEnabled(enabled)
+        if hasattr(self, "_lbl_metric_mapping_status"):
+            if protocol_ok:
+                if mapping_ok:
+                    self._lbl_metric_mapping_status.setText(
+                        f"Validated metric mapping profile active: {mapping_profile.validation_id}"
+                    )
+                    self._lbl_metric_mapping_status.setStyleSheet("color: #1f7a1f;")
+                else:
+                    self._lbl_metric_mapping_status.setText(
+                        "Metric mapping profile missing. Record+Motion is blocked until validated "
+                        "mapping env vars are provided."
+                    )
+                    self._lbl_metric_mapping_status.setStyleSheet("color: #aa5500;")
+            else:
+                self._lbl_metric_mapping_status.setText("Protocol not wired for acquisition run.")
+                self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
+
+        if not mapping_ok and mapping_err:
+            self._btn_record_motion.setToolTip(
+                "Start synchronized recording + stage motion run.\n"
+                f"Blocked: {mapping_err}"
+            )
+        else:
+            self._btn_record_motion.setToolTip(
+                "Start synchronized recording + stage motion run.\n"
+                "Motion must be enabled and stage must be connected."
+            )
+
+    def _load_metric_mapping_profile(self) -> tuple[XimcMetricCalibration | None, str | None]:
+        try:
+            import os
+            sp = float(os.environ["BARAKUDA_XIMC_SPEED_REG_PER_UM_S"])
+            ap = float(os.environ["BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2"])
+            dp = float(os.environ["BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"])
+            vid = str(os.environ.get("BARAKUDA_XIMC_MAPPING_VALIDATION_ID", "env_profile"))
+            if sp <= 0 or ap <= 0 or dp <= 0:
+                return None, "mapping coefficients must be > 0"
+            return XimcMetricCalibration(
+                speed_reg_per_um_s=sp,
+                accel_reg_per_um_s2=ap,
+                decel_reg_per_um_s2=dp,
+                validation_id=vid,
+            ), None
+        except Exception:
+            return None, (
+                "set BARAKUDA_XIMC_SPEED_REG_PER_UM_S, "
+                "BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2, "
+                "BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"
+            )
 
     # ------------------------------------------------------------------ #
     #  Stage connect
@@ -1248,9 +1275,10 @@ class AcquisitionPanel(QWidget):
             axis=self._combo_motion_axis.currentText(),
             direction=direction,
             travel=travel_user,
-            speed=self._spin_motion_speed_reg.value() if hasattr(self, "_spin_motion_speed_reg") else 1.0,
-            accel=self._spin_motion_accel_reg.value() if hasattr(self, "_spin_motion_accel_reg") else 20.0,
-            decel=self._spin_motion_decel_reg.value() if hasattr(self, "_spin_motion_decel_reg") else 20.0,
+            # Legacy recipe register fields remain as internal fallback placeholders.
+            speed=1.0,
+            accel=20.0,
+            decel=20.0,
             pre_delay_s=self._spin_motion_pre_delay.value(),
             post_delay_s=self._spin_motion_post_delay.value(),
             sign_stage_to_image_x=self._spin_motion_sign_x.value(),
@@ -1282,9 +1310,7 @@ class AcquisitionPanel(QWidget):
             self._lbl_motion_run_status.setText(f"Recipe error: {'; '.join(errors)}")
             return
 
-        # Metric intent (Phase3): construct explicitly from legacy travel_user via
-        # stage_um_per_unit. Do not reinterpret speed/accel/decel registers as metric
-        # yet; backend conversion mapping for those is not trustworthy.
+        # Metric intent for active command path.
         stage_um_per_unit = self._stage.get_stage_um_per_unit() if self._stage is not None else None
         metric_command: MetricMotionCommand | None = None
         metric_mapping_profile: XimcMetricCalibration | None = None
@@ -1301,27 +1327,13 @@ class AcquisitionPanel(QWidget):
                 post_delay_s=float(recipe.post_delay_s),
             )
 
-            # Strict validated mapping profile is required for active metric kinematics.
-            try:
-                import os
-                sp = float(os.environ["BARAKUDA_XIMC_SPEED_REG_PER_UM_S"])
-                ap = float(os.environ["BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2"])
-                dp = float(os.environ["BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"])
-                vid = str(os.environ.get("BARAKUDA_XIMC_MAPPING_VALIDATION_ID", "env_profile"))
-            except Exception:
+            metric_mapping_profile, mapping_err = self._load_metric_mapping_profile()
+            if metric_mapping_profile is None:
                 self._lbl_motion_run_status.setText(
-                    "Missing validated metric mapping profile. Set env vars: "
-                    "BARAKUDA_XIMC_SPEED_REG_PER_UM_S, "
-                    "BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2, "
-                    "BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"
+                    "Missing validated metric mapping profile. "
+                    f"Blocked: {mapping_err or 'unknown mapping error'}"
                 )
                 return
-            metric_mapping_profile = XimcMetricCalibration(
-                speed_reg_per_um_s=sp,
-                accel_reg_per_um_s2=ap,
-                decel_reg_per_um_s2=dp,
-                validation_id=vid,
-            )
 
         requested_roi = self._get_roi_tuple()
         roi = self._sync_roi_to_camera(requested_roi)
