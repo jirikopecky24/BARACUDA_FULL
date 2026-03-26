@@ -46,6 +46,12 @@ from barakuda.devices.acquisition.motion.motion_run import (
 )
 from barakuda.devices.acquisition.motion.metric_conversion import MetricMotionCommand
 from barakuda.devices.acquisition.motion.metric_conversion import XimcMetricCalibration
+from barakuda.core.run_protocol import (
+    create_protocol_from_context,
+    load_protocol,
+    merge_protocol,
+    save_protocol,
+)
 from barakuda.shell.stage_service import get_stage_service
 from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
 try:
@@ -1497,6 +1503,11 @@ class AcquisitionPanel(QWidget):
                 json.dump(qc, f, indent=2)
         except Exception:
             pass
+        self._update_run_protocol_from_acquisition(
+            record_result=record_result,
+            qc_path=Path(qc_path) if qc_path else None,
+            motion_result=motion_result,
+        )
 
         self._stop_motion_elapsed_timer()
         self._lbl_motion_run_status.setText(
@@ -2187,6 +2198,11 @@ class AcquisitionPanel(QWidget):
                 json.dump(qc, f, indent=2)
         except Exception:
             pass
+        self._update_run_protocol_from_acquisition(
+            record_result=result,
+            qc_path=Path(qc_path) if qc_path else None,
+            motion_result=None,
+        )
 
         self._btn_record.setEnabled(True)
         self._btn_stop_record.setEnabled(False)
@@ -2375,6 +2391,137 @@ class AcquisitionPanel(QWidget):
     # ------------------------------------------------------------------ #
     #  Helpers
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _load_json_file(path: Path) -> dict:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _try_git_revision() -> tuple[str | None, str | None]:
+        try:
+            branch = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            branch = None
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            commit = None
+        return branch, commit
+
+    def _update_run_protocol_from_acquisition(
+        self,
+        *,
+        record_result: RecordResult,
+        qc_path: Path | None,
+        motion_result: MotionRunResult | None,
+    ) -> None:
+        run_dir = Path(record_result.video_path).resolve().parent
+        basename = Path(record_result.video_path).stem
+        meta_path = Path(record_result.meta_path)
+        meta = dict(record_result.meta or {})
+        if not meta and meta_path.is_file():
+            meta = self._load_json_file(meta_path)
+
+        stage_meta: dict = {}
+        if motion_result is not None and motion_result.stage_json_path.is_file():
+            stage_meta = self._load_json_file(Path(motion_result.stage_json_path))
+
+        recording_mode = str(
+            meta.get("format") or Path(record_result.video_path).suffix.lstrip(".")
+        ).lower()
+        fps_hint = meta.get("fps_target_hint", self._spin_fps_hint.value())
+        timestamps_present = bool(meta.get("timestamps_path"))
+        if not timestamps_present:
+            timestamps_present = (run_dir / f"{basename}_timestamps.csv").is_file()
+
+        branch, commit = self._try_git_revision()
+        updates: dict = {
+            "identity": {
+                "run_id": basename,
+                "source_type": recording_mode,
+                "acquired_in_barakuda": True,
+                "imported_external": False,
+                "git_branch": branch,
+                "git_commit": commit,
+            },
+            "acquisition": {
+                "output_folder": str(run_dir),
+                "basename": basename,
+                "recording_mode": recording_mode,
+                "fps_hint": fps_hint,
+                "exposure_us": meta.get("exposure_us"),
+                "gain": meta.get("gain"),
+                "pixel_format": meta.get("pixel_format"),
+                "roi": meta.get("record_roi") or meta.get("requested_roi"),
+                "timestamps_present": timestamps_present,
+            },
+        }
+
+        if qc_path is not None:
+            updates["provenance"] = {
+                **dict(updates.get("provenance") or {}),
+                "selected_qc_path": str(qc_path.resolve()),
+            }
+
+        if stage_meta:
+            metric_provenance = stage_meta.get("metric_provenance")
+            if not isinstance(metric_provenance, dict):
+                metric_provenance = {}
+            actual_metric = stage_meta.get("actual_metric")
+            if not isinstance(actual_metric, dict):
+                actual_metric = {}
+
+            updates["motion"] = {
+                "protocol_type": stage_meta.get("mode"),
+                "axis": stage_meta.get("axis"),
+                "direction": stage_meta.get("direction"),
+                "speed": stage_meta.get("speed_user_s_commanded"),
+                "accel": stage_meta.get("accel_user_s2_commanded"),
+                "decel": stage_meta.get("decel_user_s2_commanded"),
+                "pre_delay_s": stage_meta.get("pre_delay_s"),
+                "post_delay_s": stage_meta.get("post_delay_s"),
+                "stage_um_per_unit": stage_meta.get("stage_um_per_unit"),
+                "sign_stage_to_image_x": stage_meta.get("sign_stage_to_image_x"),
+                "sign_stage_to_image_y": stage_meta.get("sign_stage_to_image_y"),
+                "commanded_travel_user": stage_meta.get("travel_user_commanded"),
+                "actual_speed_user_s": stage_meta.get("actual_speed_user_s"),
+                "actual_speed_um_s": actual_metric.get("actual_speed_um_s"),
+            }
+            updates["provenance"] = {
+                **dict(updates.get("provenance") or {}),
+                "stage_um_per_unit_source": metric_provenance.get(
+                    "stage_um_per_unit_source"
+                ),
+                "selected_stage_meta_path": str(
+                    Path(motion_result.stage_json_path).resolve()
+                ),
+                "selected_stage_trace_path": str(
+                    Path(motion_result.stage_trace_path).resolve()
+                ),
+            }
+
+        try:
+            existing = load_protocol(run_dir)
+        except Exception:
+            existing = create_protocol_from_context()
+        try:
+            merged = merge_protocol(existing, updates, allow_manual_overwrite=False)
+            saved_path = save_protocol(merged, run_dir)
+            self._log(f"Run protocol updated: {saved_path}")
+        except Exception as exc:
+            self._log(f"Run protocol update skipped: {exc}")
 
     def _set_all_enabled(self, enabled: bool) -> None:
         for w in (
