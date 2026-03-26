@@ -118,7 +118,18 @@ def analyze_drag_run(
     t_video = _interp_time_for_frames(loaded.frame_indices, loaded.frame_timestamps_s, traj_frames)
 
     # 3) Alignment: detect onset
-    motion_start_stage_s = float(loaded.stage_timing.motion_start_stage_s or 0.0)
+    timing_anchor_used = "motion_start_legacy"
+    if loaded.stage_timing.motion_running_confirmed_s is not None:
+        motion_start_stage_s = float(loaded.stage_timing.motion_running_confirmed_s)
+        timing_anchor_used = "motion_running_confirmed"
+    elif loaded.stage_timing.motion_start_stage_s is not None:
+        motion_start_stage_s = float(loaded.stage_timing.motion_start_stage_s)
+        timing_anchor_used = "motion_start_legacy"
+    elif loaded.stage_timing.motion_command_issued_s is not None:
+        motion_start_stage_s = float(loaded.stage_timing.motion_command_issued_s)
+        timing_anchor_used = "motion_command_issued"
+    else:
+        motion_start_stage_s = 0.0
     motion_stop_stage_s = (
         float(loaded.stage_timing.motion_stop_stage_s)
         if loaded.stage_timing.motion_stop_stage_s is not None
@@ -470,6 +481,7 @@ def analyze_drag_run(
         timing_source=(
             f"timestamps_csv:{loaded.paths.timestamps_path.name}"
             + (" (fallback)" if loaded.paths.used_fallbacks.get("timestamps_path") is not None else "")
+            + f";stage_anchor={timing_anchor_used}"
         ),
     )
 

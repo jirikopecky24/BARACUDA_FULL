@@ -29,6 +29,9 @@ class MotionResult:
     actual_speed_user_s: float       # derived: actual_travel / actual_duration
     controller: str                  # backend name, e.g. "ximc"
     stage_um_per_unit: Optional[float] = None  # if known from backend
+    # Optional backend-reported delay between move command issuance and confirmed
+    # transition to controller running state.
+    running_confirmed_delay_s: Optional[float] = None
 
 
 class AbstractStage(ABC):

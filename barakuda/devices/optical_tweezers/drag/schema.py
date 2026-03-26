@@ -70,6 +70,8 @@ class DragStageTiming:
     script_start_s: float | None = None
     pre_hold_start_s: float | None = None
     pre_hold_end_s: float | None = None
+    motion_command_issued_s: float | None = None
+    motion_running_confirmed_s: float | None = None
     motion_start_stage_s: float | None = None
     motion_stop_stage_s: float | None = None
     post_hold_start_s: float | None = None

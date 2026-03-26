@@ -310,6 +310,7 @@ class XimcStage(AbstractStage):
         # #region agent log — command_move target
         _dbg("command_move", "H-SPEED", {"pos_before": pos_before, "target": target, "signed_travel": signed_travel, "commanded_speed": speed})
         # #endregion
+        t_command_issued = time.perf_counter()
         if _BACKEND == "libximc":
             r = _ll.lib.command_move(self._device_id, target, 0)
             if r != _ll.Result.Ok:
@@ -357,6 +358,7 @@ class XimcStage(AbstractStage):
 
         # t_start is captured once MVCMD_RUNNING is confirmed set
         t_start = time.perf_counter()
+        running_confirmed_delay_s = max(0.0, t_start - t_command_issued)
 
         # ------------------------------------------------------------------
         # Phase 2: wait for MVCMD_RUNNING to clear (move finished).
@@ -426,6 +428,7 @@ class XimcStage(AbstractStage):
             actual_speed_user_s=actual_speed,
             controller=self.CONTROLLER_NAME,
             stage_um_per_unit=self.stage_um_per_unit,
+            running_confirmed_delay_s=running_confirmed_delay_s,
         )
 
     def stop(self) -> None:

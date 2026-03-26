@@ -213,6 +213,12 @@ def run_record_and_motion(
     motion_stop_s: Optional[float] = None
     motion_result = None
     try:
+        # Legacy anchor: keep motion_start at command-issued time for backward
+        # compatibility with existing loaders and datasets.
+        t_motion_command_issued = trace.log(
+            "motion_command_issued",
+            state="commanded",
+        )
         t_motion_start = trace.log(
             "motion_start",
             state="moving",
@@ -231,6 +237,17 @@ def run_record_and_motion(
             decel=recipe.decel,
             stop_event=stop_event,
         )
+        motion_running_confirmed_s: Optional[float] = None
+        if motion_result.running_confirmed_delay_s is not None:
+            motion_running_confirmed_s = (
+                t_motion_command_issued + float(motion_result.running_confirmed_delay_s)
+            )
+            if motion_running_confirmed_s > t_motion_command_issued:
+                trace.log(
+                    "motion_running_confirmed",
+                    t_override=motion_running_confirmed_s,
+                    state="moving_confirmed",
+                )
         motion_stop_s = trace.log(
             "motion_stop",
             position_user=motion_result.actual_travel_user,
@@ -342,6 +359,9 @@ def run_record_and_motion(
         "trace_file": stage_trace_path.name,
         # Recording-timeline binding
         "recording_reference": "run_t0",
+        "motion_start_semantics": "legacy_command_issued",
+        "motion_command_issued_recording_s": t_motion_command_issued,
+        "motion_running_confirmed_recording_s": motion_running_confirmed_s,
         "motion_start_recording_s": motion_start_s,
         "motion_stop_recording_s": motion_stop_s,
     }

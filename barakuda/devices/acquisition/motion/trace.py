@@ -9,6 +9,8 @@ Design constraints (see docs/acquisition_motion_drag_note.md):
   video_timestamps.csv which is a separate clock axis).
 - Must produce at minimum: columns t_s, event.
 - Must include the 8 mandatory orchestration events (recording_start … recording_stop).
+- Optional explicit motion anchor events:
+  motion_command_issued, motion_running_confirmed.
 - trace file is the DRAG loader's primary timing source.
 """
 from __future__ import annotations

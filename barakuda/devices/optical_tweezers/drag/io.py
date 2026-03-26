@@ -270,6 +270,10 @@ def _load_stage_trace(stage_trace_path: Path) -> tuple[list[DragStageTraceEvent]
             timing = DragStageTiming(**{**timing.__dict__, "pre_hold_start_s": e.t_s})
         elif name == "pre_hold_end":
             timing = DragStageTiming(**{**timing.__dict__, "pre_hold_end_s": e.t_s})
+        elif name == "motion_command_issued":
+            timing = DragStageTiming(**{**timing.__dict__, "motion_command_issued_s": e.t_s})
+        elif name == "motion_running_confirmed":
+            timing = DragStageTiming(**{**timing.__dict__, "motion_running_confirmed_s": e.t_s})
         elif name == "motion_start":
             timing = DragStageTiming(**{**timing.__dict__, "motion_start_stage_s": e.t_s})
         elif name == "motion_stop":
@@ -281,9 +285,15 @@ def _load_stage_trace(stage_trace_path: Path) -> tuple[list[DragStageTraceEvent]
         elif name == "script_end":
             timing = DragStageTiming(**{**timing.__dict__, "script_end_s": e.t_s})
 
-    if timing.motion_start_stage_s is None:
+    # Legacy compatibility: old runs only have motion_start; newer runs may expose
+    # motion_command_issued and motion_running_confirmed explicitly.
+    if (
+        timing.motion_start_stage_s is None
+        and timing.motion_running_confirmed_s is None
+        and timing.motion_command_issued_s is None
+    ):
         raise DragIoError(
-            f"Stage trace {stage_trace_path.name} does not contain a 'motion_start' event"
+            f"Stage trace {stage_trace_path.name} does not contain any motion start anchor event"
         )
 
     return events, timing
