@@ -1,8 +1,9 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — RESPONSIVE SHELL LAYOUT USABILITY HARDENING
-- current task = responsive shell layout usability hardening
-- focus strictly on splitter sizing, panel widths, minimum sizes, size policies, resize behavior, and right-tab usability
+## 0. CURRENT PHASE OVERRIDE — NARROW RESPONSIVE LAYOUT REGRESSION FIX
+- current task = narrow responsive layout regression fix
+- investigate why panel widths are correct on first launch but shrink after tab/device/method switching
+- focus strictly on shell splitter sizing stability, panel width regression paths, and right-panel resize persistence
 - no feature development
 - no business-logic changes
 - no broad redesign

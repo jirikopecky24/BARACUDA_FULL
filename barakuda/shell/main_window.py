@@ -166,6 +166,53 @@ class ShellMainWindow(QMainWindow):
         self._first_show = True
         self._manual_roi_edited_paths = set()
         self._last_ot_bead_diameter_um: Optional[float] = None
+        self._last_non_acq_splitter_sizes: Optional[list[int]] = None
+        self._last_dataset_dock_width: int = 300
+
+    def _remember_non_acq_splitter_sizes(self) -> None:
+        """Persist user-adjusted center splitter widths for OT/AFM view."""
+        try:
+            sizes = [int(v) for v in self._center_splitter.sizes()]
+        except Exception:
+            return
+        if len(sizes) != 2:
+            return
+        if sizes[0] <= 0 or sizes[1] <= 0:
+            return
+        self._last_non_acq_splitter_sizes = sizes
+
+    def _restore_non_acq_splitter_sizes(self) -> None:
+        """Restore previous OT/AFM splitter widths, fallback to proportional default."""
+        try:
+            remembered = self._last_non_acq_splitter_sizes
+            if remembered and len(remembered) == 2 and remembered[0] > 0 and remembered[1] > 0:
+                self._center_splitter.setSizes(remembered)
+                return
+
+            total = int(self._center_splitter.width())
+            if total <= 0:
+                total = 1400
+            right_min = max(380, int(self._device_container.minimumWidth() or 0))
+            right = max(right_min, int(total * 0.36))
+            left = max(520, total - right)
+            self._center_splitter.setSizes([left, right])
+        except Exception:
+            pass
+
+    def _remember_dataset_dock_width(self) -> None:
+        try:
+            w = int(self.dataset_dock.width())
+        except Exception:
+            return
+        if w > 120:
+            self._last_dataset_dock_width = w
+
+    def _restore_dataset_dock_width(self) -> None:
+        try:
+            target = max(280, int(self._last_dataset_dock_width))
+            self.resizeDocks([self.dataset_dock], [target], Qt.Orientation.Horizontal)
+        except Exception:
+            pass
 
     def _set_window_icon_if_available(self) -> None:
         icon_path = Path(__file__).resolve().parents[2] / "assets" / "branding" / "barakuda" / "app_icon.png"
@@ -202,7 +249,7 @@ class ShellMainWindow(QMainWindow):
             try:
                 self.resizeDocks([self.dataset_dock], [200], Qt.Orientation.Horizontal)
                 self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
-                self._center_splitter.setSizes([900, 500])
+                self._restore_non_acq_splitter_sizes()
             except Exception:
                 pass
 
@@ -424,6 +471,11 @@ class ShellMainWindow(QMainWindow):
         self.batch.reset_gate()
 
     def _activate_device(self, spec: DeviceSpec) -> None:
+        previous_device_id = self._active_device_id
+        if self._active_device_id != "acquisition":
+            self._remember_non_acq_splitter_sizes()
+            self._remember_dataset_dock_width()
+
         if self._device_panel is not None:
             self._device_panel.setParent(None)
             self._device_panel.deleteLater()
@@ -495,17 +547,12 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id == "acquisition":
             self._preview_stack.hide()
             self.dataset_dock.hide()
-            try:
-                self._center_splitter.setSizes([0, 1])
-            except Exception:
-                pass
         else:
             self._preview_stack.show()
             self.dataset_dock.show()
-            try:
-                self._center_splitter.setSizes([900, 500])
-            except Exception:
-                pass
+            if previous_device_id == "acquisition":
+                QTimer.singleShot(0, self._restore_dataset_dock_width)
+                QTimer.singleShot(0, self._restore_non_acq_splitter_sizes)
             if self._active_device_id == "afm":
                 self._preview_stack.setCurrentWidget(self._afm_preview)
             else:
