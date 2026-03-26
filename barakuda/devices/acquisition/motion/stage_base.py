@@ -76,3 +76,14 @@ class AbstractStage(ABC):
     @abstractmethod
     def stop(self) -> None:
         """Emergency stop (best effort)."""
+
+    # ------------------------------------------------------------------
+    # Optional metadata hooks (non-breaking defaults)
+    # ------------------------------------------------------------------
+    def get_stage_um_per_unit(self) -> Optional[float]:
+        """Return stage scale in µm/user-unit if known.
+
+        Non-abstract default keeps compatibility: backends may return None
+        when the scale is not known or not provided.
+        """
+        return None

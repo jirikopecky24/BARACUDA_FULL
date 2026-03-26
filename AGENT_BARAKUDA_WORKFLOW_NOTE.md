@@ -2,6 +2,7 @@
 
 ## 0. CURRENT PHASE OVERRIDE — PHASED TRUSTWORTHINESS & VALIDATION (MISSION-DRIVEN)
 - current task = phased metric-units implementation for motion (schema-first, one phase at a time)
+- schema-first migration; one phase only; stop after each phase; no full UI/backend mode switch
 - one phase at a time (no parallel phase work)
 - stop after each phase and wait for explicit approval before continuing
 - no proceeding without explicit approval

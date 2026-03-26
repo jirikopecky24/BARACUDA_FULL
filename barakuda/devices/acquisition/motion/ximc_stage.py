@@ -125,6 +125,9 @@ class XimcStage(AbstractStage):
         self._dev_str: str = ""
         self.stage_um_per_unit = stage_um_per_unit
 
+    def get_stage_um_per_unit(self) -> Optional[float]:
+        return self.stage_um_per_unit
+
     # ------------------------------------------------------------------
     # AbstractStage interface
     # ------------------------------------------------------------------

@@ -74,6 +74,7 @@ def run_record_and_motion(
     pixel_format: str,
     progress_callback: Optional[Callable[[int, float], None]] = None,
     log_fn: Optional[Callable[[str], None]] = None,
+    metric_command: "MetricMotionCommand | None" = None,
 ) -> MotionRunResult:
     """Execute a single synchronized Record + Motion run.
 
@@ -89,6 +90,9 @@ def run_record_and_motion(
         basename: Filename stem (without extension). Determines ALL output filenames.
         duration_s: Maximum recording duration (0 = unlimited).
         roi, exposure_us, gain, fps_hint, pixel_format: camera parameters.
+        metric_command: Optional metric-oriented motion intent (schema-first Phase2).
+                        When provided, backend command resolution may use metric travel_um
+                        if stage_um_per_unit is known; speed/accel/decel mapping is not implemented yet.
         progress_callback: Optional callback(frames, elapsed) forwarded to camera.
         log_fn: Optional callable(str) for UI log messages.
 
@@ -212,9 +216,42 @@ def run_record_and_motion(
     # ------------------------------------------------------------------
     motion_stop_s: Optional[float] = None
     motion_result = None
+    backend_cmd = None
+    stage_um_per_unit_for_conversion = stage.get_stage_um_per_unit()
+    metric_backend_conversion_warnings: list[str] = []
     try:
         # Legacy anchor: keep motion_start at command-issued time for backward
         # compatibility with existing loaders and datasets.
+        from .metric_conversion import (
+            BackendMotionCommand,
+            convert_metric_intent_to_backend_command,
+        )
+
+        if metric_command is not None:
+            backend_cmd = convert_metric_intent_to_backend_command(
+                legacy_travel_user=float(recipe.travel),
+                legacy_direction=int(recipe.direction),
+                legacy_speed_reg=float(recipe.speed),
+                legacy_accel_reg=float(recipe.accel),
+                legacy_decel_reg=float(recipe.decel),
+                metric_command=metric_command,
+                stage_um_per_unit=stage_um_per_unit_for_conversion,
+            )
+            metric_backend_conversion_warnings = list(backend_cmd.warnings)
+        else:
+            backend_cmd = BackendMotionCommand(
+                travel_user=float(recipe.travel),
+                speed_reg=float(recipe.speed),
+                accel_reg=float(recipe.accel),
+                decel_reg=float(recipe.decel),
+                direction=int(recipe.direction),
+                travel_source="legacy_travel_user",
+                speed_source="legacy_speed_reg",
+                accel_source="legacy_accel_reg",
+                decel_source="legacy_decel_reg",
+                warnings=(),
+            )
+
         t_motion_command_issued = trace.log(
             "motion_command_issued",
             state="commanded",
@@ -230,11 +267,11 @@ def run_record_and_motion(
         )
         _tr("move_constant_velocity CALL")  # #region agent log  #endregion
         motion_result = stage.move_constant_velocity(
-            direction=recipe.direction,
-            travel=recipe.travel,
-            speed=recipe.speed,
-            accel=recipe.accel,
-            decel=recipe.decel,
+            direction=int(backend_cmd.direction),
+            travel=float(backend_cmd.travel_user),
+            speed=float(backend_cmd.speed_reg),
+            accel=float(backend_cmd.accel_reg),
+            decel=float(backend_cmd.decel_reg),
             stop_event=stop_event,
         )
         motion_running_confirmed_s: Optional[float] = None
@@ -344,10 +381,35 @@ def run_record_and_motion(
     # - actual_metric: measured motion outcome in metric units (when stage scale is known)
     # - raw_internal: explicit backend/controller values (never pretend they're metric)
     metric_schema_version = 1
-    commanded_travel_um = (
-        float(recipe.travel) * float(stage_um_per_unit)
-        if stage_um_per_unit is not None
+    metric_command_travel_um = (
+        float(metric_command.travel_um)
+        if metric_command is not None and metric_command.travel_um is not None
         else None
+    )
+    metric_command_speed_um_s = (
+        float(metric_command.speed_um_s)
+        if metric_command is not None and metric_command.speed_um_s is not None
+        else None
+    )
+    metric_command_accel_um_s2 = (
+        float(metric_command.accel_um_s2)
+        if metric_command is not None and metric_command.accel_um_s2 is not None
+        else None
+    )
+    metric_command_decel_um_s2 = (
+        float(metric_command.decel_um_s2)
+        if metric_command is not None and metric_command.decel_um_s2 is not None
+        else None
+    )
+
+    commanded_travel_um = (
+        metric_command_travel_um
+        if metric_command_travel_um is not None
+        else (
+            float(recipe.travel) * float(stage_um_per_unit)
+            if stage_um_per_unit is not None
+            else None
+        )
     )
     actual_travel_um = (
         float(actual_travel) * float(stage_um_per_unit)
@@ -361,6 +423,15 @@ def run_record_and_motion(
     )
     metric_stage_um_source = (
         "ximc_stage_instance_ui" if stage_um_per_unit is not None else None
+    )
+    commanded_travel_um_source = (
+        "metric_command.intent"
+        if metric_command_travel_um is not None
+        else (
+            "stage_um_per_unit * legacy_recipe.travel"
+            if stage_um_per_unit is not None
+            else None
+        )
     )
 
     stage_meta: dict = {
@@ -393,9 +464,7 @@ def run_record_and_motion(
         "metric_provenance": {
             "stage_um_per_unit_source": metric_stage_um_source,
             "commanded_travel_um_source": (
-                "stage_um_per_unit * recipe.travel"
-                if stage_um_per_unit is not None
-                else None
+                commanded_travel_um_source
             ),
             "actual_travel_um_source": (
                 "stage_um_per_unit * motion_result.actual_travel_user"
@@ -407,15 +476,15 @@ def run_record_and_motion(
                 if stage_um_per_unit is not None
                 else None
             ),
-            "note": "commanded_metric.speed_um_s and accel/decel are not populated in Phase 1 because speed_reg->speed_um_s mapping is not robust yet",
+            "note": "Phase2 stores metric speed/accel/decel intent if provided, but backend mapping to XIMC registers is not implemented yet; legacy register values still drive motion.",
         },
         "commanded_metric": {
-            "axis": recipe.axis,
-            "direction": recipe.direction,
+            "axis": metric_command.axis if metric_command is not None else recipe.axis,
+            "direction": metric_command.direction if metric_command is not None else recipe.direction,
             "travel_um": commanded_travel_um,
-            "speed_um_s": None,
-            "accel_um_s2": None,
-            "decel_um_s2": None,
+            "speed_um_s": metric_command_speed_um_s,
+            "accel_um_s2": metric_command_accel_um_s2,
+            "decel_um_s2": metric_command_decel_um_s2,
             "pre_delay_s": recipe.pre_delay_s,
             "post_delay_s": recipe.post_delay_s,
         },
@@ -430,6 +499,12 @@ def run_record_and_motion(
                 "speed_reg": recipe.speed,
                 "accel_reg": recipe.accel,
                 "decel_reg": recipe.decel,
+            },
+            "metric_backend_conversion": {
+                "stage_um_per_unit_for_conversion": stage_um_per_unit_for_conversion,
+                "backend_travel_user": float(backend_cmd.travel_user) if backend_cmd is not None else float(recipe.travel),
+                "travel_source": backend_cmd.travel_source if backend_cmd is not None else "legacy_travel_user",
+                "conversion_warnings": metric_backend_conversion_warnings,
             },
         },
     }
