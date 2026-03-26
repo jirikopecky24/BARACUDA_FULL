@@ -451,19 +451,34 @@ def oscillatory_result_to_dict(result: OscillatoryAnalysisResult) -> dict:
     }
 
 
-def export_oscillatory_summary_json(result: OscillatoryAnalysisResult, output_dir: Path) -> Path:
+def export_oscillatory_summary_json(
+    result: OscillatoryAnalysisResult,
+    output_dir: Path,
+    *,
+    protocol_path: str | None = None,
+) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_oscillatory_summary.json"
-    path.write_text(json.dumps(oscillatory_result_to_dict(result), indent=2, ensure_ascii=False), encoding="utf-8")
+    payload = oscillatory_result_to_dict(result)
+    payload["protocol_present"] = bool(protocol_path)
+    payload["protocol_path"] = protocol_path
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 
-def export_oscillatory_summary_csv(result: OscillatoryAnalysisResult, output_dir: Path) -> Path:
+def export_oscillatory_summary_csv(
+    result: OscillatoryAnalysisResult,
+    output_dir: Path,
+    *,
+    protocol_path: str | None = None,
+) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_oscillatory_summary.csv"
     payload = oscillatory_result_to_dict(result)
+    payload["protocol_present"] = bool(protocol_path)
+    payload["protocol_path"] = protocol_path
     flat = {
         k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
         for k, v in payload.items()

@@ -139,20 +139,34 @@ def export_alignment_diagnostics_json(result: DragAnalysisResult, output_dir: Pa
     return path
 
 
-def export_drag_summary_json(result: DragAnalysisResult, output_dir: Path) -> Path:
+def export_drag_summary_json(
+    result: DragAnalysisResult,
+    output_dir: Path,
+    *,
+    protocol_path: str | None = None,
+) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_drag_summary.json"
     payload = drag_result_to_dict(result)
+    payload["protocol_present"] = bool(protocol_path)
+    payload["protocol_path"] = protocol_path
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 
-def export_drag_summary_csv(result: DragAnalysisResult, output_dir: Path) -> Path:
+def export_drag_summary_csv(
+    result: DragAnalysisResult,
+    output_dir: Path,
+    *,
+    protocol_path: str | None = None,
+) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_drag_summary.csv"
     payload = drag_result_to_dict(result)
+    payload["protocol_present"] = bool(protocol_path)
+    payload["protocol_path"] = protocol_path
     # Convert nested structures (e.g. used_fallbacks) into JSON strings for stable CSV cells.
     flat = {
         k: (json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v)

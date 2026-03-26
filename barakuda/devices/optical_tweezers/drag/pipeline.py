@@ -18,6 +18,12 @@ from barakuda.devices.optical_tweezers.pipeline.tracking import (
 from .analysis import analyze_drag_run
 from .io import discover_drag_run_paths, DragIoError
 from .schema import DragAnalysisConfig
+from barakuda.core.run_protocol import (
+    create_protocol_from_context,
+    load_protocol,
+    merge_protocol,
+    save_protocol,
+)
 
 
 def _run_tracking_to_trajectory(
@@ -162,9 +168,22 @@ def run_drag_from_raw(
     # analyze_drag_run will also reload paths via load_drag_run; we just pass explicit trajectory path
     result = analyze_drag_run(run_dir, cfg, trajectory_path=traj_path)
 
+    protocol_path = _update_run_protocol_with_drag_analysis(
+        run_dir=paths.run_dir,
+        result=result,
+    )
+
     # Exports
-    summary_json = export_drag_summary_json(result, paths.run_dir)
-    summary_csv = export_drag_summary_csv(result, paths.run_dir)
+    summary_json = export_drag_summary_json(
+        result,
+        paths.run_dir,
+        protocol_path=str(protocol_path) if protocol_path else None,
+    )
+    summary_csv = export_drag_summary_csv(
+        result,
+        paths.run_dir,
+        protocol_path=str(protocol_path) if protocol_path else None,
+    )
     alignment_diag_json = export_alignment_diagnostics_json(result, paths.run_dir)
 
     # Diagnostic plot needs full time axis and px signal
@@ -197,4 +216,61 @@ def run_drag_from_raw(
         "alignment_diagnostics_json": alignment_diag_json,
     }
     return result, outputs
+
+
+def _update_run_protocol_with_drag_analysis(
+    *,
+    run_dir: Path,
+    result: "DragAnalysisResult",
+) -> Path | None:
+    analysis_updates: dict[str, Any] = {
+        "analysis_type": "drag",
+        "selected_calibration_path": result.selected_calibration_path,
+        "analysis_axis": result.analysis_axis,
+        "stage_axis": result.stage_axis,
+        "warnings": list(result.warnings),
+        "qc_flags": {
+            name: value for name, value in result.qc_flags.__dict__.items()
+        },
+        "physics_status": result.physics_status,
+        "analysis_status": result.analysis_status,
+        "selected_results": {
+            "drag_force_n": result.drag_force_n,
+            "kappa_n_per_m": result.kappa_n_per_m,
+            "kappa_pn_per_um": result.kappa_pn_per_um,
+            "eta_pa_s": result.eta_pa_s,
+            "actual_speed_um_s": result.actual_speed_um_s,
+        },
+    }
+    provenance_updates: dict[str, Any] = {
+        "um_per_px_source": result.um_per_px_source,
+        "stage_um_per_unit_source": result.stage_um_per_unit_source,
+        "kappa_source": result.kappa_source,
+        "timing_source": result.timing_source,
+        "motion_kinematics_source": result.motion_kinematics_source,
+        "analysis_axis": result.analysis_axis,
+        "stage_axis": result.stage_axis,
+        "selected_stage_meta_path": result.selected_stage_meta_path,
+        "selected_stage_trace_path": result.selected_stage_trace_path,
+        "selected_timestamps_path": result.selected_timestamps_path,
+        "selected_calibration_path": result.selected_calibration_path,
+        "used_fallbacks": dict(result.used_fallbacks),
+    }
+    updates = {
+        "identity": {
+            "run_id": result.basename,
+            "source_type": "analysis",
+        },
+        "analysis": analysis_updates,
+        "provenance": provenance_updates,
+    }
+    try:
+        existing = load_protocol(run_dir)
+    except Exception:
+        existing = create_protocol_from_context()
+    try:
+        merged = merge_protocol(existing, updates, allow_manual_overwrite=False)
+        return save_protocol(merged, run_dir)
+    except Exception:
+        return None
 
