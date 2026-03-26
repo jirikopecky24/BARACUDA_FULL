@@ -1387,7 +1387,10 @@ class BatchController:
 
                             axis = str(post_params.get("drag_axis", "x")).lower().strip()
                             if axis not in {"x", "y"}:
-                                axis = "x"
+                                raise ValueError(
+                                    "Invalid DRAG axis in postprocess params: "
+                                    f"{axis!r}. Expected 'x' or 'y'."
+                                )
 
                             if axis == "x":
                                 kappa_n_per_m = brownian_cal.kappa_x_n_per_m

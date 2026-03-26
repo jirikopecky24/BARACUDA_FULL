@@ -18,14 +18,18 @@ def _interp_time_for_frames(
     if not frame_indices or not frame_times or len(frame_indices) != len(frame_times):
         raise ValueError("Invalid frame_indices/frame_times inputs")
     index_to_time = {int(f): float(t) for f, t in zip(frame_indices, frame_times)}
+    missing_frames = [int(fi) for fi in target_frames if int(fi) not in index_to_time]
+    if missing_frames:
+        preview = ", ".join(str(fi) for fi in missing_frames[:5])
+        extra = "" if len(missing_frames) <= 5 else f" (+{len(missing_frames) - 5} more)"
+        raise DragIoError(
+            "Trajectory frame indices are missing in timestamps mapping; "
+            "refusing silent frame->time clipping. "
+            f"Missing frames: {preview}{extra}"
+        )
     out: list[float] = []
     for fi in target_frames:
-        t = index_to_time.get(int(fi))
-        if t is None:
-            if fi < min(index_to_time.keys()):
-                t = frame_times[0]
-            else:
-                t = frame_times[-1]
+        t = index_to_time[int(fi)]
         out.append(float(t))
     return out
 
