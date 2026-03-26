@@ -1701,7 +1701,8 @@ class BatchController:
                                     if fit_axis and "fc_hz" in fit_axis:
                                         fc = float(fit_axis.get("fc_hz", 0.0))
                                         kappa_b = kappa_from_fc_n_per_m(fc, viscosity_pa_s=float(eta), bead_radius_um=float(r_um))
-                                        kappa_b_pn_um = float(abs(kappa_b) * 1e6 * 1e12)
+                                        # N/m -> pN/µm: 1 N/m = 1e6 pN/µm
+                                        kappa_b_pn_um = float(abs(kappa_b) * 1e6)
                                     else:
                                         fc, kappa_b, kappa_b_pn_um = 0.0, 0.0, 0.0
                                 else:

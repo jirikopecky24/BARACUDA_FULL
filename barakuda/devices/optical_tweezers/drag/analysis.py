@@ -380,17 +380,22 @@ def analyze_drag_run(
     if physics_inputs_ok:
         v_m_s = actual_speed_um_s * 1e-6
         offset_m = offset_um_stage_signed * 1e-6 if offset_um_stage_signed is not None else None
+        # Sign-safe inversion: velocity is treated as a positive magnitude and
+        # displacement sign should not flip inferred viscosity/stiffness
+        # magnitudes. Keep signed offsets only for reporting.
+        offset_m_mag = abs(offset_m) if offset_m is not None else None
         try:
-            if offset_m is not None and offset_m != 0:
+            if offset_m_mag is not None and offset_m_mag != 0:
                 if config.eta_pa_s is not None:
                     drag_force_n = compute_drag_force(config.eta_pa_s, radius_m, v_m_s)
                     kappa_n_per_m = compute_kappa_from_drag(
                         config.eta_pa_s,
                         radius_m,
                         v_m_s,
-                        offset_m,
+                        offset_m_mag,
                     )
-                    kappa_pn_per_um = kappa_n_per_m * 1e6 * 1e12
+                    # N/m -> pN/µm: 1 N = 1e12 pN and 1 m = 1e6 µm => 1 N/m = 1e6 pN/µm
+                    kappa_pn_per_um = abs(kappa_n_per_m) * 1e6
                     eta_pa_s = config.eta_pa_s
                     physics_status = "ready"
                     qc.physics_ready = True
@@ -399,11 +404,12 @@ def analyze_drag_run(
                         config.kappa_n_per_m,
                         radius_m,
                         v_m_s,
-                        offset_m,
+                        offset_m_mag,
                     )
                     drag_force_n = compute_drag_force(eta_pa_s, radius_m, v_m_s)
                     kappa_n_per_m = config.kappa_n_per_m
-                    kappa_pn_per_um = kappa_n_per_m * 1e6 * 1e12
+                    # N/m -> pN/µm: 1 N/m = 1e6 pN/µm
+                    kappa_pn_per_um = abs(kappa_n_per_m) * 1e6
                     physics_status = "ready"
                     qc.physics_ready = True
         except DragPhysicsError as e:

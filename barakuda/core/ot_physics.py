@@ -279,7 +279,8 @@ def compute_dragging_from_offset(offset_um: float, params: DragParams) -> DragRe
         drag_force_n=f_drag,
         offset_um=off,
         kappa_n_per_m=kappa,
-        kappa_pn_per_um=float(kappa_abs * 1e6 * 1e12),  # (N/m)->(pN/µm)
+        # N/m -> pN/µm: 1 N = 1e12 pN and 1 m = 1e6 µm => 1 N/m = 1e6 pN/µm
+        kappa_pn_per_um=float(kappa_abs * 1e6),  # (N/m)->(pN/µm)
         axis=axis,
         stage_speed_um_s=v_um_s,
         viscosity_pa_s=eta,
