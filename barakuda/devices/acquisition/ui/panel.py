@@ -44,6 +44,7 @@ from barakuda.devices.acquisition.motion.motion_run import (
     MotionRunResult,
     MotionRunError,
 )
+from barakuda.devices.acquisition.motion.metric_conversion import MetricMotionCommand
 try:
     from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
     _XIMC_AVAILABLE = True
@@ -209,6 +210,7 @@ class _RecordMotionWorker(QObject):
         camera: BaslerCamera,
         stage,                         # AbstractStage (typed loosely to avoid import cycles)
         recipe: ConstantVelocityDragRecipe,
+        metric_command: MetricMotionCommand | None,
         output_dir: str,
         basename: str,
         duration_s: float,
@@ -223,6 +225,7 @@ class _RecordMotionWorker(QObject):
         self._cam = camera
         self._stage = stage
         self._recipe = recipe
+        self._metric_command = metric_command
         self._output_dir = output_dir
         self._basename = basename
         self._duration_s = duration_s
@@ -239,6 +242,7 @@ class _RecordMotionWorker(QObject):
                 camera=self._cam,
                 stage=self._stage,
                 recipe=self._recipe,
+                metric_command=self._metric_command,
                 output_dir=self._output_dir,
                 basename=self._basename,
                 duration_s=self._duration_s,
@@ -1129,6 +1133,23 @@ class AcquisitionPanel(QWidget):
             self._lbl_motion_run_status.setText(f"Recipe error: {'; '.join(errors)}")
             return
 
+        # Metric intent (Phase3): construct explicitly from legacy travel_user via
+        # stage_um_per_unit. Do not reinterpret speed/accel/decel registers as metric
+        # yet; backend conversion mapping for those is not trustworthy.
+        stage_um_per_unit = self._stage.get_stage_um_per_unit() if self._stage is not None else None
+        metric_command: MetricMotionCommand | None = None
+        if stage_um_per_unit is not None and stage_um_per_unit > 0:
+            metric_command = MetricMotionCommand(
+                axis=recipe.axis,
+                direction=int(recipe.direction),
+                travel_um=float(recipe.travel) * float(stage_um_per_unit),
+                speed_um_s=None,
+                accel_um_s2=None,
+                decel_um_s2=None,
+                pre_delay_s=float(recipe.pre_delay_s),
+                post_delay_s=float(recipe.post_delay_s),
+            )
+
         requested_roi = self._get_roi_tuple()
         roi = self._sync_roi_to_camera(requested_roi)
         gain = self._spin_gain.value() if self._spin_gain.isEnabled() else None
@@ -1160,6 +1181,7 @@ class AcquisitionPanel(QWidget):
             camera=self._camera,
             stage=self._stage,
             recipe=recipe,
+            metric_command=metric_command,
             output_dir=str(self._get_run_output_dir()),
             basename=self._edit_basename.text(),
             duration_s=self._spin_duration.value(),
