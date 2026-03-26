@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+import re
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
@@ -54,6 +55,9 @@ class ShellMainWindow(QMainWindow):
         # OT RUN thread/worker
         self._ot_run_thread = None
         self._ot_run_worker = None
+        # Track per-item completion for progressive OT overlay updates.
+        self._ot_last_done_seen: int = -1
+        self._ot_overlay_last_applied_done: int = -1
 
         runs_folder = Path(__file__).resolve().parents[2] / "runs"
         self.batch = BatchController(runs_folder=runs_folder, log_fn=self.log_panel.log)
@@ -968,6 +972,47 @@ class ShellMainWindow(QMainWindow):
                 self.log_panel.log(f"OT batch progress: {pct}% {msg}")
                 if hasattr(self._device_panel, "set_batch_progress"):
                     self._device_panel.set_batch_progress(0, 100, msg, pct)
+
+                # Progressive preview: update overlay only after an OT item
+                # fully completes (i.e. when the "done index" increments).
+                # This avoids updating on per-frame progress where done index
+                # has not yet advanced.
+                if "RUN: [" not in msg:
+                    return
+                m = re.search(r"\bRUN:\s*\[(\d+)/(\d+)\]", msg)
+                if not m:
+                    return
+                try:
+                    done_idx = int(m.group(1))
+                except Exception:
+                    return
+
+                prev_done_idx = self._ot_last_done_seen
+                completion = "(100%)" in msg
+
+                if done_idx <= prev_done_idx:
+                    return
+
+                # done_idx increased -> this is the end-of-item progress_fn call.
+                self._ot_last_done_seen = done_idx
+
+                if not completion or done_idx <= self._ot_overlay_last_applied_done:
+                    return
+
+                overlay_video_path = getattr(self.batch, "last_ot_overlay_video_path", None)
+                overlay_trajectory_path = getattr(self.batch, "last_ot_overlay_trajectory_path", None)
+                if not overlay_video_path or not overlay_trajectory_path:
+                    return
+
+                try:
+                    self._ot_preview.set_ot_live_overlay(
+                        overlay_trajectory_path,
+                        video_path=overlay_video_path,
+                    )
+                    self._ot_overlay_last_applied_done = done_idx
+                except Exception:
+                    # Preview updates should never crash the batch run.
+                    pass
             self._ot_run_worker.progress_pct.connect(_on_ot_prog)
             self._ot_run_worker.log_msg.connect(self.log_panel.log)
             self._ot_run_worker.status_update.connect(self.dataset.set_status)

@@ -394,7 +394,12 @@ class XimcStage(AbstractStage):
                     f"XIMC: move timeout after {_phase2_timeout_s:.1f} s "
                     f"(travel={travel}, speed={speed})"
                 )
-            time.sleep(0.005)
+            # Polling interval intentionally kept small but not overly aggressive:
+            # tight 200Hz polling can starve the Qt main thread enough that the
+            # acquisition live preview appears stalled during Record+Motion.
+            # This does NOT change the motion physics; it only bounds how quickly
+            # we observe MVCMD_RUNNING clearing (<= ~10ms detection granularity).
+            time.sleep(0.010)
 
         t_stop = time.perf_counter()
 
