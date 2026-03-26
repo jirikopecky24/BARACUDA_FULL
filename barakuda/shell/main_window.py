@@ -182,7 +182,7 @@ class ShellMainWindow(QMainWindow):
     def _stage_console_snapshot(self) -> StageConsoleSnapshot:
         svc = get_stage_service()
         lease = svc.lease_state()
-        pos_um = svc.get_position_um()
+        tel = svc.get_telemetry()
         owner = lease.owner or "none"
         state_parts: list[str] = []
         if lease.run_active:
@@ -196,11 +196,23 @@ class ShellMainWindow(QMainWindow):
         if lease.stage_um_per_unit is None or (lease.stage_um_per_unit is not None and lease.stage_um_per_unit <= 0):
             state_parts.append("µm/unit unknown")
 
+        speed_note = ""
+        if lease.run_active:
+            speed_note = "paused during acquisition"
+        elif tel.speed_um_s is not None and tel.speed_is_derived:
+            speed_note = "derived"
+        elif tel.speed_um_s is None:
+            speed_note = "N/A"
+
         return StageConsoleSnapshot(
             connected=lease.connected,
             state_text=", ".join(state_parts) if state_parts else "—",
             owner_text=owner,
-            position_um=pos_um,
+            position_um=tel.position_um,
+            speed_um_s=tel.speed_um_s,
+            speed_note=speed_note,
+            encoder=tel.encoder,
+            stage_state=tel.state,
         )
 
     def _set_window_icon_if_available(self) -> None:

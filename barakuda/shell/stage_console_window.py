@@ -27,6 +27,10 @@ class StageConsoleSnapshot:
     state_text: str
     owner_text: str
     position_um: Optional[float] = None
+    speed_um_s: Optional[float] = None
+    speed_note: str = ""
+    encoder: Optional[float] = None
+    stage_state: str = ""
 
 
 class _MoveWorker(QObject):
@@ -81,6 +85,9 @@ class StageConsoleWindow(QMainWindow):
         self._lbl_state = QLabel("—")
         self._lbl_owner = QLabel("—")
         self._lbl_pos_um = QLabel("—")
+        self._lbl_speed_um_s = QLabel("—")
+        self._lbl_encoder = QLabel("—")
+        self._lbl_stage_state = QLabel("—")
         self._lbl_pos_um.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._lbl_pos_um.setStyleSheet("font-size: 18px; font-weight: 600;")
 
@@ -88,6 +95,9 @@ class StageConsoleWindow(QMainWindow):
         state_form.addRow("State:", self._lbl_state)
         state_form.addRow("Owner:", self._lbl_owner)
         state_form.addRow("Position (µm):", self._lbl_pos_um)
+        state_form.addRow("Speed (µm/s):", self._lbl_speed_um_s)
+        state_form.addRow("Encoder:", self._lbl_encoder)
+        state_form.addRow("Stage state:", self._lbl_stage_state)
 
         row_lease = QHBoxLayout()
         self._btn_take_control = QPushButton("Take control")
@@ -244,6 +254,13 @@ class StageConsoleWindow(QMainWindow):
         self._lbl_state.setText(snap.state_text or "—")
         self._lbl_owner.setText(snap.owner_text or "—")
         self._lbl_pos_um.setText("—" if snap.position_um is None else f"{snap.position_um:.3f}")
+        if snap.speed_um_s is None:
+            self._lbl_speed_um_s.setText("—" if not snap.speed_note else f"—  ({snap.speed_note})")
+        else:
+            note = f" ({snap.speed_note})" if snap.speed_note else ""
+            self._lbl_speed_um_s.setText(f"{snap.speed_um_s:.3f}{note}")
+        self._lbl_encoder.setText("—" if snap.encoder is None else f"{snap.encoder}")
+        self._lbl_stage_state.setText(snap.stage_state or "—")
 
         # Enable manual controls only when Stage Console owns the lease and stage is usable.
         lease = self._service.lease_state()

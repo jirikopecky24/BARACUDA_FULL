@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional, Literal
 
@@ -18,6 +19,22 @@ class StageLeaseState:
     run_active: bool
     stage_um_per_unit: Optional[float]
     monitor_only_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class StageTelemetry:
+    """Conservative live telemetry snapshot (operator diagnostics).
+
+    IMPORTANT:
+    - speed_um_s is *derived* from position deltas (Δx/Δt), not controller-reported.
+    - encoder is not exposed yet (None) until backend provides a distinct readback.
+    """
+
+    position_um: Optional[float]
+    speed_um_s: Optional[float]
+    speed_is_derived: bool
+    encoder: Optional[float]
+    state: Literal["disconnected", "idle", "busy", "run_active", "monitor_only"]
 
 
 class StageService:
@@ -41,6 +58,12 @@ class StageService:
         self._owner: Optional[LeaseOwner] = None
         self._busy: bool = False
         self._run_active: bool = False
+
+        # Telemetry cache (read-only diagnostics, rate-limited to avoid contention).
+        self._tel_last_poll_s: float = 0.0
+        self._tel_last_pos_um: Optional[float] = None
+        self._tel_last_pos_t_s: Optional[float] = None
+        self._tel_last_speed_um_s: Optional[float] = None
 
     # ---------------- basic accessors ----------------
     @property
@@ -95,6 +118,10 @@ class StageService:
             self._owner = None
             self._busy = False
             self._run_active = False
+            self._tel_last_poll_s = 0.0
+            self._tel_last_pos_um = None
+            self._tel_last_pos_t_s = None
+            self._tel_last_speed_um_s = None
 
     # ---------------- lease / acquisition interaction ----------------
     def request_lease(self, owner: LeaseOwner, *, force: bool = False) -> tuple[bool, str]:
@@ -132,14 +159,67 @@ class StageService:
                 self._owner = "acquisition"
 
     # ---------------- safe readbacks ----------------
-    def get_position_um(self) -> Optional[float]:
+    def get_telemetry(self) -> StageTelemetry:
         with self._lock:
             if self._stage is None or not self._stage.is_connected:
-                return None
+                return StageTelemetry(
+                    position_um=None,
+                    speed_um_s=None,
+                    speed_is_derived=False,
+                    encoder=None,
+                    state="disconnected",
+                )
+
+            # Conservative cadence: slow down during acquisition runs (monitor-only).
+            min_interval_s = 0.5 if self._run_active else 0.1
+            now_s = time.perf_counter()
+            if (now_s - self._tel_last_poll_s) < min_interval_s:
+                return StageTelemetry(
+                    position_um=self._tel_last_pos_um,
+                    speed_um_s=None if self._run_active else self._tel_last_speed_um_s,
+                    speed_is_derived=bool(self._tel_last_speed_um_s is not None) and (not self._run_active),
+                    encoder=None,
+                    state=("run_active" if self._run_active else ("busy" if self._busy else "idle")),
+                )
+
+            self._tel_last_poll_s = now_s
+
             if self._stage_um_per_unit is None or self._stage_um_per_unit <= 0:
-                return None
+                # Scale unknown → we cannot report metric telemetry.
+                self._tel_last_pos_um = None
+                self._tel_last_speed_um_s = None
+                self._tel_last_pos_t_s = None
+                return StageTelemetry(
+                    position_um=None,
+                    speed_um_s=None,
+                    speed_is_derived=False,
+                    encoder=None,
+                    state=("run_active" if self._run_active else ("busy" if self._busy else "idle")),
+                )
+
             pos_user = float(self._stage.get_position())
-            return pos_user * float(self._stage_um_per_unit)
+            pos_um = pos_user * float(self._stage_um_per_unit)
+
+            # Derived speed (Δx/Δt). Only compute when cadence is reasonable and we're not in run_active.
+            speed_um_s: Optional[float] = None
+            if not self._run_active and self._tel_last_pos_um is not None and self._tel_last_pos_t_s is not None:
+                dt = now_s - float(self._tel_last_pos_t_s)
+                if 0.05 <= dt <= 2.0:
+                    speed_um_s = (pos_um - float(self._tel_last_pos_um)) / dt
+            self._tel_last_pos_um = pos_um
+            self._tel_last_pos_t_s = now_s
+            self._tel_last_speed_um_s = speed_um_s
+
+            return StageTelemetry(
+                position_um=pos_um,
+                speed_um_s=speed_um_s,
+                speed_is_derived=(speed_um_s is not None),
+                encoder=None,
+                state=("run_active" if self._run_active else ("busy" if self._busy else "idle")),
+            )
+
+    def get_position_um(self) -> Optional[float]:
+        return self.get_telemetry().position_um
 
     # ---------------- manual control (Phase 6) ----------------
     def stop(self, *, owner: LeaseOwner) -> None:
