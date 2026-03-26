@@ -342,6 +342,8 @@ def analyze_drag_run(
     stage_um_per_unit = config.stage_um_per_unit or loaded.stage_meta.stage_um_per_unit
     actual_travel_um = loaded.stage_meta.actual_travel_um
     actual_speed_um_s = loaded.stage_meta.actual_speed_um_s
+    stage_meta_travel_um = loaded.stage_meta.actual_travel_um
+    stage_meta_speed_um_s = loaded.stage_meta.actual_speed_um_s
     stage_um_per_unit_source_actual = config.stage_um_per_unit_source
     if config.stage_um_per_unit is None or not bool(config.stage_um_per_unit):
         stage_um_per_unit_source_actual = "stage_meta_fallback" if "stage_meta_path" in loaded.paths.used_fallbacks else "stage_meta"
@@ -363,6 +365,32 @@ def analyze_drag_run(
             warnings.append("stage_um_per_unit not provided; absolute drag physics may be incomplete.")
     # If actual_speed_um_s is still missing, we can proceed with signal-level outputs
     # but physics requiring SI units will remain incomplete.
+
+    # Export/provenance: make motion kinematics semantics explicit.
+    motion_kinematics_source = loaded.stage_meta.kinematics_source
+    if motion_kinematics_source == "legacy_user_units":
+        if actual_speed_um_s is not None:
+            non_authoritative = (
+                stage_um_per_unit_source_actual is not None
+                and (
+                    stage_um_per_unit_source_actual == "default"
+                    or stage_um_per_unit_source_actual == "ui_override"
+                    or "fallback" in str(stage_um_per_unit_source_actual)
+                )
+            )
+            motion_kinematics_source = (
+                "legacy_user_units_via_stage_um_per_unit_non_authoritative"
+                if non_authoritative
+                else "legacy_user_units_via_stage_um_per_unit"
+            )
+    elif motion_kinematics_source == "actual_metric":
+        # If only part of actual_metric was present, remaining parts may have been derived via legacy conversion.
+        derived_any = (
+            (stage_meta_travel_um is None and actual_travel_um is not None)
+            or (stage_meta_speed_um_s is None and actual_speed_um_s is not None)
+        )
+        if derived_any:
+            motion_kinematics_source = "actual_metric_partial_plus_legacy_conversion"
 
     # 7) Physics layer (optional)
     drag_force_n = kappa_n_per_m = kappa_pn_per_um = eta_pa_s = None
@@ -487,5 +515,6 @@ def analyze_drag_run(
             + (" (fallback)" if loaded.paths.used_fallbacks.get("timestamps_path") is not None else "")
             + f";stage_anchor={timing_anchor_used}"
         ),
+        motion_kinematics_source=motion_kinematics_source,
     )
 

@@ -23,6 +23,7 @@ def drag_result_to_dict(result: DragAnalysisResult) -> dict[str, Any]:
         # Provenance / auditability
         "um_per_px_source": result.um_per_px_source,
         "stage_um_per_unit_source": result.stage_um_per_unit_source,
+        "motion_kinematics_source": result.motion_kinematics_source,
         "kappa_source": result.kappa_source,
         "selected_calibration_path": result.selected_calibration_path,
         "selected_stage_meta_path": result.selected_stage_meta_path,

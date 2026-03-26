@@ -256,6 +256,7 @@ class DragAnalysisResult:
     selected_timestamps_path: str | None = None
     used_fallbacks: dict[str, str] = field(default_factory=dict)
     timing_source: str | None = None
+    motion_kinematics_source: str | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:
