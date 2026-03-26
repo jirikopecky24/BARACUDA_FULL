@@ -121,6 +121,9 @@ class RunProtocolDialog(QDialog):
         self._add_bool_combo(form, "status.keep_for_analysis", "keep_for_analysis")
         self._add_bool_combo(form, "status.rejected", "rejected")
         self._add_line_edit(form, "status.rejection_reason", "rejection_reason", multiline=True)
+        rejected_widget = self._field_widgets.get("status.rejected")
+        if isinstance(rejected_widget, QComboBox):
+            rejected_widget.currentIndexChanged.connect(self._on_rejected_changed)
         return box
 
     def _build_read_only_tab(self) -> QWidget:
@@ -152,9 +155,9 @@ class RunProtocolDialog(QDialog):
 
     def _add_bool_combo(self, form: QFormLayout, key: str, label: str) -> None:
         c = QComboBox()
-        c.addItem("", None)
-        c.addItem("true", True)
-        c.addItem("false", False)
+        c.addItem("unset", None)
+        c.addItem("yes", True)
+        c.addItem("no", False)
         self._field_widgets[key] = c
         form.addRow(label + ":", c)
 
@@ -249,6 +252,7 @@ class RunProtocolDialog(QDialog):
                     widget.setCurrentIndex(2)
                 else:
                     widget.setCurrentIndex(0)
+        self._on_rejected_changed()
 
         readonly_payload = {
             "identity": {
@@ -279,3 +283,17 @@ class RunProtocolDialog(QDialog):
     def _set_status(self, message: str, *, error: bool = False) -> None:
         self._status.setText(message)
         self._status.setStyleSheet("color: #b00020;" if error else "color: #666;")
+
+    def _on_rejected_changed(self) -> None:
+        rejected_widget = self._field_widgets.get("status.rejected")
+        reason_widget = self._field_widgets.get("status.rejection_reason")
+        if not isinstance(rejected_widget, QComboBox) or reason_widget is None:
+            return
+        rejected_value = rejected_widget.currentData(Qt.ItemDataRole.UserRole)
+        enabled = rejected_value is True
+        reason_widget.setEnabled(enabled)
+        if not enabled and isinstance(reason_widget, QPlainTextEdit):
+            # Keep content intact, only disable editing unless rejected=True.
+            reason_widget.setPlaceholderText("Enable by setting rejected = yes.")
+        elif isinstance(reason_widget, QPlainTextEdit):
+            reason_widget.setPlaceholderText("")
