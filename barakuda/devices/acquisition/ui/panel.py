@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QFileDialog, QGroupBox, QScrollArea, QFrame,
     QSlider, QGridLayout, QPlainTextEdit, QComboBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
-    QTabWidget, QMessageBox,
+    QTabWidget, QMessageBox, QStackedWidget,
 )
 from PyQt6.QtGui import QFont
 
@@ -736,7 +736,7 @@ class AcquisitionPanel(QWidget):
     # ------------------------------------------------------------------ #
 
     def _build_motion_tab(self) -> QWidget:
-        """Build the Motion configuration tab (constant_velocity_drag preset)."""
+        """Build the Motion configuration tab (protocol-based, metric UI)."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -788,9 +788,15 @@ class AcquisitionPanel(QWidget):
 
         layout.addWidget(grp_stage)
 
-        # -- Motion mode group --
-        grp_motion = QGroupBox("Motion — constant_velocity_drag")
-        motion_form = QFormLayout(grp_motion)
+        # -- Motion protocol group (architecture stable regardless of connection state) --
+        grp_motion = QGroupBox("Motion")
+        motion_outer = QVBoxLayout(grp_motion)
+        motion_outer.setContentsMargins(10, 10, 10, 10)
+        motion_outer.setSpacing(6)
+
+        motion_form = QFormLayout()
+        motion_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        motion_outer.addLayout(motion_form)
 
         self._check_motion_enable = QPushButton("Enable Motion")
         self._check_motion_enable.setCheckable(True)
@@ -802,6 +808,19 @@ class AcquisitionPanel(QWidget):
         self._check_motion_enable.toggled.connect(self._on_motion_enable_toggled)
         motion_form.addRow("", self._check_motion_enable)
 
+        self._combo_motion_protocol = QComboBox()
+        self._combo_motion_protocol.addItems([
+            "Constant velocity drag",
+            "Oscillatory drag (real-data)",
+        ])
+        self._combo_motion_protocol.setToolTip(
+            "Select the motion protocol.\n"
+            "Constant velocity drag is supported for Record+Motion.\n"
+            "Oscillatory drag (real-data) is shown for the expected architecture, but is not wired yet."
+        )
+        self._combo_motion_protocol.currentIndexChanged.connect(self._update_motion_run_button)
+        motion_form.addRow("Protocol:", self._combo_motion_protocol)
+
         self._combo_motion_axis = QComboBox()
         self._combo_motion_axis.addItems(["x", "y"])
         self._combo_motion_axis.setToolTip("Stage axis to drive during the drag run.")
@@ -812,50 +831,143 @@ class AcquisitionPanel(QWidget):
         self._combo_motion_direction.setToolTip("Stage movement direction relative to positive axis.")
         motion_form.addRow("Direction:", self._combo_motion_direction)
 
-        self._spin_motion_travel = _NoScrollDoubleSpinBox()
-        self._spin_motion_travel.setRange(0.1, 1_000_000.0)
-        self._spin_motion_travel.setValue(200.0)
-        self._spin_motion_travel.setDecimals(1)
-        self._spin_motion_travel.setSuffix(" units")
-        self._spin_motion_travel.setToolTip("Total travel distance in stage user units.")
-        motion_form.addRow("Travel:", self._spin_motion_travel)
+        # Protocol-specific UI (stack)
+        self._motion_protocol_stack = QStackedWidget()
+        motion_outer.addWidget(self._motion_protocol_stack)
 
-        self._spin_motion_speed = _NoScrollDoubleSpinBox()
-        self._spin_motion_speed.setRange(1.0, 1_000_000.0)
-        self._spin_motion_speed.setValue(1.0)
-        self._spin_motion_speed.setDecimals(0)
-        self._spin_motion_speed.setSuffix(" (reg)")
-        self._spin_motion_speed.setToolTip(
-            "XIMC Speed register (direct firmware value).\n"
-            "Lower = faster, higher = slower.\n"
-            "Speed=1, Accel=20 → ~20 s for Travel=1500 (slow drag mode).\n"
-            "Same as XILab: m.Speed = 1"
-        )
-        motion_form.addRow("Speed:", self._spin_motion_speed)
+        # --- Protocol: Constant velocity drag (supported) ---
+        cvw = QWidget()
+        cv_form = QFormLayout(cvw)
+        cv_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
 
-        self._spin_motion_accel = _NoScrollDoubleSpinBox()
-        self._spin_motion_accel.setRange(1.0, 1_000_000.0)
-        self._spin_motion_accel.setValue(20.0)
-        self._spin_motion_accel.setDecimals(0)
-        self._spin_motion_accel.setSuffix(" (reg)")
-        self._spin_motion_accel.setToolTip(
-            "XIMC Accel register (direct firmware value).\n"
-            "Accel=20 matches XILab slow drag mode: m.Accel = 20"
+        self._spin_motion_travel_um = _NoScrollDoubleSpinBox()
+        self._spin_motion_travel_um.setRange(0.1, 1e9)
+        self._spin_motion_travel_um.setValue(200.0)
+        self._spin_motion_travel_um.setDecimals(3)
+        self._spin_motion_travel_um.setSuffix(" µm")
+        self._spin_motion_travel_um.setToolTip(
+            "Total travel distance in µm (user-facing).\n"
+            "Requires µm/unit to be known to convert safely for the backend."
         )
-        motion_form.addRow("Accel:", self._spin_motion_accel)
+        self._spin_motion_travel_um.valueChanged.connect(lambda _v: self._update_motion_run_button())
+        cv_form.addRow("Travel:", self._spin_motion_travel_um)
 
-        self._spin_motion_decel = _NoScrollDoubleSpinBox()
-        self._spin_motion_decel.setRange(1.0, 1_000_000.0)
-        self._spin_motion_decel.setValue(20.0)
-        self._spin_motion_decel.setDecimals(1)
-        self._spin_motion_decel.setSuffix(" u/s²")
-        self._spin_motion_decel.setDecimals(0)
-        self._spin_motion_decel.setSuffix(" (reg)")
-        self._spin_motion_decel.setToolTip(
-            "XIMC Decel register (direct firmware value).\n"
-            "Decel=20 matches XILab slow drag mode: m.Decel = 20"
+        self._spin_motion_speed_um_s = _NoScrollDoubleSpinBox()
+        self._spin_motion_speed_um_s.setRange(0.0, 1e12)
+        self._spin_motion_speed_um_s.setValue(0.0)
+        self._spin_motion_speed_um_s.setDecimals(3)
+        self._spin_motion_speed_um_s.setSuffix(" µm/s")
+        self._spin_motion_speed_um_s.setEnabled(False)
+        self._spin_motion_speed_um_s.setToolTip(
+            "Speed in µm/s (user-facing).\n"
+            "Backend mapping to XIMC registers is not validated yet, so this field is gated."
         )
-        motion_form.addRow("Decel:", self._spin_motion_decel)
+        cv_form.addRow("Speed:", self._spin_motion_speed_um_s)
+
+        self._spin_motion_accel_um_s2 = _NoScrollDoubleSpinBox()
+        self._spin_motion_accel_um_s2.setRange(0.0, 1e12)
+        self._spin_motion_accel_um_s2.setValue(0.0)
+        self._spin_motion_accel_um_s2.setDecimals(3)
+        self._spin_motion_accel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_accel_um_s2.setEnabled(False)
+        self._spin_motion_accel_um_s2.setToolTip(
+            "Acceleration in µm/s² (user-facing).\n"
+            "Backend mapping to XIMC registers is not validated yet, so this field is gated."
+        )
+        cv_form.addRow("Accel:", self._spin_motion_accel_um_s2)
+
+        self._spin_motion_decel_um_s2 = _NoScrollDoubleSpinBox()
+        self._spin_motion_decel_um_s2.setRange(0.0, 1e12)
+        self._spin_motion_decel_um_s2.setValue(0.0)
+        self._spin_motion_decel_um_s2.setDecimals(3)
+        self._spin_motion_decel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_decel_um_s2.setEnabled(False)
+        self._spin_motion_decel_um_s2.setToolTip(
+            "Deceleration in µm/s² (user-facing).\n"
+            "Backend mapping to XIMC registers is not validated yet, so this field is gated."
+        )
+        cv_form.addRow("Decel:", self._spin_motion_decel_um_s2)
+
+        # Advanced/debug: raw controller registers (kept explicit; NOT primary UI model)
+        self._spin_motion_speed_reg = _NoScrollDoubleSpinBox()
+        self._spin_motion_speed_reg.setRange(1.0, 1_000_000.0)
+        self._spin_motion_speed_reg.setValue(1.0)
+        self._spin_motion_speed_reg.setDecimals(0)
+        self._spin_motion_speed_reg.setSuffix(" (reg)")
+        self._spin_motion_speed_reg.setToolTip(
+            "DEBUG: XIMC Speed register (firmware value).\n"
+            "This is not a metric value. It is used until a validated µm/s mapping exists."
+        )
+        cv_form.addRow("Speed (debug):", self._spin_motion_speed_reg)
+
+        self._spin_motion_accel_reg = _NoScrollDoubleSpinBox()
+        self._spin_motion_accel_reg.setRange(1.0, 1_000_000.0)
+        self._spin_motion_accel_reg.setValue(20.0)
+        self._spin_motion_accel_reg.setDecimals(0)
+        self._spin_motion_accel_reg.setSuffix(" (reg)")
+        self._spin_motion_accel_reg.setToolTip(
+            "DEBUG: XIMC Accel register (firmware value). Not metric."
+        )
+        cv_form.addRow("Accel (debug):", self._spin_motion_accel_reg)
+
+        self._spin_motion_decel_reg = _NoScrollDoubleSpinBox()
+        self._spin_motion_decel_reg.setRange(1.0, 1_000_000.0)
+        self._spin_motion_decel_reg.setValue(20.0)
+        self._spin_motion_decel_reg.setDecimals(0)
+        self._spin_motion_decel_reg.setSuffix(" (reg)")
+        self._spin_motion_decel_reg.setToolTip(
+            "DEBUG: XIMC Decel register (firmware value). Not metric."
+        )
+        cv_form.addRow("Decel (debug):", self._spin_motion_decel_reg)
+
+        self._motion_protocol_stack.addWidget(cvw)
+
+        # --- Protocol: Oscillatory drag (real-data) (not wired yet) ---
+        osw = QWidget()
+        os_form = QFormLayout(osw)
+        os_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+
+        self._spin_osc_frequency_hz = _NoScrollDoubleSpinBox()
+        self._spin_osc_frequency_hz.setRange(0.01, 1e6)
+        self._spin_osc_frequency_hz.setValue(1.0)
+        self._spin_osc_frequency_hz.setDecimals(3)
+        self._spin_osc_frequency_hz.setSuffix(" Hz")
+        self._spin_osc_frequency_hz.setEnabled(False)
+        self._spin_osc_frequency_hz.setToolTip(
+            "Oscillatory protocol is not wired for acquisition yet (real-data).\n"
+            "This UI is present to preserve the expected protocol-based architecture."
+        )
+        os_form.addRow("Frequency:", self._spin_osc_frequency_hz)
+
+        self._spin_osc_amplitude_um = _NoScrollDoubleSpinBox()
+        self._spin_osc_amplitude_um.setRange(0.0, 1e9)
+        self._spin_osc_amplitude_um.setValue(2.0)
+        self._spin_osc_amplitude_um.setDecimals(3)
+        self._spin_osc_amplitude_um.setSuffix(" µm")
+        self._spin_osc_amplitude_um.setEnabled(False)
+        self._spin_osc_amplitude_um.setToolTip(
+            "Oscillatory protocol is not wired for acquisition yet (real-data).\n"
+            "No command will be issued in this mode."
+        )
+        os_form.addRow("Amplitude:", self._spin_osc_amplitude_um)
+
+        self._lbl_osc_note = QLabel(
+            "Oscillatory drag (real-data) is not implemented in Acquisition yet.\n"
+            "Select Constant velocity drag to run Record+Motion."
+        )
+        self._lbl_osc_note.setStyleSheet("color: #666;")
+        self._lbl_osc_note.setWordWrap(True)
+        os_form.addRow("", self._lbl_osc_note)
+
+        self._motion_protocol_stack.addWidget(osw)
+
+        def _sync_protocol_stack() -> None:
+            idx = int(self._combo_motion_protocol.currentIndex())
+            self._motion_protocol_stack.setCurrentIndex(0 if idx == 0 else 1)
+            self._update_motion_run_button()
+
+        self._combo_motion_protocol.currentIndexChanged.connect(lambda _i: _sync_protocol_stack())
+        _sync_protocol_stack()
 
         self._spin_motion_pre_delay = _NoScrollDoubleSpinBox()
         self._spin_motion_pre_delay.setRange(0.0, 60.0)
@@ -1045,8 +1157,24 @@ class AcquisitionPanel(QWidget):
         self._update_motion_run_button()
 
     def _update_motion_run_button(self) -> None:
+        # During initial UI construction, the Record+Motion button may not exist yet.
+        if not hasattr(self, "_btn_record_motion"):
+            return
+        protocol_ok = True
+        if hasattr(self, "_combo_motion_protocol"):
+            protocol_ok = self._combo_motion_protocol.currentIndex() == 0
+
+        scale_ok = True
+        try:
+            um_per_unit = float(self._spin_stage_um_per_unit.value())
+            scale_ok = um_per_unit > 0
+        except Exception:
+            scale_ok = False
+
         enabled = (
             self._check_motion_enable.isChecked()
+            and protocol_ok
+            and scale_ok
             and self._stage is not None
             and self._camera.is_connected
         )
@@ -1105,15 +1233,23 @@ class AcquisitionPanel(QWidget):
     # ------------------------------------------------------------------ #
 
     def _get_motion_recipe(self) -> ConstantVelocityDragRecipe:
+        # Only constant velocity drag is wired for acquisition runs in the MVP.
+        if hasattr(self, "_combo_motion_protocol") and self._combo_motion_protocol.currentIndex() != 0:
+            raise MotionRunError("Selected protocol is not implemented for Acquisition Record+Motion yet.")
         direction_text = self._combo_motion_direction.currentText()
         direction = 1 if "+1" in direction_text else -1
+        um_per_unit = float(self._spin_stage_um_per_unit.value())
+        if not (um_per_unit > 0):
+            raise MotionRunError("Stage scale (µm/unit) must be known (>0) for metric motion commands.")
+        travel_um = float(self._spin_motion_travel_um.value()) if hasattr(self, "_spin_motion_travel_um") else 0.0
+        travel_user = float(travel_um) / float(um_per_unit)
         return ConstantVelocityDragRecipe(
             axis=self._combo_motion_axis.currentText(),
             direction=direction,
-            travel=self._spin_motion_travel.value(),
-            speed=self._spin_motion_speed.value(),
-            accel=self._spin_motion_accel.value(),
-            decel=self._spin_motion_decel.value(),
+            travel=travel_user,
+            speed=self._spin_motion_speed_reg.value() if hasattr(self, "_spin_motion_speed_reg") else 1.0,
+            accel=self._spin_motion_accel_reg.value() if hasattr(self, "_spin_motion_accel_reg") else 20.0,
+            decel=self._spin_motion_decel_reg.value() if hasattr(self, "_spin_motion_decel_reg") else 20.0,
             pre_delay_s=self._spin_motion_pre_delay.value(),
             post_delay_s=self._spin_motion_post_delay.value(),
             sign_stage_to_image_x=self._spin_motion_sign_x.value(),
@@ -1135,7 +1271,11 @@ class AcquisitionPanel(QWidget):
             return
         self._stage_svc.set_run_active(True)
 
-        recipe = self._get_motion_recipe()
+        try:
+            recipe = self._get_motion_recipe()
+        except MotionRunError as exc:
+            self._lbl_motion_run_status.setText(str(exc))
+            return
         errors = recipe.validate()
         if errors:
             self._lbl_motion_run_status.setText(f"Recipe error: {'; '.join(errors)}")
@@ -1147,10 +1287,11 @@ class AcquisitionPanel(QWidget):
         stage_um_per_unit = self._stage.get_stage_um_per_unit() if self._stage is not None else None
         metric_command: MetricMotionCommand | None = None
         if stage_um_per_unit is not None and stage_um_per_unit > 0:
+            travel_um = float(self._spin_motion_travel_um.value()) if hasattr(self, "_spin_motion_travel_um") else float(recipe.travel) * float(stage_um_per_unit)
             metric_command = MetricMotionCommand(
                 axis=recipe.axis,
                 direction=int(recipe.direction),
-                travel_um=float(recipe.travel) * float(stage_um_per_unit),
+                travel_um=travel_um,
                 speed_um_s=None,
                 accel_um_s2=None,
                 decel_um_s2=None,
