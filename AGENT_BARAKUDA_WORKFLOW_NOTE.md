@@ -1,20 +1,19 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — PHASED NON-AFM CLEANUP PROGRAM
-- current task = phased code cleanup outside AFM
+## 0. CURRENT PHASE OVERRIDE — RESPONSIVE SHELL LAYOUT USABILITY HARDENING
+- current task = responsive shell layout usability hardening
+- focus strictly on splitter sizing, panel widths, minimum sizes, size policies, resize behavior, and right-tab usability
 - no feature development
+- no business-logic changes
 - no broad redesign
-- cleanup must preserve behavior
-- one phase at a time (strict phase separation; do not do next-phase work early)
-- stop after each phase and wait for explicit approval before continuing
+- preserve current Acquisition + OT workflows and functionality
+- one phase only (strict phase separation; do not do next-phase work early)
+- stop after report and wait for explicit approval before continuing
 - no proceeding without explicit approval
-- preserve current Acquisition + OT workflows
-- preserve provenance and auditability semantics and hardening guardrails
-- preserve unified run protocol semantics and metric transition semantics
-- if uncertain whether a cleanup is safe, do not change it in this phase
+- if uncertain whether a layout change is safe, do not change it in this phase
 - quality and trustworthiness have priority over speed
 - keep changes minimal, explicit, reviewable, and reversible
-- commit after each phase only if that phase includes concrete scoped changes
+- commit after this phase only if it includes concrete scoped layout changes
 
 ## 1. PROJECT MODE
 - BARAKUDA is deterministic scientific software

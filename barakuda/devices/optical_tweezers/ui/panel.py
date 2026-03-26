@@ -625,10 +625,17 @@ class PipelinePanel(QWidget):
         # TABS: replacing scrollable collapsibles
         # ══════════════════════════════════════════════════════════
         self.tabs = QTabWidget()
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         tab_run = QWidget()
         tab_run_layout = QVBoxLayout(tab_run)
         tab_run_layout.setContentsMargins(8, 8, 8, 8)
+
+        tab_run_content = QWidget()
+        tab_run_content_layout = QVBoxLayout(tab_run_content)
+        tab_run_content_layout.setContentsMargins(0, 0, 0, 0)
         
         # ── Profile Management ──
         prof_box = QWidget()
@@ -656,7 +663,7 @@ class PipelinePanel(QWidget):
         prof_layout.addWidget(prof_lbl)
         prof_layout.addLayout(row1)
         prof_layout.addLayout(row2)
-        tab_run_layout.addWidget(prof_box)
+        tab_run_content_layout.addWidget(prof_box)
 
         # ── Frame range ──
         range_form = QWidget()
@@ -668,23 +675,29 @@ class PipelinePanel(QWidget):
         output_root_row.addWidget(self._run_output_root, 1)
         output_root_row.addWidget(self._btn_browse_run_output_root)
         range_layout.addRow("Output Root", output_root_row)
-        tab_run_layout.addWidget(range_form)
+        tab_run_content_layout.addWidget(range_form)
 
         sep_range = QFrame()
         sep_range.setFrameShape(QFrame.Shape.HLine)
         sep_range.setStyleSheet("color: #ddd;")
-        tab_run_layout.addWidget(sep_range)
+        tab_run_content_layout.addWidget(sep_range)
 
         # ── Action buttons ──
-        tab_run_layout.addWidget(self.btn_preview_gate)
-        tab_run_layout.addWidget(self.btn_gate_report)
-        tab_run_layout.addWidget(self.btn_open_protocol)
-        tab_run_layout.addWidget(self.btn_run)
-        tab_run_layout.addWidget(self.btn_stop)
-        tab_run_layout.addWidget(self.btn_reset)
-        tab_run_layout.addWidget(self._progress_label)
-        tab_run_layout.addWidget(self.progress)
-        tab_run_layout.addStretch(1)
+        tab_run_content_layout.addWidget(self.btn_preview_gate)
+        tab_run_content_layout.addWidget(self.btn_gate_report)
+        tab_run_content_layout.addWidget(self.btn_open_protocol)
+        tab_run_content_layout.addWidget(self.btn_run)
+        tab_run_content_layout.addWidget(self.btn_stop)
+        tab_run_content_layout.addWidget(self.btn_reset)
+        tab_run_content_layout.addWidget(self._progress_label)
+        tab_run_content_layout.addWidget(self.progress)
+        tab_run_content_layout.addStretch(1)
+
+        scroll_run = QScrollArea()
+        scroll_run.setWidgetResizable(True)
+        scroll_run.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_run.setWidget(tab_run_content)
+        tab_run_layout.addWidget(scroll_run)
 
         tab_tracking = QWidget()
         tab_tracking_layout = QVBoxLayout(tab_tracking)
@@ -762,9 +775,12 @@ class PipelinePanel(QWidget):
                 return
             # Add a small safety margin for scrollbars/padding
             target_width = hint.width() + 32
+            target_width = max(360, min(target_width, 520))
             current_min = self.minimumWidth()
             if target_width > current_min:
                 self.setMinimumWidth(target_width)
+
+        self.setMaximumWidth(760)
 
         self.tabs.currentChanged.connect(_update_min_width_for_tab)
         # Apply once after construction for the initial tab

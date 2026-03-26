@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter
+    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -30,6 +30,7 @@ class ShellMainWindow(QMainWindow):
 
         self.setWindowTitle("BARAKUDA Analysis Suite — Modular")
         self.resize(1400, 860)
+        self.setMinimumSize(1100, 700)
         self._set_window_icon_if_available()
 
         self.dataset = DatasetPanel()
@@ -72,19 +73,25 @@ class ShellMainWindow(QMainWindow):
         self._preview_stack.addWidget(self._afm_preview)
         self._preview_stack.addWidget(self._ot_preview)
         self._preview_stack.setCurrentWidget(self._afm_preview)
+        self._preview_stack.setMinimumWidth(520)
+        self._preview_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Right-hand panel (device container with PipelinePanel / AFM panel)
         # should behave similarly to the Dataset dock: never collapse below
         # a comfortable minimum width so that labels and controls remain readable.
         self._device_container.setMinimumWidth(380)
+        self._device_container.setMaximumWidth(760)
+        self._device_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self._center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._center_splitter.addWidget(self._preview_stack)
         self._center_splitter.addWidget(self._device_container)
         self._center_splitter.setStretchFactor(0, 3)
         self._center_splitter.setStretchFactor(1, 2)
+        self._center_splitter.setChildrenCollapsible(False)
         # Do not allow the right panel to be collapsed to 0px.
         try:
+            self._center_splitter.setCollapsible(0, False)
             self._center_splitter.setCollapsible(1, False)
         except Exception:
             # Older Qt versions may not support setCollapsible; safe to ignore.
@@ -126,6 +133,8 @@ class ShellMainWindow(QMainWindow):
         # ---------------- Dock widgets (Dataset / Pipeline / Log) ----------------
         self.dataset_dock = QDockWidget("Dataset", self)
         self.dataset_dock.setWidget(self.dataset)
+        self.dataset.setMinimumWidth(260)
+        self.dataset_dock.setMinimumWidth(280)
         self.dataset_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -193,6 +202,7 @@ class ShellMainWindow(QMainWindow):
             try:
                 self.resizeDocks([self.dataset_dock], [200], Qt.Orientation.Horizontal)
                 self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
+                self._center_splitter.setSizes([900, 500])
             except Exception:
                 pass
 
@@ -485,9 +495,17 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id == "acquisition":
             self._preview_stack.hide()
             self.dataset_dock.hide()
+            try:
+                self._center_splitter.setSizes([0, 1])
+            except Exception:
+                pass
         else:
             self._preview_stack.show()
             self.dataset_dock.show()
+            try:
+                self._center_splitter.setSizes([900, 500])
+            except Exception:
+                pass
             if self._active_device_id == "afm":
                 self._preview_stack.setCurrentWidget(self._afm_preview)
             else:

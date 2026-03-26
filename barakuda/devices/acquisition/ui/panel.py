@@ -389,11 +389,14 @@ class AcquisitionPanel(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        self.setMinimumSize(760, 560)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
 
         # ---- LEFT: Live preview ----
         left = QWidget()
+        left.setMinimumWidth(420)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -440,6 +443,7 @@ class AcquisitionPanel(QWidget):
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.Shape.NoFrame)
         right_scroll.setMinimumWidth(340)
+        right_scroll.setMaximumWidth(780)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -681,6 +685,8 @@ class AcquisitionPanel(QWidget):
         self._status.setToolTip("Connection state, preview FPS, recording progress.")
         # -- Assemble tabs --
         tabs = QTabWidget()
+        tabs.setUsesScrollButtons(True)
+        tabs.setElideMode(Qt.TextElideMode.ElideRight)
 
         # Tab 0: Camera (connection + settings)
         tab_camera = QWidget()
@@ -727,6 +733,11 @@ class AcquisitionPanel(QWidget):
         # Splitter stretch factors: preview=3, controls=2 (~60/40)
         self._splitter.setStretchFactor(0, 3)
         self._splitter.setStretchFactor(1, 2)
+        try:
+            self._splitter.setCollapsible(0, False)
+            self._splitter.setCollapsible(1, False)
+        except Exception:
+            pass
 
         root.addWidget(self._splitter)
 

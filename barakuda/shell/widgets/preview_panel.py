@@ -9,7 +9,7 @@ pg.setConfigOptions(imageAxisOrder='row-major')
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QTabWidget, QSlider, QHBoxLayout
+    QWidget, QVBoxLayout, QLabel, QTabWidget, QSlider, QHBoxLayout, QSizePolicy
 )
 
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
@@ -28,6 +28,8 @@ class PreviewPanel(QWidget):
         self._title.setStyleSheet("font-weight: 600;")
 
         self._tabs = QTabWidget()
+        self._tabs.setUsesScrollButtons(True)
+        self._tabs.setElideMode(Qt.TextElideMode.ElideRight)
 
         self._view_before = pg.GraphicsLayoutWidget()
         self._vb_before = self._view_before.addViewBox(lockAspect=True)
@@ -85,6 +87,8 @@ class PreviewPanel(QWidget):
         layout.addWidget(self._tabs, 1)
         layout.addWidget(self._video_row)
         layout.addWidget(self._info)
+        self.setMinimumSize(520, 420)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._last_before: np.ndarray | None = None
         self._after_locked: bool = False
