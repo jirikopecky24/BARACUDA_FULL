@@ -21,6 +21,7 @@ from barakuda.core.video_io import is_video_file
 from barakuda.core.calibration_store import save_dataset_scale
 from barakuda.core.calibration_store import load_dataset_scale
 from barakuda.shell.widgets.preview_gate_report_dialog import PreviewGateReportDialog
+from barakuda.shell.widgets.run_protocol_dialog import RunProtocolDialog
 
 
 class ShellMainWindow(QMainWindow):
@@ -201,6 +202,20 @@ class ShellMainWindow(QMainWindow):
     def _on_tick(self) -> None:
         self._tick_counter += 1
         self._tick_label.setText(f"Tick: {self._tick_counter}")
+
+    def _on_open_protocol_editor(self) -> None:
+        selected = self.dataset.get_selected_paths()
+        run_folder: Path | None = None
+        if selected:
+            p = selected[0]
+            if p.is_dir():
+                run_folder = p
+            elif p.name.lower() == "run_protocol.json":
+                run_folder = p.parent
+            else:
+                run_folder = p.parent
+        dlg = RunProtocolDialog(run_folder=run_folder, parent=self)
+        dlg.exec()
 
     # -- active preview routing (per-device) --
 
@@ -416,6 +431,8 @@ class ShellMainWindow(QMainWindow):
                 self._device_panel.run_batch_clicked.connect(self._on_run_batch)           # type: ignore[attr-defined]
                 self._device_panel.stop_clicked.connect(self.batch.stop)                   # type: ignore[attr-defined]
                 self._device_panel.save_dataset_scale_clicked.connect(self._ot_save_scale) # type: ignore[attr-defined]
+                if hasattr(self._device_panel, "open_protocol_clicked"):
+                    self._device_panel.open_protocol_clicked.connect(self._on_open_protocol_editor)
                 
                 if hasattr(self._device_panel, "value_changed"):
                     self._device_panel.value_changed.connect(self._on_ot_panel_value_changed)

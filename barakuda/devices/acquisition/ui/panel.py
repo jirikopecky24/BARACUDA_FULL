@@ -52,6 +52,7 @@ from barakuda.core.run_protocol import (
     merge_protocol,
     save_protocol,
 )
+from barakuda.shell.widgets.run_protocol_dialog import RunProtocolDialog
 from barakuda.shell.stage_service import get_stage_service
 from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
 try:
@@ -639,6 +640,13 @@ class AcquisitionPanel(QWidget):
         )
         self._btn_sim_raw.clicked.connect(self._on_sim_raw)
         rec_btn_row.addWidget(self._btn_sim_raw)
+
+        self._btn_open_protocol = QPushButton("Open Protocol")
+        self._btn_open_protocol.setToolTip(
+            "Open run protocol editor for the current acquisition run folder."
+        )
+        self._btn_open_protocol.clicked.connect(self._on_open_protocol)
+        rec_btn_row.addWidget(self._btn_open_protocol)
         rec_form.addRow("", rec_btn_row)
 
         self._lbl_countdown = QLabel("")
@@ -2387,6 +2395,11 @@ class AcquisitionPanel(QWidget):
         )
         if d:
             self._edit_output_dir.setText(d)
+
+    def _on_open_protocol(self) -> None:
+        run_dir = self._get_run_output_dir()
+        dlg = RunProtocolDialog(run_folder=run_dir, parent=self)
+        dlg.exec()
 
     # ------------------------------------------------------------------ #
     #  Helpers
