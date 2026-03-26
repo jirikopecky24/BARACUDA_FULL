@@ -1555,7 +1555,7 @@ class BatchController:
                                         "stage_um_per_unit_source": osc_result.stage_um_per_unit_source,
                                         "kappa_source": osc_result.kappa_source,
                                         "timing_source": osc_result.timing_source,
-                                        "motion_kinematics_source": "drag_foundation",
+                                        "motion_kinematics_source": osc_result.motion_kinematics_source,
                                         "analysis_axis": osc_result.axis,
                                         "stage_axis": osc_result.stage_axis,
                                         "selected_calibration_path": osc_result.selected_calibration_path,
@@ -1586,10 +1586,10 @@ class BatchController:
                                     )
                                     saved_protocol = save_protocol(merged_protocol, run_dir_drag)
                                     protocol_path = saved_protocol
-                                except Exception:
-                                    protocol_path = (
-                                        protocol_path if protocol_path.is_file() else None
-                                    )
+                                except Exception as exc:
+                                    raise RuntimeError(
+                                        f"Oscillatory run_protocol update failed for run_dir={run_dir_drag}: {exc}"
+                                    ) from exc
 
                                 osc_summary_json = export_oscillatory_summary_json(
                                     osc_result,
@@ -1654,8 +1654,10 @@ class BatchController:
                                         allow_manual_overwrite=False,
                                     )
                                     save_protocol(merged_protocol, run_dir_drag)
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    raise RuntimeError(
+                                        f"Oscillatory run_protocol summary_references update failed for run_dir={run_dir_drag}: {exc}"
+                                    ) from exc
 
                             # Mirror key DRAG artifacts into analysis directories for reports.
                             try:

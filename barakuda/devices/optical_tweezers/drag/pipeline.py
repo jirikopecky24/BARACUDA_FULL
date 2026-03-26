@@ -297,6 +297,8 @@ def _update_run_protocol_with_drag_analysis(
     try:
         merged = merge_protocol(existing, updates, allow_manual_overwrite=False)
         return save_protocol(merged, run_dir)
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(
+            f"DRAG run_protocol update failed for run_dir={Path(run_dir).resolve()}: {exc}"
+        ) from exc
 

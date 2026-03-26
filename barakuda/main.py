@@ -7,7 +7,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     win = ShellMainWindow()
     win.show()
-    return barakuda.exec()
+    return app.exec()
 
 
 if __name__ == "__main__":
