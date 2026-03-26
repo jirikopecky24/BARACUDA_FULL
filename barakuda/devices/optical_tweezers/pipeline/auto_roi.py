@@ -15,10 +15,9 @@ def centered_roi(cx: float, cy: float, roi_size: int, frame_shape: Tuple[int, ..
     
     # We want cx to be at exactly rx + (roi_size-1)/2.0
     # rx = cx - (roi_size-1)/2.0
-    half_w = (roi_size - 1) / 2.0
-    half_h = (roi_size - 1) / 2.0
-    rx = int(round(float(cx) - half_w))
-    ry = int(round(float(cy) - half_h))
+    half = (roi_size - 1) / 2.0
+    rx = int(round(float(cx) - half))
+    ry = int(round(float(cy) - half))
     
     rx = max(0, min(rx, w - roi_size))
     ry = max(0, min(ry, h - roi_size))
