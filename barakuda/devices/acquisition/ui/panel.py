@@ -47,6 +47,7 @@ from barakuda.devices.acquisition.motion.motion_run import (
 from barakuda.devices.acquisition.motion.metric_conversion import MetricMotionCommand
 from barakuda.devices.acquisition.motion.metric_conversion import XimcMetricCalibration
 from barakuda.shell.stage_service import get_stage_service
+from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
 try:
     from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
     _XIMC_AVAILABLE = True
@@ -308,6 +309,7 @@ class AcquisitionPanel(QWidget):
         # Motion integration — stage instance and motion worker
         self._stage = None          # XimcStage or None (lazy connect)
         self._stage_svc = get_stage_service()
+        self._stage_console_win: StageConsoleWindow | None = None
         self._motion_thread: QThread | None = None
         self._motion_worker: _RecordMotionWorker | None = None
         self._motion_elapsed_timer: QTimer | None = None
@@ -773,6 +775,13 @@ class AcquisitionPanel(QWidget):
         )
         self._btn_stage_connect.clicked.connect(self._on_stage_connect)
         row_stage_btns.addWidget(self._btn_stage_connect)
+
+        self._btn_open_stage_console = QPushButton("Stage Console…")
+        self._btn_open_stage_console.setToolTip(
+            "Open Stage Console (Acquisition context)."
+        )
+        self._btn_open_stage_console.clicked.connect(self._open_stage_console)
+        row_stage_btns.addWidget(self._btn_open_stage_console)
         stage_form.addRow("", row_stage_btns)
 
         self._lbl_stage_status = QLabel("Not connected")
@@ -1008,6 +1017,51 @@ class AcquisitionPanel(QWidget):
         self._update_motion_run_button()
         self._refresh_stage_device_list(async_scan=True)
         return tab
+
+    def _open_stage_console(self) -> None:
+        if self._stage_console_win is None:
+            self._stage_console_win = StageConsoleWindow(
+                snapshot_provider=self._stage_console_snapshot,
+                parent=self,
+            )
+        self._stage_console_win.show()
+        self._stage_console_win.raise_()
+        self._stage_console_win.activateWindow()
+
+    def _stage_console_snapshot(self) -> StageConsoleSnapshot:
+        lease = self._stage_svc.lease_state()
+        tel = self._stage_svc.get_telemetry()
+        owner = lease.owner or "none"
+        state_parts: list[str] = []
+        if lease.run_active:
+            state_parts.append("Monitor-only (acquisition active)")
+        elif lease.owner != "stage_console":
+            state_parts.append("Monitor-only")
+        else:
+            state_parts.append("Control enabled")
+        if lease.busy:
+            state_parts.append("busy")
+        if lease.stage_um_per_unit is None or (lease.stage_um_per_unit is not None and lease.stage_um_per_unit <= 0):
+            state_parts.append("µm/unit unknown")
+
+        speed_note = ""
+        if lease.run_active:
+            speed_note = "paused during acquisition"
+        elif tel.speed_um_s is not None and tel.speed_is_derived:
+            speed_note = "derived"
+        elif tel.speed_um_s is None:
+            speed_note = "N/A"
+
+        return StageConsoleSnapshot(
+            connected=lease.connected,
+            state_text=", ".join(state_parts) if state_parts else "—",
+            owner_text=owner,
+            position_um=tel.position_um,
+            speed_um_s=tel.speed_um_s,
+            speed_note=speed_note,
+            encoder=tel.encoder,
+            stage_state=tel.state,
+        )
 
     def _refresh_stage_device_list(self, *, async_scan: bool = False) -> None:
         """Populate the device combo with XIMC URIs (COM / USB).
