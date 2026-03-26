@@ -1,19 +1,23 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
 ## 0. CURRENT PHASE OVERRIDE — PHASED TRUSTWORTHINESS & VALIDATION (MISSION-DRIVEN)
-- current task = standalone Stage Console (Stage Control Window / Stage Console / Live Diagnostics)
+- current task = validated metric motion mapping (speed/accel/decel)
+- replace raw register active command inputs with metric command inputs:
+  - speed_um_s
+  - accel_um_s2
+  - decel_um_s2
 - one phase at a time (strict phase separation; do not do “next phase” work early)
 - stop after each phase and wait for explicit approval before continuing
 - no proceeding without explicit approval
+- no broad architecture rewrite; no refactors outside the current phase scope
+- preserve safety and trustworthiness over speed; do not break acquisition/motion workflows
 - reuse existing motion backend architecture (no competing stage backend / no parallel hardware stack)
 - metric user-facing motion model:
   - position: µm
   - travel/step/amplitude: µm
   - speed: µm/s
   - accel/decel: µm/s²
-- raw/controller units may exist only as internal/debug/audit layer (not primary UI model)
-- no broad architecture rewrite; no refactors outside the current phase scope
-- safety and trustworthiness have priority over speed; do not break acquisition/motion workflows
+- raw/controller units may exist only as internal/debug/audit layer (not primary active workflow path)
 - one phase at a time (no parallel phase work)
 - stop after each phase and wait for explicit approval before continuing
 - no proceeding without explicit approval
