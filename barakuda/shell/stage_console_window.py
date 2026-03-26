@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -15,7 +15,10 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QDoubleSpinBox,
+    QMessageBox,
 )
+
+from barakuda.shell.stage_service import get_stage_service
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,22 @@ class StageConsoleSnapshot:
     state_text: str
     owner_text: str
     position_um: Optional[float] = None
+
+
+class _MoveWorker(QObject):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, fn: Callable[[], None]) -> None:
+        super().__init__()
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            self._fn()
+            self.finished.emit()
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 
 class StageConsoleWindow(QMainWindow):
@@ -44,6 +63,9 @@ class StageConsoleWindow(QMainWindow):
         self.resize(720, 520)
 
         self._snapshot_provider = snapshot_provider
+        self._service = get_stage_service()
+        self._move_thread: QThread | None = None
+        self._move_worker: _MoveWorker | None = None
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -66,6 +88,16 @@ class StageConsoleWindow(QMainWindow):
         state_form.addRow("State:", self._lbl_state)
         state_form.addRow("Owner:", self._lbl_owner)
         state_form.addRow("Position (µm):", self._lbl_pos_um)
+
+        row_lease = QHBoxLayout()
+        self._btn_take_control = QPushButton("Take control")
+        self._btn_release_control = QPushButton("Release control")
+        self._btn_take_control.clicked.connect(self._on_take_control)
+        self._btn_release_control.clicked.connect(self._on_release_control)
+        row_lease.addWidget(self._btn_take_control)
+        row_lease.addWidget(self._btn_release_control)
+        row_lease.addStretch(1)
+        state_form.addRow("Lease:", row_lease)
 
         layout.addWidget(grp_state)
 
@@ -131,7 +163,7 @@ class StageConsoleWindow(QMainWindow):
 
         row_stop = QHBoxLayout()
         self._btn_stop = QPushButton("Stop")
-        self._btn_stop.setToolTip("MVP safety policy: Stop only available to current lease owner (not wired in Phase 5).")
+        self._btn_stop.setToolTip("MVP safety policy: Stop only available to current lease owner.")
         row_stop.addWidget(self._btn_stop)
         row_stop.addStretch(1)
         ctrl_layout.addLayout(row_stop)
@@ -140,6 +172,18 @@ class StageConsoleWindow(QMainWindow):
 
         # Respect Phase 3 policy by default: monitor-only shell.
         self._set_controls_enabled(False)
+
+        # Manual control wiring (Phase 6)
+        self._btn_jog_minus.clicked.connect(lambda: self._start_move_relative(-self._spin_jog_step_um.value()))
+        self._btn_jog_plus.clicked.connect(lambda: self._start_move_relative(+self._spin_jog_step_um.value()))
+        self._btn_move_step.clicked.connect(self._on_move_step_clicked)
+        self._btn_move_abs.clicked.connect(self._on_move_abs_clicked)
+        self._btn_stop.clicked.connect(self._on_stop_clicked)
+
+        # Speed/accel/decel mapping is not implemented; keep disabled for MVP safety.
+        self._spin_speed_um_s.setEnabled(False)
+        self._spin_accel_um_s2.setEnabled(False)
+        self._spin_decel_um_s2.setEnabled(False)
 
         # ---------------- Polling (minimal, no contention) ----------------
         self._poll_timer = QTimer(self)
@@ -171,9 +215,6 @@ class StageConsoleWindow(QMainWindow):
             self._edit_move_step_um,
             self._btn_move_abs,
             self._edit_move_abs_um,
-            self._spin_speed_um_s,
-            self._spin_accel_um_s2,
-            self._spin_decel_um_s2,
             self._btn_stop,
         ):
             w.setEnabled(enabled)
@@ -203,4 +244,90 @@ class StageConsoleWindow(QMainWindow):
         self._lbl_state.setText(snap.state_text or "—")
         self._lbl_owner.setText(snap.owner_text or "—")
         self._lbl_pos_um.setText("—" if snap.position_um is None else f"{snap.position_um:.3f}")
+
+        # Enable manual controls only when Stage Console owns the lease and stage is usable.
+        lease = self._service.lease_state()
+        controls_enabled = (
+            lease.connected
+            and lease.owner == "stage_console"
+            and not lease.busy
+            and not lease.run_active
+            and lease.stage_um_per_unit is not None
+            and lease.stage_um_per_unit > 0
+            and self._move_thread is None
+        )
+        self._set_controls_enabled(controls_enabled)
+
+        self._btn_take_control.setEnabled(lease.connected and lease.owner != "stage_console" and not lease.run_active)
+        self._btn_release_control.setEnabled(lease.owner == "stage_console" and not lease.busy and not lease.run_active)
+
+    def _on_take_control(self) -> None:
+        ok, reason = self._service.request_lease("stage_console")
+        if not ok:
+            QMessageBox.information(self, "Stage Console", reason)
+        self._poll_snapshot()
+
+    def _on_release_control(self) -> None:
+        self._service.release_lease("stage_console")
+        self._poll_snapshot()
+
+    def _on_stop_clicked(self) -> None:
+        try:
+            self._service.stop(owner="stage_console")
+        except Exception as exc:
+            QMessageBox.warning(self, "Stage Console", str(exc))
+        self._poll_snapshot()
+
+    def _on_move_step_clicked(self) -> None:
+        try:
+            v = float(self._edit_move_step_um.text().strip())
+        except Exception:
+            QMessageBox.information(self, "Stage Console", "Enter a numeric step in µm.")
+            return
+        self._start_move_relative(v)
+
+    def _on_move_abs_clicked(self) -> None:
+        try:
+            v = float(self._edit_move_abs_um.text().strip())
+        except Exception:
+            QMessageBox.information(self, "Stage Console", "Enter a numeric absolute position in µm.")
+            return
+        self._start_move_absolute(v)
+
+    def _start_move_relative(self, delta_um: float) -> None:
+        if self._move_thread is not None:
+            return
+        fn = lambda: self._service.move_relative_um(owner="stage_console", delta_um=float(delta_um))
+        self._start_worker(fn)
+
+    def _start_move_absolute(self, target_um: float) -> None:
+        if self._move_thread is not None:
+            return
+        fn = lambda: self._service.move_to_um(owner="stage_console", target_um=float(target_um))
+        self._start_worker(fn)
+
+    def _start_worker(self, fn: Callable[[], None]) -> None:
+        self._set_controls_enabled(False)
+        self._move_thread = QThread()
+        self._move_worker = _MoveWorker(fn)
+        self._move_worker.moveToThread(self._move_thread)
+        self._move_thread.started.connect(self._move_worker.run)
+        self._move_worker.finished.connect(self._move_thread.quit)
+        self._move_worker.error.connect(self._move_thread.quit)
+        self._move_worker.finished.connect(self._on_move_done)
+        self._move_worker.error.connect(self._on_move_error)
+        self._move_thread.finished.connect(self._move_worker.deleteLater)
+        self._move_thread.finished.connect(self._move_thread.deleteLater)
+        self._move_thread.start()
+
+    def _on_move_done(self) -> None:
+        self._move_thread = None
+        self._move_worker = None
+        self._poll_snapshot()
+
+    def _on_move_error(self, err: str) -> None:
+        self._move_thread = None
+        self._move_worker = None
+        QMessageBox.warning(self, "Stage Console", err)
+        self._poll_snapshot()
 

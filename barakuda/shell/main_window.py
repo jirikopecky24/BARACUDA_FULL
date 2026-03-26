@@ -22,6 +22,7 @@ from barakuda.core.calibration_store import save_dataset_scale
 from barakuda.core.calibration_store import load_dataset_scale
 from barakuda.shell.widgets.preview_gate_report_dialog import PreviewGateReportDialog
 from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
+from barakuda.shell.stage_service import get_stage_service
 
 
 class ShellMainWindow(QMainWindow):
@@ -179,13 +180,27 @@ class ShellMainWindow(QMainWindow):
         self._stage_console_win.activateWindow()
 
     def _stage_console_snapshot(self) -> StageConsoleSnapshot:
-        # Phase 5: no shared stage service is wired yet.
-        # Provide a safe monitor-only snapshot placeholder.
+        svc = get_stage_service()
+        lease = svc.lease_state()
+        pos_um = svc.get_position_um()
+        owner = lease.owner or "none"
+        state_parts: list[str] = []
+        if lease.run_active:
+            state_parts.append("Monitor-only (acquisition active)")
+        elif lease.owner != "stage_console":
+            state_parts.append("Monitor-only")
+        else:
+            state_parts.append("Control enabled")
+        if lease.busy:
+            state_parts.append("busy")
+        if lease.stage_um_per_unit is None or (lease.stage_um_per_unit is not None and lease.stage_um_per_unit <= 0):
+            state_parts.append("µm/unit unknown")
+
         return StageConsoleSnapshot(
-            connected=False,
-            state_text="Monitor-only (MVP shell; not wired)",
-            owner_text="—",
-            position_um=None,
+            connected=lease.connected,
+            state_text=", ".join(state_parts) if state_parts else "—",
+            owner_text=owner,
+            position_um=pos_um,
         )
 
     def _set_window_icon_if_available(self) -> None:

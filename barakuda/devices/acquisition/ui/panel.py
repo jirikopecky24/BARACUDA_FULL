@@ -45,6 +45,7 @@ from barakuda.devices.acquisition.motion.motion_run import (
     MotionRunError,
 )
 from barakuda.devices.acquisition.motion.metric_conversion import MetricMotionCommand
+from barakuda.shell.stage_service import get_stage_service
 try:
     from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
     _XIMC_AVAILABLE = True
@@ -302,6 +303,7 @@ class AcquisitionPanel(QWidget):
 
         # Motion integration — stage instance and motion worker
         self._stage = None          # XimcStage or None (lazy connect)
+        self._stage_svc = get_stage_service()
         self._motion_thread: QThread | None = None
         self._motion_worker: _RecordMotionWorker | None = None
         self._motion_elapsed_timer: QTimer | None = None
@@ -1058,7 +1060,7 @@ class AcquisitionPanel(QWidget):
         if self._stage is not None:
             # Disconnect
             try:
-                self._stage.disconnect()
+                self._stage_svc.disconnect()
             except Exception:
                 pass
             self._stage = None
@@ -1083,9 +1085,8 @@ class AcquisitionPanel(QWidget):
 
         um_per_unit = self._spin_stage_um_per_unit.value()
         try:
-            stage = XimcStage(stage_um_per_unit=um_per_unit if um_per_unit > 0 else None)
-            stage.connect(uri)
-            self._stage = stage
+            self._stage_svc.connect_ximc(uri=uri, stage_um_per_unit=um_per_unit if um_per_unit > 0 else None)
+            self._stage = self._stage_svc.stage
             self._btn_stage_connect.setText("Disconnect Stage")
             self._lbl_stage_status.setText(f"Connected: {uri}")
             self._log(f"Stage connected: {uri}")
@@ -1126,6 +1127,13 @@ class AcquisitionPanel(QWidget):
         if self._stage is None:
             self._lbl_motion_run_status.setText("Stage not connected.")
             return
+
+        # Acquisition must own the lease during Record+Motion (Phase 3 policy).
+        ok, reason = self._stage_svc.request_lease("acquisition", force=True)
+        if not ok:
+            self._lbl_motion_run_status.setText(reason)
+            return
+        self._stage_svc.set_run_active(True)
 
         recipe = self._get_motion_recipe()
         errors = recipe.validate()
@@ -1209,6 +1217,8 @@ class AcquisitionPanel(QWidget):
     def _on_record_motion_done(
         self, record_result: RecordResult, motion_result: MotionRunResult
     ) -> None:
+        self._stage_svc.set_run_active(False)
+        self._stage_svc.release_lease("acquisition")
         fps_str = (
             f"{record_result.fps_effective:.1f}"
             if record_result.fps_effective else "N/A"
@@ -1268,6 +1278,8 @@ class AcquisitionPanel(QWidget):
         QTimer.singleShot(200, self._on_start_preview)
 
     def _on_record_motion_error(self, err: str) -> None:
+        self._stage_svc.set_run_active(False)
+        self._stage_svc.release_lease("acquisition")
         self._stop_motion_elapsed_timer()
         self._log(f"Record+Motion FAILED — {err}")
         self._lbl_motion_run_status.setText(f"FAILED: {err}")
