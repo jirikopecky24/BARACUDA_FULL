@@ -12,8 +12,8 @@ def compute_newtonian_derived(
     qc_mask: Optional[np.ndarray] = None
 ) -> Dict[str, Any]:
     """
-    Computes derived physical parameters using Newtonian assumptions.
-    All scalar values returned in canonical units for Barakuda endpoints.
+    Compute derived scalar quantities under Newtonian fluid assumptions.
+    Returned values use BARAKUDA canonical units expected by downstream outputs.
     """
     if not np.isfinite(fc_hz) or fc_hz <= 0:
         raise ValueError("fc_hz must be positive finite")
@@ -66,8 +66,8 @@ def compute_newtonian_derived(
 
 def compute_mean_derived(dx: Dict[str, Any], dy: Dict[str, Any], method: str = "median") -> Dict[str, Any]:
     """
-    Combines X and Y derived dictionaries.
-    Keys matching the physical outputs are averaged by the chosen method.
+    Combine X/Y derived dictionaries into one summary dictionary.
+    Physical scalar keys are merged using the selected aggregation method.
     """
     out = {"status": "OK"}
     
@@ -98,10 +98,3 @@ def compute_mean_derived(dx: Dict[str, Any], dy: Dict[str, Any], method: str = "
         out["k_ratio_y_x"] = dy["k_pN_um"] / dx["k_pN_um"]
         
     return out
-
-if __name__ == "__main__":
-    t_fake = np.random.normal(0, 0.05, 1000)
-    dx = compute_newtonian_derived(500.0, t_fake, 25.0, 1.0)
-    dy = compute_newtonian_derived(495.0, t_fake * 1.05, 25.0, 1.0)
-    dmean = compute_mean_derived(dx, dy)
-    print("derived OK")

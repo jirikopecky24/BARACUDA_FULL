@@ -54,7 +54,6 @@ class PipelinePanel(QWidget):
         self.btn_preview_gate.setToolTip("Evaluate tracking quality on a few frames before full run.")
         self.btn_preview_gate.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.btn_preview_gate.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        from PyQt6.QtWidgets import QSizePolicy
         self.btn_preview_gate.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_preview_gate.setMinimumHeight(26)
 
@@ -841,7 +840,6 @@ class PipelinePanel(QWidget):
         self._stage_speed.setValue(0.0)
         self._drag_axis.setCurrentIndex(0)
         self._viscosity.setValue(0.001)
-        self._viscosity.setValue(0.001)
         self._temperature_c.setValue(25.0)
         self._bead_diameter_um.setValue(1.0)
 
@@ -1021,7 +1019,7 @@ class PipelinePanel(QWidget):
         # Manually trigger a UI refresh event for parents
         self.value_changed.emit()
 
-    # -------------------- API pro Shell --------------------
+    # -------------------- Public panel API --------------------
 
     def get_preview_gate_params(self) -> dict:
         return {
@@ -1066,7 +1064,7 @@ class PipelinePanel(QWidget):
         self.progress.setValue(pct)
 
     def get_tracking_params(self) -> dict:
-        # method UI is removed, keep RS as default
+        # Tracking method selector is intentionally hidden; keep RS as fixed default.
         use_ann = bool(self._use_annulus.isChecked())
         r_in = float(self._annulus_r_inner.value())
         r_out = float(self._annulus_r_outer.value())
@@ -1241,6 +1239,15 @@ class PipelinePanel(QWidget):
         self._strategy_selector.blockSignals(True)
         self._strategy_selector.clear()
 
+        def _restore_or_default(default_index: int, fallback_log: str) -> None:
+            idx = self._strategy_selector.findData(current_data)
+            if idx >= 0:
+                self._strategy_selector.setCurrentIndex(idx)
+                return
+            self._strategy_selector.setCurrentIndex(default_index)
+            import logging
+            logging.getLogger(__name__).info(fallback_log)
+
         if mode == "Brownian":
             self._strategy_selector.addItem("PSD_Welch (Scipy/Hann)", "PSD_Welch")
             self._strategy_selector.addItem("PSD_ProcFFT (MATLAB)", "PSD_ProcFFT")
@@ -1256,14 +1263,7 @@ class PipelinePanel(QWidget):
                 "PSD_ProcFFT: MATLAB-like FFT-based PSD implementation for comparison.",
                 Qt.ItemDataRole.ToolTipRole,
             )
-            
-            idx = self._strategy_selector.findData(current_data)
-            if idx >= 0:
-                self._strategy_selector.setCurrentIndex(idx)
-            else:
-                self._strategy_selector.setCurrentIndex(0)
-                import logging
-                logging.getLogger(__name__).info(f"Strategy auto-switched to PSD_Welch for mode {mode}")
+            _restore_or_default(0, f"Strategy auto-switched to PSD_Welch for mode {mode}")
                 
         elif mode == "Drag":
             self._strategy_selector.addItem("Drag (Constant Velocity)", "Drag_ConstantVelocity")
@@ -1273,14 +1273,7 @@ class PipelinePanel(QWidget):
                 "Drag: calibration from constant-velocity stage motion and viscous drag force.",
                 Qt.ItemDataRole.ToolTipRole,
             )
-            
-            idx = self._strategy_selector.findData(current_data)
-            if idx >= 0:
-                self._strategy_selector.setCurrentIndex(idx)
-            else:
-                self._strategy_selector.setCurrentIndex(0)
-                import logging
-                logging.getLogger(__name__).info(f"Strategy auto-switched to Drag_ConstantVelocity for mode {mode}")
+            _restore_or_default(0, f"Strategy auto-switched to Drag_ConstantVelocity for mode {mode}")
                 
         self._strategy_selector.blockSignals(False)
 

@@ -1,16 +1,17 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — UNIFIED RUN PROTOCOL (PHASED IMPLEMENTATION)
-- current task = phased implementation of unified `run_protocol.json`
+## 0. CURRENT PHASE OVERRIDE — PHASED NON-AFM CLEANUP PROGRAM
+- current task = phased code cleanup outside AFM
+- no feature development
+- no broad redesign
+- cleanup must preserve behavior
 - one phase at a time (strict phase separation; do not do next-phase work early)
 - stop after each phase and wait for explicit approval before continuing
 - no proceeding without explicit approval
-- no broad architecture rewrite; no refactors outside the current phase scope
 - preserve current Acquisition + OT workflows
-- preserve provenance and auditability semantics
-- keep user-entered notes safe from overwrite
-- use one shared run protocol per run (no separate acquisition vs analysis protocol)
-- protocol evolves over time (create/load/merge/save), not parallel files
+- preserve provenance and auditability semantics and hardening guardrails
+- preserve unified run protocol semantics and metric transition semantics
+- if uncertain whether a cleanup is safe, do not change it in this phase
 - quality and trustworthiness have priority over speed
 - keep changes minimal, explicit, reviewable, and reversible
 - commit after each phase only if that phase includes concrete scoped changes
