@@ -1,12 +1,13 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
 ## 0. CURRENT PHASE OVERRIDE — PHASED TRUSTWORTHINESS & VALIDATION (MISSION-DRIVEN)
-- current task = phased trustworthiness and validation program continuation
+- current task = phased metric-units implementation for motion (schema-first, one phase at a time)
 - one phase at a time (no parallel phase work)
 - stop after each phase and wait for explicit approval before continuing
 - no proceeding without explicit approval
 - no broad architecture rewrite
-- preserve scientific behavior unless a narrow fix is clearly justified for correctness/safety of the audited path
+- preserve compatibility and auditability (do not break existing workflows)
+- preserve scientific behavior unless a narrow fix is clearly justified
 - quality and trustworthiness have priority over speed
 - keep changes minimal, explicit, reviewable, and reversible
 - commit after each phase only if any code/doc note was minimally updated in that phase

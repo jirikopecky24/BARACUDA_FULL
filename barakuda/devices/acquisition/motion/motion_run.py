@@ -339,6 +339,30 @@ def run_record_and_motion(
         motion_result.stage_um_per_unit if motion_result is not None else None
     )
 
+    # Metric-oriented blocks (schema-first migration):
+    # - commanded_metric: what the user intended in metric units (when stage scale is known)
+    # - actual_metric: measured motion outcome in metric units (when stage scale is known)
+    # - raw_internal: explicit backend/controller values (never pretend they're metric)
+    metric_schema_version = 1
+    commanded_travel_um = (
+        float(recipe.travel) * float(stage_um_per_unit)
+        if stage_um_per_unit is not None
+        else None
+    )
+    actual_travel_um = (
+        float(actual_travel) * float(stage_um_per_unit)
+        if stage_um_per_unit is not None
+        else None
+    )
+    actual_speed_um_s = (
+        float(actual_speed) * float(stage_um_per_unit)
+        if stage_um_per_unit is not None
+        else None
+    )
+    metric_stage_um_source = (
+        "ximc_stage_instance_ui" if stage_um_per_unit is not None else None
+    )
+
     stage_meta: dict = {
         "schema_version": 1,
         "mode": recipe.mode,
@@ -364,6 +388,50 @@ def run_record_and_motion(
         "motion_running_confirmed_recording_s": motion_running_confirmed_s,
         "motion_start_recording_s": motion_start_s,
         "motion_stop_recording_s": motion_stop_s,
+        # Metric-units migration scaffolding (do not change legacy fields yet).
+        "metric_schema_version": metric_schema_version,
+        "metric_provenance": {
+            "stage_um_per_unit_source": metric_stage_um_source,
+            "commanded_travel_um_source": (
+                "stage_um_per_unit * recipe.travel"
+                if stage_um_per_unit is not None
+                else None
+            ),
+            "actual_travel_um_source": (
+                "stage_um_per_unit * motion_result.actual_travel_user"
+                if stage_um_per_unit is not None
+                else None
+            ),
+            "actual_speed_um_s_source": (
+                "stage_um_per_unit * motion_result.actual_speed_user_s"
+                if stage_um_per_unit is not None
+                else None
+            ),
+            "note": "commanded_metric.speed_um_s and accel/decel are not populated in Phase 1 because speed_reg->speed_um_s mapping is not robust yet",
+        },
+        "commanded_metric": {
+            "axis": recipe.axis,
+            "direction": recipe.direction,
+            "travel_um": commanded_travel_um,
+            "speed_um_s": None,
+            "accel_um_s2": None,
+            "decel_um_s2": None,
+            "pre_delay_s": recipe.pre_delay_s,
+            "post_delay_s": recipe.post_delay_s,
+        },
+        "actual_metric": {
+            "actual_travel_um": actual_travel_um,
+            "actual_speed_um_s": actual_speed_um_s,
+            "actual_motion_duration_s": actual_duration,
+        },
+        "raw_internal": {
+            "controller": controller,
+            "commanded_motion_registers": {
+                "speed_reg": recipe.speed,
+                "accel_reg": recipe.accel,
+                "decel_reg": recipe.decel,
+            },
+        },
     }
     if stage_um_per_unit is not None:
         stage_meta["stage_um_per_unit"] = stage_um_per_unit
