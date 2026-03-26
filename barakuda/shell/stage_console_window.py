@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from collections import deque
+import time
+
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -19,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from barakuda.shell.stage_service import get_stage_service
+import pyqtgraph as pg
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,13 @@ class StageConsoleWindow(QMainWindow):
         self._service = get_stage_service()
         self._move_thread: QThread | None = None
         self._move_worker: _MoveWorker | None = None
+        self._diag_t0_s: Optional[float] = None
+
+        # Rolling buffers (MVP charts)
+        self._buf_t_s = deque(maxlen=600)          # 60s @ 10Hz max
+        self._buf_pos_um = deque(maxlen=600)
+        self._buf_speed_um_s = deque(maxlen=600)
+        self._buf_encoder = deque(maxlen=600)
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -180,6 +191,40 @@ class StageConsoleWindow(QMainWindow):
 
         layout.addWidget(grp_ctrl)
 
+        # ---------------- Live diagnostics (MVP charts) ----------------
+        grp_diag = QGroupBox("Live diagnostics (MVP charts)")
+        diag_layout = QVBoxLayout(grp_diag)
+        diag_layout.setContentsMargins(10, 10, 10, 10)
+        diag_layout.setSpacing(6)
+
+        self._lbl_diag_status = QLabel("—")
+        self._lbl_diag_status.setStyleSheet("color: #666;")
+        diag_layout.addWidget(self._lbl_diag_status)
+
+        # Keep plots visually lightweight (no heavy real-time framework features).
+        self._plot_pos = pg.PlotWidget()
+        self._plot_pos.setTitle("Position vs time")
+        self._plot_pos.setLabel("left", "Position", units="µm")
+        self._plot_pos.setLabel("bottom", "t", units="s")
+        self._curve_pos = self._plot_pos.plot([], [])
+        diag_layout.addWidget(self._plot_pos, 1)
+
+        self._plot_speed = pg.PlotWidget()
+        self._plot_speed.setTitle("Speed vs time (derived)")
+        self._plot_speed.setLabel("left", "Speed", units="µm/s")
+        self._plot_speed.setLabel("bottom", "t", units="s")
+        self._curve_speed = self._plot_speed.plot([], [])
+        diag_layout.addWidget(self._plot_speed, 1)
+
+        self._plot_enc = pg.PlotWidget()
+        self._plot_enc.setTitle("Encoder vs time (unavailable)")
+        self._plot_enc.setLabel("left", "Encoder")
+        self._plot_enc.setLabel("bottom", "t", units="s")
+        self._curve_enc = self._plot_enc.plot([], [])
+        diag_layout.addWidget(self._plot_enc, 1)
+
+        layout.addWidget(grp_diag, 1)
+
         # Respect Phase 3 policy by default: monitor-only shell.
         self._set_controls_enabled(False)
 
@@ -200,6 +245,11 @@ class StageConsoleWindow(QMainWindow):
         self._poll_timer.setInterval(250)  # conservative shell default (4 Hz)
         self._poll_timer.timeout.connect(self._poll_snapshot)
 
+        # Chart update timer (decoupled from StageService polling; StageService is rate-limited).
+        self._chart_timer = QTimer(self)
+        self._chart_timer.setInterval(200)  # 5 Hz UI refresh
+        self._chart_timer.timeout.connect(self._on_chart_tick)
+
     def set_snapshot_provider(self, provider: Optional[Callable[[], StageConsoleSnapshot]]) -> None:
         self._snapshot_provider = provider
         self._poll_snapshot()
@@ -207,11 +257,13 @@ class StageConsoleWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._poll_timer.start()
+        self._chart_timer.start()
         self._poll_snapshot()
 
     def closeEvent(self, event) -> None:
         try:
             self._poll_timer.stop()
+            self._chart_timer.stop()
         except Exception:
             pass
         super().closeEvent(event)
@@ -277,6 +329,70 @@ class StageConsoleWindow(QMainWindow):
 
         self._btn_take_control.setEnabled(lease.connected and lease.owner != "stage_console" and not lease.run_active)
         self._btn_release_control.setEnabled(lease.owner == "stage_console" and not lease.busy and not lease.run_active)
+
+    def _on_chart_tick(self) -> None:
+        lease = self._service.lease_state()
+        tel = self._service.get_telemetry()
+
+        if not lease.connected:
+            self._lbl_diag_status.setText("Disconnected.")
+            return
+
+        if self._diag_t0_s is None:
+            self._diag_t0_s = time.perf_counter()
+
+        # Respect conservative strategy: do not accumulate chart samples during acquisition runs.
+        if lease.run_active:
+            self._lbl_diag_status.setText("Paused during acquisition (monitor-only).")
+            self._refresh_charts()
+            return
+
+        self._lbl_diag_status.setText("Live (conservative).")
+
+        now_s = time.perf_counter()
+        t_rel = now_s - float(self._diag_t0_s)
+
+        # Append only trustworthy signals.
+        self._buf_t_s.append(t_rel)
+        self._buf_pos_um.append(tel.position_um)
+        self._buf_speed_um_s.append(tel.speed_um_s if tel.speed_is_derived else None)
+        self._buf_encoder.append(tel.encoder)  # will remain None until backend exposes distinct readback
+
+        self._refresh_charts()
+
+    def _refresh_charts(self) -> None:
+        # Build compact arrays (skip None points to avoid plotting fake data).
+        t = list(self._buf_t_s)
+
+        # Position
+        t_pos: list[float] = []
+        y_pos: list[float] = []
+        for ti, yi in zip(t, self._buf_pos_um):
+            if yi is None:
+                continue
+            t_pos.append(float(ti))
+            y_pos.append(float(yi))
+        self._curve_pos.setData(t_pos, y_pos)
+
+        # Speed (derived)
+        t_spd: list[float] = []
+        y_spd: list[float] = []
+        for ti, yi in zip(t, self._buf_speed_um_s):
+            if yi is None:
+                continue
+            t_spd.append(float(ti))
+            y_spd.append(float(yi))
+        self._curve_speed.setData(t_spd, y_spd)
+
+        # Encoder (unavailable until backend provides it)
+        t_enc: list[float] = []
+        y_enc: list[float] = []
+        for ti, yi in zip(t, self._buf_encoder):
+            if yi is None:
+                continue
+            t_enc.append(float(ti))
+            y_enc.append(float(yi))
+        self._curve_enc.setData(t_enc, y_enc)
 
     def _on_take_control(self) -> None:
         ok, reason = self._service.request_lease("stage_console")
