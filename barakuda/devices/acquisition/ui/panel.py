@@ -2458,6 +2458,11 @@ class AcquisitionPanel(QWidget):
         timestamps_present = bool(meta.get("timestamps_path"))
         if not timestamps_present:
             timestamps_present = (run_dir / f"{basename}_timestamps.csv").is_file()
+        selected_timestamps_path = meta.get("timestamps_path")
+        if not selected_timestamps_path:
+            maybe_ts = run_dir / f"{basename}_timestamps.csv"
+            if maybe_ts.is_file():
+                selected_timestamps_path = str(maybe_ts.resolve())
 
         branch, commit = self._try_git_revision()
         updates: dict = {
@@ -2487,6 +2492,16 @@ class AcquisitionPanel(QWidget):
                 **dict(updates.get("provenance") or {}),
                 "selected_qc_path": str(qc_path.resolve()),
             }
+        updates["provenance"] = {
+            **dict(updates.get("provenance") or {}),
+            "selected_timestamps_path": selected_timestamps_path,
+            "selected_sidecar_paths": {
+                "meta_path": str(meta_path.resolve()) if meta_path.is_file() else None,
+                "timestamps_path": selected_timestamps_path,
+                "qc_path": str(qc_path.resolve()) if qc_path is not None else None,
+            },
+            "used_fallbacks": {},
+        }
 
         if stage_meta:
             metric_provenance = stage_meta.get("metric_provenance")
@@ -2523,6 +2538,11 @@ class AcquisitionPanel(QWidget):
                 "selected_stage_trace_path": str(
                     Path(motion_result.stage_trace_path).resolve()
                 ),
+                "selected_sidecar_paths": {
+                    **dict((updates.get("provenance") or {}).get("selected_sidecar_paths") or {}),
+                    "stage_meta_path": str(Path(motion_result.stage_json_path).resolve()),
+                    "stage_trace_path": str(Path(motion_result.stage_trace_path).resolve()),
+                },
             }
 
         try:

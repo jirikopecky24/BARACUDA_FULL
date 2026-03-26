@@ -1555,6 +1555,7 @@ class BatchController:
                                         "stage_um_per_unit_source": osc_result.stage_um_per_unit_source,
                                         "kappa_source": osc_result.kappa_source,
                                         "timing_source": osc_result.timing_source,
+                                        "motion_kinematics_source": "drag_foundation",
                                         "analysis_axis": osc_result.axis,
                                         "stage_axis": osc_result.stage_axis,
                                         "selected_calibration_path": osc_result.selected_calibration_path,
@@ -1562,8 +1563,21 @@ class BatchController:
                                         "selected_stage_trace_path": osc_result.selected_stage_trace_path,
                                         "selected_timestamps_path": osc_result.selected_timestamps_path,
                                         "used_fallbacks": dict(osc_result.used_fallbacks),
+                                        "selected_sidecar_paths": {
+                                            "stage_meta_path": osc_result.selected_stage_meta_path,
+                                            "stage_trace_path": osc_result.selected_stage_trace_path,
+                                            "timestamps_path": osc_result.selected_timestamps_path,
+                                        },
                                     },
                                 }
+                                _prov_warns = [
+                                    w
+                                    for w in list(osc_result.warnings)
+                                    if isinstance(w, str)
+                                    and w.startswith("PROVENANCE_WARNING:")
+                                ]
+                                if _prov_warns:
+                                    osc_updates["analysis"]["provenance_warnings"] = _prov_warns
                                 try:
                                     merged_protocol = merge_protocol(
                                         existing_protocol,
@@ -1619,6 +1633,29 @@ class BatchController:
                                 drag_outputs["oscillatory_summary_json"] = osc_summary_json
                                 drag_outputs["oscillatory_summary_csv"] = osc_summary_csv
                                 drag_outputs["oscillatory_diagnostic_png"] = osc_diag_png
+                                try:
+                                    existing_protocol = load_protocol(run_dir_drag)
+                                    followup_updates = {
+                                        "analysis": {
+                                            "summary_references": {
+                                                "oscillatory_summary_json": str(osc_summary_json),
+                                                "oscillatory_summary_csv": str(osc_summary_csv),
+                                                "oscillatory_diagnostic_png": (
+                                                    str(osc_diag_png)
+                                                    if osc_diag_png is not None
+                                                    else None
+                                                ),
+                                            }
+                                        }
+                                    }
+                                    merged_protocol = merge_protocol(
+                                        existing_protocol,
+                                        followup_updates,
+                                        allow_manual_overwrite=False,
+                                    )
+                                    save_protocol(merged_protocol, run_dir_drag)
+                                except Exception:
+                                    pass
 
                             # Mirror key DRAG artifacts into analysis directories for reports.
                             try:

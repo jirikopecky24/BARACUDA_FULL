@@ -168,21 +168,14 @@ def run_drag_from_raw(
     # analyze_drag_run will also reload paths via load_drag_run; we just pass explicit trajectory path
     result = analyze_drag_run(run_dir, cfg, trajectory_path=traj_path)
 
-    protocol_path = _update_run_protocol_with_drag_analysis(
-        run_dir=paths.run_dir,
-        result=result,
-    )
-
     # Exports
     summary_json = export_drag_summary_json(
         result,
         paths.run_dir,
-        protocol_path=str(protocol_path) if protocol_path else None,
     )
     summary_csv = export_drag_summary_csv(
         result,
         paths.run_dir,
-        protocol_path=str(protocol_path) if protocol_path else None,
     )
     alignment_diag_json = export_alignment_diagnostics_json(result, paths.run_dir)
 
@@ -215,6 +208,24 @@ def run_drag_from_raw(
         "diagnostic_png": diagnostic_png,
         "alignment_diagnostics_json": alignment_diag_json,
     }
+    protocol_path = _update_run_protocol_with_drag_analysis(
+        run_dir=paths.run_dir,
+        result=result,
+        outputs=outputs,
+    )
+    if protocol_path:
+        summary_json = export_drag_summary_json(
+            result,
+            paths.run_dir,
+            protocol_path=str(protocol_path),
+        )
+        summary_csv = export_drag_summary_csv(
+            result,
+            paths.run_dir,
+            protocol_path=str(protocol_path),
+        )
+        outputs["summary_json"] = summary_json
+        outputs["summary_csv"] = summary_csv
     return result, outputs
 
 
@@ -222,7 +233,11 @@ def _update_run_protocol_with_drag_analysis(
     *,
     run_dir: Path,
     result: "DragAnalysisResult",
+    outputs: dict[str, Path] | None = None,
 ) -> Path | None:
+    provenance_warnings = [
+        w for w in result.warnings if isinstance(w, str) and w.startswith("PROVENANCE_WARNING:")
+    ]
     analysis_updates: dict[str, Any] = {
         "analysis_type": "drag",
         "selected_calibration_path": result.selected_calibration_path,
@@ -242,6 +257,12 @@ def _update_run_protocol_with_drag_analysis(
             "actual_speed_um_s": result.actual_speed_um_s,
         },
     }
+    if provenance_warnings:
+        analysis_updates["provenance_warnings"] = provenance_warnings
+    if outputs:
+        analysis_updates["summary_references"] = {
+            k: str(v) for k, v in outputs.items() if v is not None
+        }
     provenance_updates: dict[str, Any] = {
         "um_per_px_source": result.um_per_px_source,
         "stage_um_per_unit_source": result.stage_um_per_unit_source,
@@ -255,6 +276,11 @@ def _update_run_protocol_with_drag_analysis(
         "selected_timestamps_path": result.selected_timestamps_path,
         "selected_calibration_path": result.selected_calibration_path,
         "used_fallbacks": dict(result.used_fallbacks),
+        "selected_sidecar_paths": {
+            "stage_meta_path": result.selected_stage_meta_path,
+            "stage_trace_path": result.selected_stage_trace_path,
+            "timestamps_path": result.selected_timestamps_path,
+        },
     }
     updates = {
         "identity": {
