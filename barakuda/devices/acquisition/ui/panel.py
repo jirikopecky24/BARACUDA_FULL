@@ -45,6 +45,7 @@ from barakuda.devices.acquisition.motion.motion_run import (
     MotionRunError,
 )
 from barakuda.devices.acquisition.motion.metric_conversion import MetricMotionCommand
+from barakuda.devices.acquisition.motion.metric_conversion import XimcMetricCalibration
 from barakuda.shell.stage_service import get_stage_service
 try:
     from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
@@ -212,6 +213,7 @@ class _RecordMotionWorker(QObject):
         stage,                         # AbstractStage (typed loosely to avoid import cycles)
         recipe: ConstantVelocityDragRecipe,
         metric_command: MetricMotionCommand | None,
+        metric_mapping_profile: XimcMetricCalibration | None,
         output_dir: str,
         basename: str,
         duration_s: float,
@@ -227,6 +229,7 @@ class _RecordMotionWorker(QObject):
         self._stage = stage
         self._recipe = recipe
         self._metric_command = metric_command
+        self._metric_mapping_profile = metric_mapping_profile
         self._output_dir = output_dir
         self._basename = basename
         self._duration_s = duration_s
@@ -244,6 +247,7 @@ class _RecordMotionWorker(QObject):
                 stage=self._stage,
                 recipe=self._recipe,
                 metric_command=self._metric_command,
+                metric_mapping_profile=self._metric_mapping_profile,
                 output_dir=self._output_dir,
                 basename=self._basename,
                 duration_s=self._duration_s,
@@ -854,37 +858,34 @@ class AcquisitionPanel(QWidget):
 
         self._spin_motion_speed_um_s = _NoScrollDoubleSpinBox()
         self._spin_motion_speed_um_s.setRange(0.0, 1e12)
-        self._spin_motion_speed_um_s.setValue(0.0)
+        self._spin_motion_speed_um_s.setValue(60.0)
         self._spin_motion_speed_um_s.setDecimals(3)
         self._spin_motion_speed_um_s.setSuffix(" µm/s")
-        self._spin_motion_speed_um_s.setEnabled(False)
         self._spin_motion_speed_um_s.setToolTip(
             "Speed in µm/s (user-facing).\n"
-            "Backend mapping to XIMC registers is not validated yet, so this field is gated."
+            "Active command input. Converted to backend registers via validated mapping profile."
         )
         cv_form.addRow("Speed:", self._spin_motion_speed_um_s)
 
         self._spin_motion_accel_um_s2 = _NoScrollDoubleSpinBox()
         self._spin_motion_accel_um_s2.setRange(0.0, 1e12)
-        self._spin_motion_accel_um_s2.setValue(0.0)
+        self._spin_motion_accel_um_s2.setValue(120.0)
         self._spin_motion_accel_um_s2.setDecimals(3)
         self._spin_motion_accel_um_s2.setSuffix(" µm/s²")
-        self._spin_motion_accel_um_s2.setEnabled(False)
         self._spin_motion_accel_um_s2.setToolTip(
             "Acceleration in µm/s² (user-facing).\n"
-            "Backend mapping to XIMC registers is not validated yet, so this field is gated."
+            "Active command input. Converted to backend registers via validated mapping profile."
         )
         cv_form.addRow("Accel:", self._spin_motion_accel_um_s2)
 
         self._spin_motion_decel_um_s2 = _NoScrollDoubleSpinBox()
         self._spin_motion_decel_um_s2.setRange(0.0, 1e12)
-        self._spin_motion_decel_um_s2.setValue(0.0)
+        self._spin_motion_decel_um_s2.setValue(120.0)
         self._spin_motion_decel_um_s2.setDecimals(3)
         self._spin_motion_decel_um_s2.setSuffix(" µm/s²")
-        self._spin_motion_decel_um_s2.setEnabled(False)
         self._spin_motion_decel_um_s2.setToolTip(
             "Deceleration in µm/s² (user-facing).\n"
-            "Backend mapping to XIMC registers is not validated yet, so this field is gated."
+            "Active command input. Converted to backend registers via validated mapping profile."
         )
         cv_form.addRow("Decel:", self._spin_motion_decel_um_s2)
 
@@ -1286,17 +1287,40 @@ class AcquisitionPanel(QWidget):
         # yet; backend conversion mapping for those is not trustworthy.
         stage_um_per_unit = self._stage.get_stage_um_per_unit() if self._stage is not None else None
         metric_command: MetricMotionCommand | None = None
+        metric_mapping_profile: XimcMetricCalibration | None = None
         if stage_um_per_unit is not None and stage_um_per_unit > 0:
             travel_um = float(self._spin_motion_travel_um.value()) if hasattr(self, "_spin_motion_travel_um") else float(recipe.travel) * float(stage_um_per_unit)
             metric_command = MetricMotionCommand(
                 axis=recipe.axis,
                 direction=int(recipe.direction),
                 travel_um=travel_um,
-                speed_um_s=None,
-                accel_um_s2=None,
-                decel_um_s2=None,
+                speed_um_s=float(self._spin_motion_speed_um_s.value()),
+                accel_um_s2=float(self._spin_motion_accel_um_s2.value()),
+                decel_um_s2=float(self._spin_motion_decel_um_s2.value()),
                 pre_delay_s=float(recipe.pre_delay_s),
                 post_delay_s=float(recipe.post_delay_s),
+            )
+
+            # Strict validated mapping profile is required for active metric kinematics.
+            try:
+                import os
+                sp = float(os.environ["BARAKUDA_XIMC_SPEED_REG_PER_UM_S"])
+                ap = float(os.environ["BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2"])
+                dp = float(os.environ["BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"])
+                vid = str(os.environ.get("BARAKUDA_XIMC_MAPPING_VALIDATION_ID", "env_profile"))
+            except Exception:
+                self._lbl_motion_run_status.setText(
+                    "Missing validated metric mapping profile. Set env vars: "
+                    "BARAKUDA_XIMC_SPEED_REG_PER_UM_S, "
+                    "BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2, "
+                    "BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"
+                )
+                return
+            metric_mapping_profile = XimcMetricCalibration(
+                speed_reg_per_um_s=sp,
+                accel_reg_per_um_s2=ap,
+                decel_reg_per_um_s2=dp,
+                validation_id=vid,
             )
 
         requested_roi = self._get_roi_tuple()
@@ -1331,6 +1355,7 @@ class AcquisitionPanel(QWidget):
             stage=self._stage,
             recipe=recipe,
             metric_command=metric_command,
+            metric_mapping_profile=metric_mapping_profile,
             output_dir=str(self._get_run_output_dir()),
             basename=self._edit_basename.text(),
             duration_s=self._spin_duration.value(),

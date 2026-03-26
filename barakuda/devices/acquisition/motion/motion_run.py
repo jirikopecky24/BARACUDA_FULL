@@ -75,6 +75,7 @@ def run_record_and_motion(
     progress_callback: Optional[Callable[[int, float], None]] = None,
     log_fn: Optional[Callable[[str], None]] = None,
     metric_command: "MetricMotionCommand | None" = None,
+    metric_mapping_profile: "XimcMetricCalibration | None" = None,
 ) -> MotionRunResult:
     """Execute a single synchronized Record + Motion run.
 
@@ -92,7 +93,8 @@ def run_record_and_motion(
         roi, exposure_us, gain, fps_hint, pixel_format: camera parameters.
         metric_command: Optional metric-oriented motion intent (schema-first Phase2).
                         When provided, backend command resolution may use metric travel_um
-                        if stage_um_per_unit is known; speed/accel/decel mapping is not implemented yet.
+                        if stage_um_per_unit is known. Metric speed/accel/decel mapping
+                        requires a validated metric_mapping_profile.
         progress_callback: Optional callback(frames, elapsed) forwarded to camera.
         log_fn: Optional callable(str) for UI log messages.
 
@@ -236,6 +238,7 @@ def run_record_and_motion(
                 legacy_decel_reg=float(recipe.decel),
                 metric_command=metric_command,
                 stage_um_per_unit=stage_um_per_unit_for_conversion,
+                ximc_metric_calibration=metric_mapping_profile,
             )
             metric_backend_conversion_warnings = list(backend_cmd.warnings)
         else:
@@ -262,8 +265,7 @@ def run_record_and_motion(
         )
         _log(
             f"motion_start: direction={recipe.direction:+d}  travel={recipe.travel}  "
-            f"XIMC Speed_reg={int(recipe.speed)}  Accel={int(recipe.accel)}  "
-            f"(Speed=1,Accel=20 → ~20s for travel=1500)"
+            f"XIMC Speed_reg={int(backend_cmd.speed_reg)}  Accel={int(backend_cmd.accel_reg)}"
         )
         _tr("move_constant_velocity CALL")  # #region agent log  #endregion
         motion_result = stage.move_constant_velocity(
@@ -476,7 +478,7 @@ def run_record_and_motion(
                 if stage_um_per_unit is not None
                 else None
             ),
-            "note": "Phase2 stores metric speed/accel/decel intent if provided, but backend mapping to XIMC registers is not implemented yet; legacy register values still drive motion.",
+            "note": "Metric speed/accel/decel intent is active only when conversion_mode=metric_validated_profile with an explicit mapping_validation_id.",
         },
         "commanded_metric": {
             "axis": metric_command.axis if metric_command is not None else recipe.axis,
@@ -496,14 +498,19 @@ def run_record_and_motion(
         "raw_internal": {
             "controller": controller,
             "commanded_motion_registers": {
-                "speed_reg": recipe.speed,
-                "accel_reg": recipe.accel,
-                "decel_reg": recipe.decel,
+                "speed_reg": float(backend_cmd.speed_reg) if backend_cmd is not None else float(recipe.speed),
+                "accel_reg": float(backend_cmd.accel_reg) if backend_cmd is not None else float(recipe.accel),
+                "decel_reg": float(backend_cmd.decel_reg) if backend_cmd is not None else float(recipe.decel),
             },
             "metric_backend_conversion": {
                 "stage_um_per_unit_for_conversion": stage_um_per_unit_for_conversion,
                 "backend_travel_user": float(backend_cmd.travel_user) if backend_cmd is not None else float(recipe.travel),
                 "travel_source": backend_cmd.travel_source if backend_cmd is not None else "legacy_travel_user",
+                "speed_source": backend_cmd.speed_source if backend_cmd is not None else "legacy_speed_reg",
+                "accel_source": backend_cmd.accel_source if backend_cmd is not None else "legacy_accel_reg",
+                "decel_source": backend_cmd.decel_source if backend_cmd is not None else "legacy_decel_reg",
+                "conversion_mode": backend_cmd.conversion_mode if backend_cmd is not None else "legacy_raw_registers",
+                "mapping_validation_id": backend_cmd.mapping_validation_id if backend_cmd is not None else None,
                 "conversion_warnings": metric_backend_conversion_warnings,
             },
         },
