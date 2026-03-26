@@ -1,32 +1,19 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — PHASED TRUSTWORTHINESS & VALIDATION (MISSION-DRIVEN)
-- current task = validated metric motion mapping (speed/accel/decel)
-- replace raw register active command inputs with metric command inputs:
-  - speed_um_s
-  - accel_um_s2
-  - decel_um_s2
-- one phase at a time (strict phase separation; do not do “next phase” work early)
+## 0. CURRENT PHASE OVERRIDE — UNIFIED RUN PROTOCOL (PHASED IMPLEMENTATION)
+- current task = phased implementation of unified `run_protocol.json`
+- one phase at a time (strict phase separation; do not do next-phase work early)
 - stop after each phase and wait for explicit approval before continuing
 - no proceeding without explicit approval
 - no broad architecture rewrite; no refactors outside the current phase scope
-- preserve safety and trustworthiness over speed; do not break acquisition/motion workflows
-- reuse existing motion backend architecture (no competing stage backend / no parallel hardware stack)
-- metric user-facing motion model:
-  - position: µm
-  - travel/step/amplitude: µm
-  - speed: µm/s
-  - accel/decel: µm/s²
-- raw/controller units may exist only as internal/debug/audit layer (not primary active workflow path)
-- one phase at a time (no parallel phase work)
-- stop after each phase and wait for explicit approval before continuing
-- no proceeding without explicit approval
-- no broad architecture rewrite
-- preserve compatibility and auditability (do not break existing workflows)
-- preserve scientific behavior unless a narrow fix is clearly justified
+- preserve current Acquisition + OT workflows
+- preserve provenance and auditability semantics
+- keep user-entered notes safe from overwrite
+- use one shared run protocol per run (no separate acquisition vs analysis protocol)
+- protocol evolves over time (create/load/merge/save), not parallel files
 - quality and trustworthiness have priority over speed
 - keep changes minimal, explicit, reviewable, and reversible
-- commit after each phase only if any code/doc note was minimally updated in that phase
+- commit after each phase only if that phase includes concrete scoped changes
 
 ## 1. PROJECT MODE
 - BARAKUDA is deterministic scientific software
