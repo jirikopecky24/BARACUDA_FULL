@@ -92,6 +92,7 @@ class OscillatoryAnalysisResult:
     selected_timestamps_path: str | None
     used_fallbacks: dict[str, str] = field(default_factory=dict)
     timing_source: str | None = None
+    motion_kinematics_source: str | None = None
 
     # Per-cycle results (kept with defaults for backward compatibility)
     cycle_phases_rad: list[float] = field(default_factory=list)
@@ -144,6 +145,7 @@ def analyze_oscillatory_drag_run(
     selected_timestamps_path = drag_result.selected_timestamps_path
     used_fallbacks = dict(drag_result.used_fallbacks)
     timing_source = drag_result.timing_source
+    motion_kinematics_source = drag_result.motion_kinematics_source
 
     traj_frames, traj_px, traj_um = _extract_axis_series(
         loaded.paths.trajectory_path, axis=axis, um_per_px=um_per_px
@@ -231,6 +233,7 @@ def analyze_oscillatory_drag_run(
             selected_timestamps_path=selected_timestamps_path,
             used_fallbacks=used_fallbacks,
             timing_source=timing_source,
+            motion_kinematics_source=motion_kinematics_source,
             rheology_target={},
             analysis_status="warning",
             averaging_summary={},
@@ -316,6 +319,7 @@ def analyze_oscillatory_drag_run(
             selected_timestamps_path=selected_timestamps_path,
             used_fallbacks=used_fallbacks,
             timing_source=timing_source,
+            motion_kinematics_source=motion_kinematics_source,
             rheology_target={},
             analysis_status="warning",
             averaging_summary={},
@@ -407,6 +411,7 @@ def analyze_oscillatory_drag_run(
         selected_timestamps_path=selected_timestamps_path,
         used_fallbacks=used_fallbacks,
         timing_source=timing_source,
+        motion_kinematics_source=motion_kinematics_source,
         rheology_target=rheology_target,
         analysis_status=status,
         averaging_summary=avg_summary,
@@ -443,6 +448,7 @@ def oscillatory_result_to_dict(result: OscillatoryAnalysisResult) -> dict:
         "selected_timestamps_path": result.selected_timestamps_path,
         "used_fallbacks": result.used_fallbacks,
         "timing_source": result.timing_source,
+        "motion_kinematics_source": result.motion_kinematics_source,
         "analysis_status": result.analysis_status,
         "physics_status": result.physics_status,
         "averaging_summary": result.averaging_summary,
@@ -451,19 +457,34 @@ def oscillatory_result_to_dict(result: OscillatoryAnalysisResult) -> dict:
     }
 
 
-def export_oscillatory_summary_json(result: OscillatoryAnalysisResult, output_dir: Path) -> Path:
+def export_oscillatory_summary_json(
+    result: OscillatoryAnalysisResult,
+    output_dir: Path,
+    *,
+    protocol_path: str | None = None,
+) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_oscillatory_summary.json"
-    path.write_text(json.dumps(oscillatory_result_to_dict(result), indent=2, ensure_ascii=False), encoding="utf-8")
+    payload = oscillatory_result_to_dict(result)
+    payload["protocol_present"] = bool(protocol_path)
+    payload["protocol_path"] = protocol_path
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 
-def export_oscillatory_summary_csv(result: OscillatoryAnalysisResult, output_dir: Path) -> Path:
+def export_oscillatory_summary_csv(
+    result: OscillatoryAnalysisResult,
+    output_dir: Path,
+    *,
+    protocol_path: str | None = None,
+) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_oscillatory_summary.csv"
     payload = oscillatory_result_to_dict(result)
+    payload["protocol_present"] = bool(protocol_path)
+    payload["protocol_path"] = protocol_path
     flat = {
         k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
         for k, v in payload.items()

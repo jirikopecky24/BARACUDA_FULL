@@ -34,6 +34,13 @@ from barakuda.core.postprocess_ot import (
 )
 from barakuda.core.ot_physics import DragParams, compute_dragging_from_offset, kappa_from_fc_n_per_m
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
+from barakuda.core.run_protocol import (
+    create_protocol_from_context,
+    load_protocol,
+    merge_protocol,
+    save_protocol,
+    protocol_path_for_run,
+)
 
 from barakuda.core.tracking import Detection, choose_tracking_polarity, track_particle, Roi, TrackingMethod, roi_follow_center
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
@@ -1518,8 +1525,86 @@ class BatchController:
                                     umbrella_cfg,
                                     trajectory_path=drag_outputs.get("trajectory"),
                                 )
-                                osc_summary_json = export_oscillatory_summary_json(osc_result, run_dir_drag)
-                                osc_summary_csv = export_oscillatory_summary_csv(osc_result, run_dir_drag)
+                                protocol_path = protocol_path_for_run(run_dir_drag)
+                                try:
+                                    existing_protocol = load_protocol(run_dir_drag)
+                                except Exception:
+                                    existing_protocol = create_protocol_from_context()
+                                osc_updates = {
+                                    "analysis": {
+                                        "analysis_type": "oscillatory",
+                                        "analysis_axis": osc_result.axis,
+                                        "stage_axis": osc_result.stage_axis,
+                                        "selected_calibration_path": osc_result.selected_calibration_path,
+                                        "warnings": list(osc_result.warnings),
+                                        "qc_flags": dict(osc_result.qc_flags),
+                                        "physics_status": osc_result.physics_status,
+                                        "analysis_status": osc_result.analysis_status,
+                                        "selected_results": {
+                                            "frequency_hz": osc_result.frequency_hz,
+                                            "omega_rad_s": osc_result.omega_rad_s,
+                                            "response_amplitude_um": osc_result.response_amplitude_um,
+                                            "amplitude_ratio": osc_result.amplitude_ratio,
+                                            "phase_lag_rad": osc_result.phase_lag_rad,
+                                            "phase_lag_deg": osc_result.phase_lag_deg,
+                                            "n_cycles_used": osc_result.n_cycles_used,
+                                        },
+                                    },
+                                    "provenance": {
+                                        "um_per_px_source": osc_result.um_per_px_source,
+                                        "stage_um_per_unit_source": osc_result.stage_um_per_unit_source,
+                                        "kappa_source": osc_result.kappa_source,
+                                        "timing_source": osc_result.timing_source,
+                                        "motion_kinematics_source": osc_result.motion_kinematics_source,
+                                        "analysis_axis": osc_result.axis,
+                                        "stage_axis": osc_result.stage_axis,
+                                        "selected_calibration_path": osc_result.selected_calibration_path,
+                                        "selected_stage_meta_path": osc_result.selected_stage_meta_path,
+                                        "selected_stage_trace_path": osc_result.selected_stage_trace_path,
+                                        "selected_timestamps_path": osc_result.selected_timestamps_path,
+                                        "used_fallbacks": dict(osc_result.used_fallbacks),
+                                        "selected_sidecar_paths": {
+                                            "stage_meta_path": osc_result.selected_stage_meta_path,
+                                            "stage_trace_path": osc_result.selected_stage_trace_path,
+                                            "timestamps_path": osc_result.selected_timestamps_path,
+                                        },
+                                    },
+                                }
+                                _prov_warns = [
+                                    w
+                                    for w in list(osc_result.warnings)
+                                    if isinstance(w, str)
+                                    and w.startswith("PROVENANCE_WARNING:")
+                                ]
+                                if _prov_warns:
+                                    osc_updates["analysis"]["provenance_warnings"] = _prov_warns
+                                try:
+                                    merged_protocol = merge_protocol(
+                                        existing_protocol,
+                                        osc_updates,
+                                        allow_manual_overwrite=False,
+                                    )
+                                    saved_protocol = save_protocol(merged_protocol, run_dir_drag)
+                                    protocol_path = saved_protocol
+                                except Exception as exc:
+                                    raise RuntimeError(
+                                        f"Oscillatory run_protocol update failed for run_dir={run_dir_drag}: {exc}"
+                                    ) from exc
+
+                                osc_summary_json = export_oscillatory_summary_json(
+                                    osc_result,
+                                    run_dir_drag,
+                                    protocol_path=(
+                                        str(protocol_path) if protocol_path else None
+                                    ),
+                                )
+                                osc_summary_csv = export_oscillatory_summary_csv(
+                                    osc_result,
+                                    run_dir_drag,
+                                    protocol_path=(
+                                        str(protocol_path) if protocol_path else None
+                                    ),
+                                )
                                 try:
                                     traj_for_osc = drag_outputs.get("trajectory")
                                     if not traj_for_osc:
@@ -1548,6 +1633,31 @@ class BatchController:
                                 drag_outputs["oscillatory_summary_json"] = osc_summary_json
                                 drag_outputs["oscillatory_summary_csv"] = osc_summary_csv
                                 drag_outputs["oscillatory_diagnostic_png"] = osc_diag_png
+                                try:
+                                    existing_protocol = load_protocol(run_dir_drag)
+                                    followup_updates = {
+                                        "analysis": {
+                                            "summary_references": {
+                                                "oscillatory_summary_json": str(osc_summary_json),
+                                                "oscillatory_summary_csv": str(osc_summary_csv),
+                                                "oscillatory_diagnostic_png": (
+                                                    str(osc_diag_png)
+                                                    if osc_diag_png is not None
+                                                    else None
+                                                ),
+                                            }
+                                        }
+                                    }
+                                    merged_protocol = merge_protocol(
+                                        existing_protocol,
+                                        followup_updates,
+                                        allow_manual_overwrite=False,
+                                    )
+                                    save_protocol(merged_protocol, run_dir_drag)
+                                except Exception as exc:
+                                    raise RuntimeError(
+                                        f"Oscillatory run_protocol summary_references update failed for run_dir={run_dir_drag}: {exc}"
+                                    ) from exc
 
                             # Mirror key DRAG artifacts into analysis directories for reports.
                             try:

@@ -26,6 +26,7 @@ class PipelinePanel(QWidget):
     preview_gate_clicked = pyqtSignal()
     gate_report_clicked = pyqtSignal()
     stop_clicked = pyqtSignal()
+    open_protocol_clicked = pyqtSignal()
 
     measure_clicked = pyqtSignal()
     track_range_clicked = pyqtSignal()
@@ -88,6 +89,8 @@ class PipelinePanel(QWidget):
         self.btn_gate_report = QPushButton("Report\u2026")
         self.btn_gate_report.setToolTip("View detailed report of the Preview Gate results.")
         self.btn_gate_report.setEnabled(False)
+        self.btn_open_protocol = QPushButton("Open Protocol")
+        self.btn_open_protocol.setToolTip("Open run protocol editor for selected run/input.")
         self.btn_run = QPushButton("Run")
         self.btn_run.setToolTip("Start processing the selected files.")
         self.btn_stop = QPushButton("Stop")
@@ -96,6 +99,7 @@ class PipelinePanel(QWidget):
         self.btn_reset.setToolTip("Reset all settings to their default values.")
 
         self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
+        self.btn_open_protocol.clicked.connect(self.open_protocol_clicked.emit)
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
         self.btn_reset.clicked.connect(self.apply_ot_defaults)
@@ -675,6 +679,7 @@ class PipelinePanel(QWidget):
         # ── Action buttons ──
         tab_run_layout.addWidget(self.btn_preview_gate)
         tab_run_layout.addWidget(self.btn_gate_report)
+        tab_run_layout.addWidget(self.btn_open_protocol)
         tab_run_layout.addWidget(self.btn_run)
         tab_run_layout.addWidget(self.btn_stop)
         tab_run_layout.addWidget(self.btn_reset)

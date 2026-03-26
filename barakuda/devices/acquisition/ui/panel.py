@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QFileDialog, QGroupBox, QScrollArea, QFrame,
     QSlider, QGridLayout, QPlainTextEdit, QComboBox,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
-    QTabWidget, QMessageBox,
+    QTabWidget, QMessageBox, QStackedWidget,
 )
 from PyQt6.QtGui import QFont
 
@@ -45,6 +45,16 @@ from barakuda.devices.acquisition.motion.motion_run import (
     MotionRunError,
 )
 from barakuda.devices.acquisition.motion.metric_conversion import MetricMotionCommand
+from barakuda.devices.acquisition.motion.metric_conversion import XimcMetricCalibration
+from barakuda.core.run_protocol import (
+    create_protocol_from_context,
+    load_protocol,
+    merge_protocol,
+    save_protocol,
+)
+from barakuda.shell.widgets.run_protocol_dialog import RunProtocolDialog
+from barakuda.shell.stage_service import get_stage_service
+from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
 try:
     from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
     _XIMC_AVAILABLE = True
@@ -211,6 +221,7 @@ class _RecordMotionWorker(QObject):
         stage,                         # AbstractStage (typed loosely to avoid import cycles)
         recipe: ConstantVelocityDragRecipe,
         metric_command: MetricMotionCommand | None,
+        metric_mapping_profile: XimcMetricCalibration | None,
         output_dir: str,
         basename: str,
         duration_s: float,
@@ -226,6 +237,7 @@ class _RecordMotionWorker(QObject):
         self._stage = stage
         self._recipe = recipe
         self._metric_command = metric_command
+        self._metric_mapping_profile = metric_mapping_profile
         self._output_dir = output_dir
         self._basename = basename
         self._duration_s = duration_s
@@ -243,6 +255,7 @@ class _RecordMotionWorker(QObject):
                 stage=self._stage,
                 recipe=self._recipe,
                 metric_command=self._metric_command,
+                metric_mapping_profile=self._metric_mapping_profile,
                 output_dir=self._output_dir,
                 basename=self._basename,
                 duration_s=self._duration_s,
@@ -302,6 +315,8 @@ class AcquisitionPanel(QWidget):
 
         # Motion integration — stage instance and motion worker
         self._stage = None          # XimcStage or None (lazy connect)
+        self._stage_svc = get_stage_service()
+        self._stage_console_win: StageConsoleWindow | None = None
         self._motion_thread: QThread | None = None
         self._motion_worker: _RecordMotionWorker | None = None
         self._motion_elapsed_timer: QTimer | None = None
@@ -625,6 +640,13 @@ class AcquisitionPanel(QWidget):
         )
         self._btn_sim_raw.clicked.connect(self._on_sim_raw)
         rec_btn_row.addWidget(self._btn_sim_raw)
+
+        self._btn_open_protocol = QPushButton("Open Protocol")
+        self._btn_open_protocol.setToolTip(
+            "Open run protocol editor for the current acquisition run folder."
+        )
+        self._btn_open_protocol.clicked.connect(self._on_open_protocol)
+        rec_btn_row.addWidget(self._btn_open_protocol)
         rec_form.addRow("", rec_btn_row)
 
         self._lbl_countdown = QLabel("")
@@ -734,7 +756,7 @@ class AcquisitionPanel(QWidget):
     # ------------------------------------------------------------------ #
 
     def _build_motion_tab(self) -> QWidget:
-        """Build the Motion configuration tab (constant_velocity_drag preset)."""
+        """Build the Motion configuration tab (protocol-based, metric UI)."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -767,6 +789,13 @@ class AcquisitionPanel(QWidget):
         )
         self._btn_stage_connect.clicked.connect(self._on_stage_connect)
         row_stage_btns.addWidget(self._btn_stage_connect)
+
+        self._btn_open_stage_console = QPushButton("Stage Console…")
+        self._btn_open_stage_console.setToolTip(
+            "Open Stage Console (Acquisition context)."
+        )
+        self._btn_open_stage_console.clicked.connect(self._open_stage_console)
+        row_stage_btns.addWidget(self._btn_open_stage_console)
         stage_form.addRow("", row_stage_btns)
 
         self._lbl_stage_status = QLabel("Not connected")
@@ -786,9 +815,15 @@ class AcquisitionPanel(QWidget):
 
         layout.addWidget(grp_stage)
 
-        # -- Motion mode group --
-        grp_motion = QGroupBox("Motion — constant_velocity_drag")
-        motion_form = QFormLayout(grp_motion)
+        # -- Motion protocol group (architecture stable regardless of connection state) --
+        grp_motion = QGroupBox("Motion")
+        motion_outer = QVBoxLayout(grp_motion)
+        motion_outer.setContentsMargins(10, 10, 10, 10)
+        motion_outer.setSpacing(6)
+
+        motion_form = QFormLayout()
+        motion_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        motion_outer.addLayout(motion_form)
 
         self._check_motion_enable = QPushButton("Enable Motion")
         self._check_motion_enable.setCheckable(True)
@@ -800,6 +835,19 @@ class AcquisitionPanel(QWidget):
         self._check_motion_enable.toggled.connect(self._on_motion_enable_toggled)
         motion_form.addRow("", self._check_motion_enable)
 
+        self._combo_motion_protocol = QComboBox()
+        self._combo_motion_protocol.addItems([
+            "Constant velocity drag",
+            "Oscillatory drag (real-data)",
+        ])
+        self._combo_motion_protocol.setToolTip(
+            "Select the motion protocol.\n"
+            "Constant velocity drag is supported for Record+Motion.\n"
+            "Oscillatory drag (real-data) is shown for the expected architecture, but is not wired yet."
+        )
+        self._combo_motion_protocol.currentIndexChanged.connect(self._update_motion_run_button)
+        motion_form.addRow("Protocol:", self._combo_motion_protocol)
+
         self._combo_motion_axis = QComboBox()
         self._combo_motion_axis.addItems(["x", "y"])
         self._combo_motion_axis.setToolTip("Stage axis to drive during the drag run.")
@@ -810,50 +858,113 @@ class AcquisitionPanel(QWidget):
         self._combo_motion_direction.setToolTip("Stage movement direction relative to positive axis.")
         motion_form.addRow("Direction:", self._combo_motion_direction)
 
-        self._spin_motion_travel = _NoScrollDoubleSpinBox()
-        self._spin_motion_travel.setRange(0.1, 1_000_000.0)
-        self._spin_motion_travel.setValue(200.0)
-        self._spin_motion_travel.setDecimals(1)
-        self._spin_motion_travel.setSuffix(" units")
-        self._spin_motion_travel.setToolTip("Total travel distance in stage user units.")
-        motion_form.addRow("Travel:", self._spin_motion_travel)
+        # Protocol-specific UI (stack)
+        self._motion_protocol_stack = QStackedWidget()
+        motion_outer.addWidget(self._motion_protocol_stack)
 
-        self._spin_motion_speed = _NoScrollDoubleSpinBox()
-        self._spin_motion_speed.setRange(1.0, 1_000_000.0)
-        self._spin_motion_speed.setValue(1.0)
-        self._spin_motion_speed.setDecimals(0)
-        self._spin_motion_speed.setSuffix(" (reg)")
-        self._spin_motion_speed.setToolTip(
-            "XIMC Speed register (direct firmware value).\n"
-            "Lower = faster, higher = slower.\n"
-            "Speed=1, Accel=20 → ~20 s for Travel=1500 (slow drag mode).\n"
-            "Same as XILab: m.Speed = 1"
-        )
-        motion_form.addRow("Speed:", self._spin_motion_speed)
+        # --- Protocol: Constant velocity drag (supported) ---
+        cvw = QWidget()
+        cv_form = QFormLayout(cvw)
+        cv_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
 
-        self._spin_motion_accel = _NoScrollDoubleSpinBox()
-        self._spin_motion_accel.setRange(1.0, 1_000_000.0)
-        self._spin_motion_accel.setValue(20.0)
-        self._spin_motion_accel.setDecimals(0)
-        self._spin_motion_accel.setSuffix(" (reg)")
-        self._spin_motion_accel.setToolTip(
-            "XIMC Accel register (direct firmware value).\n"
-            "Accel=20 matches XILab slow drag mode: m.Accel = 20"
+        self._spin_motion_travel_um = _NoScrollDoubleSpinBox()
+        self._spin_motion_travel_um.setRange(0.1, 1e9)
+        self._spin_motion_travel_um.setValue(200.0)
+        self._spin_motion_travel_um.setDecimals(3)
+        self._spin_motion_travel_um.setSuffix(" µm")
+        self._spin_motion_travel_um.setToolTip(
+            "Total travel distance in µm (user-facing).\n"
+            "Requires µm/unit to be known to convert safely for the backend."
         )
-        motion_form.addRow("Accel:", self._spin_motion_accel)
+        self._spin_motion_travel_um.valueChanged.connect(lambda _v: self._update_motion_run_button())
+        cv_form.addRow("Travel:", self._spin_motion_travel_um)
 
-        self._spin_motion_decel = _NoScrollDoubleSpinBox()
-        self._spin_motion_decel.setRange(1.0, 1_000_000.0)
-        self._spin_motion_decel.setValue(20.0)
-        self._spin_motion_decel.setDecimals(1)
-        self._spin_motion_decel.setSuffix(" u/s²")
-        self._spin_motion_decel.setDecimals(0)
-        self._spin_motion_decel.setSuffix(" (reg)")
-        self._spin_motion_decel.setToolTip(
-            "XIMC Decel register (direct firmware value).\n"
-            "Decel=20 matches XILab slow drag mode: m.Decel = 20"
+        self._spin_motion_speed_um_s = _NoScrollDoubleSpinBox()
+        self._spin_motion_speed_um_s.setRange(0.0, 1e12)
+        self._spin_motion_speed_um_s.setValue(60.0)
+        self._spin_motion_speed_um_s.setDecimals(3)
+        self._spin_motion_speed_um_s.setSuffix(" µm/s")
+        self._spin_motion_speed_um_s.setToolTip(
+            "Speed in µm/s (user-facing).\n"
+            "Active command input. Converted to backend registers via validated mapping profile."
         )
-        motion_form.addRow("Decel:", self._spin_motion_decel)
+        cv_form.addRow("Speed:", self._spin_motion_speed_um_s)
+
+        self._spin_motion_accel_um_s2 = _NoScrollDoubleSpinBox()
+        self._spin_motion_accel_um_s2.setRange(0.0, 1e12)
+        self._spin_motion_accel_um_s2.setValue(120.0)
+        self._spin_motion_accel_um_s2.setDecimals(3)
+        self._spin_motion_accel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_accel_um_s2.setToolTip(
+            "Acceleration in µm/s² (user-facing).\n"
+            "Active command input. Converted to backend registers via validated mapping profile."
+        )
+        cv_form.addRow("Accel:", self._spin_motion_accel_um_s2)
+
+        self._spin_motion_decel_um_s2 = _NoScrollDoubleSpinBox()
+        self._spin_motion_decel_um_s2.setRange(0.0, 1e12)
+        self._spin_motion_decel_um_s2.setValue(120.0)
+        self._spin_motion_decel_um_s2.setDecimals(3)
+        self._spin_motion_decel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_decel_um_s2.setToolTip(
+            "Deceleration in µm/s² (user-facing).\n"
+            "Active command input. Converted to backend registers via validated mapping profile."
+        )
+        cv_form.addRow("Decel:", self._spin_motion_decel_um_s2)
+
+        self._lbl_metric_mapping_status = QLabel("")
+        self._lbl_metric_mapping_status.setWordWrap(True)
+        self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
+        cv_form.addRow("", self._lbl_metric_mapping_status)
+
+        self._motion_protocol_stack.addWidget(cvw)
+
+        # --- Protocol: Oscillatory drag (real-data) (not wired yet) ---
+        osw = QWidget()
+        os_form = QFormLayout(osw)
+        os_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+
+        self._spin_osc_frequency_hz = _NoScrollDoubleSpinBox()
+        self._spin_osc_frequency_hz.setRange(0.01, 1e6)
+        self._spin_osc_frequency_hz.setValue(1.0)
+        self._spin_osc_frequency_hz.setDecimals(3)
+        self._spin_osc_frequency_hz.setSuffix(" Hz")
+        self._spin_osc_frequency_hz.setEnabled(False)
+        self._spin_osc_frequency_hz.setToolTip(
+            "Oscillatory protocol is not wired for acquisition yet (real-data).\n"
+            "This UI is present to preserve the expected protocol-based architecture."
+        )
+        os_form.addRow("Frequency:", self._spin_osc_frequency_hz)
+
+        self._spin_osc_amplitude_um = _NoScrollDoubleSpinBox()
+        self._spin_osc_amplitude_um.setRange(0.0, 1e9)
+        self._spin_osc_amplitude_um.setValue(2.0)
+        self._spin_osc_amplitude_um.setDecimals(3)
+        self._spin_osc_amplitude_um.setSuffix(" µm")
+        self._spin_osc_amplitude_um.setEnabled(False)
+        self._spin_osc_amplitude_um.setToolTip(
+            "Oscillatory protocol is not wired for acquisition yet (real-data).\n"
+            "No command will be issued in this mode."
+        )
+        os_form.addRow("Amplitude:", self._spin_osc_amplitude_um)
+
+        self._lbl_osc_note = QLabel(
+            "Oscillatory drag (real-data) is not implemented in Acquisition yet.\n"
+            "Select Constant velocity drag to run Record+Motion."
+        )
+        self._lbl_osc_note.setStyleSheet("color: #666;")
+        self._lbl_osc_note.setWordWrap(True)
+        os_form.addRow("", self._lbl_osc_note)
+
+        self._motion_protocol_stack.addWidget(osw)
+
+        def _sync_protocol_stack() -> None:
+            idx = int(self._combo_motion_protocol.currentIndex())
+            self._motion_protocol_stack.setCurrentIndex(0 if idx == 0 else 1)
+            self._update_motion_run_button()
+
+        self._combo_motion_protocol.currentIndexChanged.connect(lambda _i: _sync_protocol_stack())
+        _sync_protocol_stack()
 
         self._spin_motion_pre_delay = _NoScrollDoubleSpinBox()
         self._spin_motion_pre_delay.setRange(0.0, 60.0)
@@ -917,8 +1028,54 @@ class AcquisitionPanel(QWidget):
         layout.addStretch(1)
         # Stage enumeration can be slow on Windows (PowerShell CIM queries).
         # Never block UI thread during panel construction — start async scan instead.
+        self._update_motion_run_button()
         self._refresh_stage_device_list(async_scan=True)
         return tab
+
+    def _open_stage_console(self) -> None:
+        if self._stage_console_win is None:
+            self._stage_console_win = StageConsoleWindow(
+                snapshot_provider=self._stage_console_snapshot,
+                parent=self,
+            )
+        self._stage_console_win.show()
+        self._stage_console_win.raise_()
+        self._stage_console_win.activateWindow()
+
+    def _stage_console_snapshot(self) -> StageConsoleSnapshot:
+        lease = self._stage_svc.lease_state()
+        tel = self._stage_svc.get_telemetry()
+        owner = lease.owner or "none"
+        state_parts: list[str] = []
+        if lease.run_active:
+            state_parts.append("Monitor-only (acquisition active)")
+        elif lease.owner != "stage_console":
+            state_parts.append("Monitor-only")
+        else:
+            state_parts.append("Control enabled")
+        if lease.busy:
+            state_parts.append("busy")
+        if lease.stage_um_per_unit is None or (lease.stage_um_per_unit is not None and lease.stage_um_per_unit <= 0):
+            state_parts.append("µm/unit unknown")
+
+        speed_note = ""
+        if lease.run_active:
+            speed_note = "paused during acquisition"
+        elif tel.speed_um_s is not None and tel.speed_is_derived:
+            speed_note = "derived"
+        elif tel.speed_um_s is None:
+            speed_note = "N/A"
+
+        return StageConsoleSnapshot(
+            connected=lease.connected,
+            state_text=", ".join(state_parts) if state_parts else "—",
+            owner_text=owner,
+            position_um=tel.position_um,
+            speed_um_s=tel.speed_um_s,
+            speed_note=speed_note,
+            encoder=tel.encoder,
+            stage_state=tel.state,
+        )
 
     def _refresh_stage_device_list(self, *, async_scan: bool = False) -> None:
         """Populate the device combo with XIMC URIs (COM / USB).
@@ -1043,12 +1200,81 @@ class AcquisitionPanel(QWidget):
         self._update_motion_run_button()
 
     def _update_motion_run_button(self) -> None:
+        # During initial UI construction, the Record+Motion button may not exist yet.
+        if not hasattr(self, "_btn_record_motion"):
+            return
+        protocol_ok = True
+        if hasattr(self, "_combo_motion_protocol"):
+            protocol_ok = self._combo_motion_protocol.currentIndex() == 0
+
+        scale_ok = True
+        try:
+            um_per_unit = float(self._spin_stage_um_per_unit.value())
+            scale_ok = um_per_unit > 0
+        except Exception:
+            scale_ok = False
+
+        mapping_profile, mapping_err = self._load_metric_mapping_profile()
+        mapping_ok = mapping_profile is not None
+
         enabled = (
             self._check_motion_enable.isChecked()
+            and protocol_ok
+            and scale_ok
+            and mapping_ok
             and self._stage is not None
             and self._camera.is_connected
         )
         self._btn_record_motion.setEnabled(enabled)
+        if hasattr(self, "_lbl_metric_mapping_status"):
+            if protocol_ok:
+                if mapping_ok:
+                    self._lbl_metric_mapping_status.setText(
+                        f"Validated metric mapping profile active: {mapping_profile.validation_id}"
+                    )
+                    self._lbl_metric_mapping_status.setStyleSheet("color: #1f7a1f;")
+                else:
+                    self._lbl_metric_mapping_status.setText(
+                        "Metric mapping profile missing. Record+Motion is blocked until validated "
+                        "mapping env vars are provided."
+                    )
+                    self._lbl_metric_mapping_status.setStyleSheet("color: #aa5500;")
+            else:
+                self._lbl_metric_mapping_status.setText("Protocol not wired for acquisition run.")
+                self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
+
+        if not mapping_ok and mapping_err:
+            self._btn_record_motion.setToolTip(
+                "Start synchronized recording + stage motion run.\n"
+                f"Blocked: {mapping_err}"
+            )
+        else:
+            self._btn_record_motion.setToolTip(
+                "Start synchronized recording + stage motion run.\n"
+                "Motion must be enabled and stage must be connected."
+            )
+
+    def _load_metric_mapping_profile(self) -> tuple[XimcMetricCalibration | None, str | None]:
+        try:
+            import os
+            sp = float(os.environ["BARAKUDA_XIMC_SPEED_REG_PER_UM_S"])
+            ap = float(os.environ["BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2"])
+            dp = float(os.environ["BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"])
+            vid = str(os.environ.get("BARAKUDA_XIMC_MAPPING_VALIDATION_ID", "env_profile"))
+            if sp <= 0 or ap <= 0 or dp <= 0:
+                return None, "mapping coefficients must be > 0"
+            return XimcMetricCalibration(
+                speed_reg_per_um_s=sp,
+                accel_reg_per_um_s2=ap,
+                decel_reg_per_um_s2=dp,
+                validation_id=vid,
+            ), None
+        except Exception:
+            return None, (
+                "set BARAKUDA_XIMC_SPEED_REG_PER_UM_S, "
+                "BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2, "
+                "BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"
+            )
 
     # ------------------------------------------------------------------ #
     #  Stage connect
@@ -1058,7 +1284,7 @@ class AcquisitionPanel(QWidget):
         if self._stage is not None:
             # Disconnect
             try:
-                self._stage.disconnect()
+                self._stage_svc.disconnect()
             except Exception:
                 pass
             self._stage = None
@@ -1083,9 +1309,8 @@ class AcquisitionPanel(QWidget):
 
         um_per_unit = self._spin_stage_um_per_unit.value()
         try:
-            stage = XimcStage(stage_um_per_unit=um_per_unit if um_per_unit > 0 else None)
-            stage.connect(uri)
-            self._stage = stage
+            self._stage_svc.connect_ximc(uri=uri, stage_um_per_unit=um_per_unit if um_per_unit > 0 else None)
+            self._stage = self._stage_svc.stage
             self._btn_stage_connect.setText("Disconnect Stage")
             self._lbl_stage_status.setText(f"Connected: {uri}")
             self._log(f"Stage connected: {uri}")
@@ -1104,15 +1329,24 @@ class AcquisitionPanel(QWidget):
     # ------------------------------------------------------------------ #
 
     def _get_motion_recipe(self) -> ConstantVelocityDragRecipe:
+        # Only constant velocity drag is wired for acquisition runs in the MVP.
+        if hasattr(self, "_combo_motion_protocol") and self._combo_motion_protocol.currentIndex() != 0:
+            raise MotionRunError("Selected protocol is not implemented for Acquisition Record+Motion yet.")
         direction_text = self._combo_motion_direction.currentText()
         direction = 1 if "+1" in direction_text else -1
+        um_per_unit = float(self._spin_stage_um_per_unit.value())
+        if not (um_per_unit > 0):
+            raise MotionRunError("Stage scale (µm/unit) must be known (>0) for metric motion commands.")
+        travel_um = float(self._spin_motion_travel_um.value()) if hasattr(self, "_spin_motion_travel_um") else 0.0
+        travel_user = float(travel_um) / float(um_per_unit)
         return ConstantVelocityDragRecipe(
             axis=self._combo_motion_axis.currentText(),
             direction=direction,
-            travel=self._spin_motion_travel.value(),
-            speed=self._spin_motion_speed.value(),
-            accel=self._spin_motion_accel.value(),
-            decel=self._spin_motion_decel.value(),
+            travel=travel_user,
+            # Legacy recipe register fields remain as internal fallback placeholders.
+            speed=1.0,
+            accel=20.0,
+            decel=20.0,
             pre_delay_s=self._spin_motion_pre_delay.value(),
             post_delay_s=self._spin_motion_post_delay.value(),
             sign_stage_to_image_x=self._spin_motion_sign_x.value(),
@@ -1127,28 +1361,47 @@ class AcquisitionPanel(QWidget):
             self._lbl_motion_run_status.setText("Stage not connected.")
             return
 
-        recipe = self._get_motion_recipe()
+        # Acquisition must own the lease during Record+Motion (Phase 3 policy).
+        ok, reason = self._stage_svc.request_lease("acquisition", force=True)
+        if not ok:
+            self._lbl_motion_run_status.setText(reason)
+            return
+        self._stage_svc.set_run_active(True)
+
+        try:
+            recipe = self._get_motion_recipe()
+        except MotionRunError as exc:
+            self._lbl_motion_run_status.setText(str(exc))
+            return
         errors = recipe.validate()
         if errors:
             self._lbl_motion_run_status.setText(f"Recipe error: {'; '.join(errors)}")
             return
 
-        # Metric intent (Phase3): construct explicitly from legacy travel_user via
-        # stage_um_per_unit. Do not reinterpret speed/accel/decel registers as metric
-        # yet; backend conversion mapping for those is not trustworthy.
+        # Metric intent for active command path.
         stage_um_per_unit = self._stage.get_stage_um_per_unit() if self._stage is not None else None
         metric_command: MetricMotionCommand | None = None
+        metric_mapping_profile: XimcMetricCalibration | None = None
         if stage_um_per_unit is not None and stage_um_per_unit > 0:
+            travel_um = float(self._spin_motion_travel_um.value()) if hasattr(self, "_spin_motion_travel_um") else float(recipe.travel) * float(stage_um_per_unit)
             metric_command = MetricMotionCommand(
                 axis=recipe.axis,
                 direction=int(recipe.direction),
-                travel_um=float(recipe.travel) * float(stage_um_per_unit),
-                speed_um_s=None,
-                accel_um_s2=None,
-                decel_um_s2=None,
+                travel_um=travel_um,
+                speed_um_s=float(self._spin_motion_speed_um_s.value()),
+                accel_um_s2=float(self._spin_motion_accel_um_s2.value()),
+                decel_um_s2=float(self._spin_motion_decel_um_s2.value()),
                 pre_delay_s=float(recipe.pre_delay_s),
                 post_delay_s=float(recipe.post_delay_s),
             )
+
+            metric_mapping_profile, mapping_err = self._load_metric_mapping_profile()
+            if metric_mapping_profile is None:
+                self._lbl_motion_run_status.setText(
+                    "Missing validated metric mapping profile. "
+                    f"Blocked: {mapping_err or 'unknown mapping error'}"
+                )
+                return
 
         requested_roi = self._get_roi_tuple()
         roi = self._sync_roi_to_camera(requested_roi)
@@ -1182,6 +1435,7 @@ class AcquisitionPanel(QWidget):
             stage=self._stage,
             recipe=recipe,
             metric_command=metric_command,
+            metric_mapping_profile=metric_mapping_profile,
             output_dir=str(self._get_run_output_dir()),
             basename=self._edit_basename.text(),
             duration_s=self._spin_duration.value(),
@@ -1209,6 +1463,8 @@ class AcquisitionPanel(QWidget):
     def _on_record_motion_done(
         self, record_result: RecordResult, motion_result: MotionRunResult
     ) -> None:
+        self._stage_svc.set_run_active(False)
+        self._stage_svc.release_lease("acquisition")
         fps_str = (
             f"{record_result.fps_effective:.1f}"
             if record_result.fps_effective else "N/A"
@@ -1255,6 +1511,11 @@ class AcquisitionPanel(QWidget):
                 json.dump(qc, f, indent=2)
         except Exception:
             pass
+        self._update_run_protocol_from_acquisition(
+            record_result=record_result,
+            qc_path=Path(qc_path) if qc_path else None,
+            motion_result=motion_result,
+        )
 
         self._stop_motion_elapsed_timer()
         self._lbl_motion_run_status.setText(
@@ -1268,6 +1529,8 @@ class AcquisitionPanel(QWidget):
         QTimer.singleShot(200, self._on_start_preview)
 
     def _on_record_motion_error(self, err: str) -> None:
+        self._stage_svc.set_run_active(False)
+        self._stage_svc.release_lease("acquisition")
         self._stop_motion_elapsed_timer()
         self._log(f"Record+Motion FAILED — {err}")
         self._lbl_motion_run_status.setText(f"FAILED: {err}")
@@ -1943,6 +2206,11 @@ class AcquisitionPanel(QWidget):
                 json.dump(qc, f, indent=2)
         except Exception:
             pass
+        self._update_run_protocol_from_acquisition(
+            record_result=result,
+            qc_path=Path(qc_path) if qc_path else None,
+            motion_result=None,
+        )
 
         self._btn_record.setEnabled(True)
         self._btn_stop_record.setEnabled(False)
@@ -2128,9 +2396,165 @@ class AcquisitionPanel(QWidget):
         if d:
             self._edit_output_dir.setText(d)
 
+    def _on_open_protocol(self) -> None:
+        run_dir = self._get_run_output_dir()
+        dlg = RunProtocolDialog(run_folder=run_dir, parent=self)
+        dlg.exec()
+
     # ------------------------------------------------------------------ #
     #  Helpers
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _load_json_file(path: Path) -> dict:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _try_git_revision() -> tuple[str | None, str | None]:
+        try:
+            branch = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            branch = None
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            commit = None
+        return branch, commit
+
+    def _update_run_protocol_from_acquisition(
+        self,
+        *,
+        record_result: RecordResult,
+        qc_path: Path | None,
+        motion_result: MotionRunResult | None,
+    ) -> None:
+        run_dir = Path(record_result.video_path).resolve().parent
+        basename = Path(record_result.video_path).stem
+        meta_path = Path(record_result.meta_path)
+        meta = dict(record_result.meta or {})
+        if not meta and meta_path.is_file():
+            meta = self._load_json_file(meta_path)
+
+        stage_meta: dict = {}
+        if motion_result is not None and motion_result.stage_json_path.is_file():
+            stage_meta = self._load_json_file(Path(motion_result.stage_json_path))
+
+        recording_mode = str(
+            meta.get("format") or Path(record_result.video_path).suffix.lstrip(".")
+        ).lower()
+        fps_hint = meta.get("fps_target_hint", self._spin_fps_hint.value())
+        timestamps_present = bool(meta.get("timestamps_path"))
+        if not timestamps_present:
+            timestamps_present = (run_dir / f"{basename}_timestamps.csv").is_file()
+        selected_timestamps_path = meta.get("timestamps_path")
+        if not selected_timestamps_path:
+            maybe_ts = run_dir / f"{basename}_timestamps.csv"
+            if maybe_ts.is_file():
+                selected_timestamps_path = str(maybe_ts.resolve())
+
+        branch, commit = self._try_git_revision()
+        updates: dict = {
+            "identity": {
+                "run_id": basename,
+                "source_type": recording_mode,
+                "acquired_in_barakuda": True,
+                "imported_external": False,
+                "git_branch": branch,
+                "git_commit": commit,
+            },
+            "acquisition": {
+                "output_folder": str(run_dir),
+                "basename": basename,
+                "recording_mode": recording_mode,
+                "fps_hint": fps_hint,
+                "exposure_us": meta.get("exposure_us"),
+                "gain": meta.get("gain"),
+                "pixel_format": meta.get("pixel_format"),
+                "roi": meta.get("record_roi") or meta.get("requested_roi"),
+                "timestamps_present": timestamps_present,
+            },
+        }
+
+        if qc_path is not None:
+            updates["provenance"] = {
+                **dict(updates.get("provenance") or {}),
+                "selected_qc_path": str(qc_path.resolve()),
+            }
+        updates["provenance"] = {
+            **dict(updates.get("provenance") or {}),
+            "selected_timestamps_path": selected_timestamps_path,
+            "selected_sidecar_paths": {
+                "meta_path": str(meta_path.resolve()) if meta_path.is_file() else None,
+                "timestamps_path": selected_timestamps_path,
+                "qc_path": str(qc_path.resolve()) if qc_path is not None else None,
+            },
+            "used_fallbacks": {},
+        }
+
+        if stage_meta:
+            metric_provenance = stage_meta.get("metric_provenance")
+            if not isinstance(metric_provenance, dict):
+                metric_provenance = {}
+            actual_metric = stage_meta.get("actual_metric")
+            if not isinstance(actual_metric, dict):
+                actual_metric = {}
+
+            updates["motion"] = {
+                "protocol_type": stage_meta.get("mode"),
+                "axis": stage_meta.get("axis"),
+                "direction": stage_meta.get("direction"),
+                "speed": stage_meta.get("speed_user_s_commanded"),
+                "accel": stage_meta.get("accel_user_s2_commanded"),
+                "decel": stage_meta.get("decel_user_s2_commanded"),
+                "pre_delay_s": stage_meta.get("pre_delay_s"),
+                "post_delay_s": stage_meta.get("post_delay_s"),
+                "stage_um_per_unit": stage_meta.get("stage_um_per_unit"),
+                "sign_stage_to_image_x": stage_meta.get("sign_stage_to_image_x"),
+                "sign_stage_to_image_y": stage_meta.get("sign_stage_to_image_y"),
+                "commanded_travel_user": stage_meta.get("travel_user_commanded"),
+                "actual_speed_user_s": stage_meta.get("actual_speed_user_s"),
+                "actual_speed_um_s": actual_metric.get("actual_speed_um_s"),
+            }
+            updates["provenance"] = {
+                **dict(updates.get("provenance") or {}),
+                "stage_um_per_unit_source": metric_provenance.get(
+                    "stage_um_per_unit_source"
+                ),
+                "selected_stage_meta_path": str(
+                    Path(motion_result.stage_json_path).resolve()
+                ),
+                "selected_stage_trace_path": str(
+                    Path(motion_result.stage_trace_path).resolve()
+                ),
+                "selected_sidecar_paths": {
+                    **dict((updates.get("provenance") or {}).get("selected_sidecar_paths") or {}),
+                    "stage_meta_path": str(Path(motion_result.stage_json_path).resolve()),
+                    "stage_trace_path": str(Path(motion_result.stage_trace_path).resolve()),
+                },
+            }
+
+        try:
+            existing = load_protocol(run_dir)
+        except Exception:
+            existing = create_protocol_from_context()
+        try:
+            merged = merge_protocol(existing, updates, allow_manual_overwrite=False)
+            saved_path = save_protocol(merged, run_dir)
+            self._log(f"Run protocol updated: {saved_path}")
+        except Exception as exc:
+            self._log(f"Run protocol update skipped: {exc}")
 
     def _set_all_enabled(self, enabled: bool) -> None:
         for w in (
