@@ -49,10 +49,7 @@ def refine(frame: np.ndarray, roi: Roi) -> Tuple[Roi, object]:
         pass
         
     roi2 = centered_roi(cx, cy, roi.w, frame.shape)
-    
-    # Optional debug print for local validation (can be removed later)
-    # print(f"refine: cx={cx:.2f}, cy={cy:.2f}, new_rx={roi2.x}, new_ry={roi2.y}")
-    
+
     return roi2, det
 
 def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, int, int, int]:

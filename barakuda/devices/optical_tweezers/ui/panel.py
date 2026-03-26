@@ -54,7 +54,6 @@ class PipelinePanel(QWidget):
         self.btn_preview_gate.setToolTip("Evaluate tracking quality on a few frames before full run.")
         self.btn_preview_gate.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.btn_preview_gate.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        from PyQt6.QtWidgets import QSizePolicy
         self.btn_preview_gate.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_preview_gate.setMinimumHeight(26)
 
@@ -840,7 +839,6 @@ class PipelinePanel(QWidget):
         
         self._stage_speed.setValue(0.0)
         self._drag_axis.setCurrentIndex(0)
-        self._viscosity.setValue(0.001)
         self._viscosity.setValue(0.001)
         self._temperature_c.setValue(25.0)
         self._bead_diameter_um.setValue(1.0)

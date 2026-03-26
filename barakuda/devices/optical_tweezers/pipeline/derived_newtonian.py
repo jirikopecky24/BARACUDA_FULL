@@ -98,10 +98,3 @@ def compute_mean_derived(dx: Dict[str, Any], dy: Dict[str, Any], method: str = "
         out["k_ratio_y_x"] = dy["k_pN_um"] / dx["k_pN_um"]
         
     return out
-
-if __name__ == "__main__":
-    t_fake = np.random.normal(0, 0.05, 1000)
-    dx = compute_newtonian_derived(500.0, t_fake, 25.0, 1.0)
-    dy = compute_newtonian_derived(495.0, t_fake * 1.05, 25.0, 1.0)
-    dmean = compute_mean_derived(dx, dy)
-    print("derived OK")
