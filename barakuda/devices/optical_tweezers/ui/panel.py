@@ -1019,7 +1019,7 @@ class PipelinePanel(QWidget):
         # Manually trigger a UI refresh event for parents
         self.value_changed.emit()
 
-    # -------------------- API pro Shell --------------------
+    # -------------------- Public panel API --------------------
 
     def get_preview_gate_params(self) -> dict:
         return {
@@ -1064,7 +1064,7 @@ class PipelinePanel(QWidget):
         self.progress.setValue(pct)
 
     def get_tracking_params(self) -> dict:
-        # method UI is removed, keep RS as default
+        # Tracking method selector is intentionally hidden; keep RS as fixed default.
         use_ann = bool(self._use_annulus.isChecked())
         r_in = float(self._annulus_r_inner.value())
         r_out = float(self._annulus_r_outer.value())

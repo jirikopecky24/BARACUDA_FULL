@@ -5,7 +5,7 @@ from typing import Tuple
 from barakuda.core.tracking import track_particle, TrackingMethod, Roi, roi_follow_center
 
 def centered_roi(cx: float, cy: float, roi_size: int, frame_shape: Tuple[int, ...]) -> Roi:
-    """Helper for exact ROI center math, clamping, and odd size enforcing."""
+    """Return an odd-sized ROI centered on (cx, cy) and clamped to image bounds."""
     h = int(frame_shape[0])
     w = int(frame_shape[1])
     
@@ -26,7 +26,7 @@ def centered_roi(cx: float, cy: float, roi_size: int, frame_shape: Tuple[int, ..
     return Roi(x=rx, y=ry, w=roi_size, h=roi_size)
 
 def refine(frame: np.ndarray, roi: Roi) -> Tuple[Roi, object]:
-    """Helper to detect within ROI and recenter if det is good."""
+    """Run one RS detection pass and recenter ROI when detection quality is acceptable."""
     det = track_particle(
         frame,
         roi=roi,
@@ -38,14 +38,12 @@ def refine(frame: np.ndarray, roi: Roi) -> Tuple[Roi, object]:
     if det.quality < 0.1:
         return roi, det
         
-    # track_particle currently returns global coordinates because it adds ox, oy internally.
-    # self-check guard just in case it returned local:
+    # track_particle returns global coordinates (it adds ROI origin internally).
+    # Keep this guard to tolerate accidental local-coordinate regressions.
     cx, cy = det.x_px, det.y_px
     if cx < 0 or (cx <= roi.w and cy <= roi.h and roi.x > 0 and roi.y > 0):
-        # A tiny heuristic in case we missed a local-coord edge case (though code looks global)
-        # If it's suspiciously local (e.g. x < roi.w despite ROI being far from 0)
-        # Actually tracking.py line 367 states: x = float(ox) + float(cx) which means it's GLOBAL.
-        # So we leave cx, cy as is.
+        # Heuristic only: suspiciously local-like coordinates, but we still keep
+        # values unchanged because the tracker contract is global coordinates.
         pass
         
     roi2 = centered_roi(cx, cy, roi.w, frame.shape)
@@ -54,8 +52,8 @@ def refine(frame: np.ndarray, roi: Roi) -> Tuple[Roi, object]:
 
 def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, int, int, int]:
     """
-    Finds the most prominent dark or bright spot and returns a centered ROI.
-    Supports polarity auto (dark+bright) by scoring both via TopHat and BlackHat morphology.
+    Detect the strongest bright/dark candidate and return a centered ROI.
+    Uses both TopHat and BlackHat responses to remain polarity-agnostic.
     """
     if frame.ndim == 3:
         if frame.shape[-1] >= 3:
@@ -86,8 +84,8 @@ def auto_detect_particle(frame: np.ndarray, roi_size: int = 50) -> Tuple[int, in
 
 def auto_roi_rs(frame: np.ndarray, um_per_px: float, bead_diameter_um: float, margin_factor: float = 1.8) -> Tuple[int, int, int, int]:
     """
-    Finds bead center using RS and returns ROI sized by bead_diameter_um.
-    Falls back to morphological scoring (auto_detect_particle) if RS fails.
+    Estimate bead-centered ROI using Radial Symmetry, sized from bead diameter.
+    Falls back to morphology-based auto detection when RS quality is insufficient.
     """
     if um_per_px <= 0 or bead_diameter_um <= 0:
         return auto_detect_particle(frame, roi_size=50)
