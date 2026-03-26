@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter
+    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QPushButton
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -21,6 +21,7 @@ from barakuda.core.video_io import is_video_file
 from barakuda.core.calibration_store import save_dataset_scale
 from barakuda.core.calibration_store import load_dataset_scale
 from barakuda.shell.widgets.preview_gate_report_dialog import PreviewGateReportDialog
+from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
 
 
 class ShellMainWindow(QMainWindow):
@@ -114,6 +115,16 @@ class ShellMainWindow(QMainWindow):
         ml.addWidget(self.method_label)
         ml.addWidget(self.method_combo, 0)
 
+        # Standalone Stage Console (Phase 5: UI shell only)
+        self._stage_console_win: StageConsoleWindow | None = None
+        btn_stage_console = QPushButton("Stage Console…")
+        btn_stage_console.setToolTip(
+            "Open the standalone Stage Console window (manual stage diagnostics).\n"
+            "MVP shell only: monitor-only UI, no motion commands wired yet."
+        )
+        btn_stage_console.clicked.connect(self._open_stage_console)
+        ml.addWidget(btn_stage_console, 0)
+
         self.method_dock = QDockWidget("", self)
         self.method_dock.setWidget(method_widget)
         self.method_dock.setTitleBarWidget(QWidget())  # no title bar
@@ -156,6 +167,26 @@ class ShellMainWindow(QMainWindow):
         self._first_show = True
         self._manual_roi_edited_paths = set()
         self._last_ot_bead_diameter_um: Optional[float] = None
+
+    def _open_stage_console(self) -> None:
+        if self._stage_console_win is None:
+            self._stage_console_win = StageConsoleWindow(
+                snapshot_provider=self._stage_console_snapshot,
+                parent=self,
+            )
+        self._stage_console_win.show()
+        self._stage_console_win.raise_()
+        self._stage_console_win.activateWindow()
+
+    def _stage_console_snapshot(self) -> StageConsoleSnapshot:
+        # Phase 5: no shared stage service is wired yet.
+        # Provide a safe monitor-only snapshot placeholder.
+        return StageConsoleSnapshot(
+            connected=False,
+            state_text="Monitor-only (MVP shell; not wired)",
+            owner_text="—",
+            position_um=None,
+        )
 
     def _set_window_icon_if_available(self) -> None:
         icon_path = Path(__file__).resolve().parents[2] / "assets" / "branding" / "barakuda" / "app_icon.png"
