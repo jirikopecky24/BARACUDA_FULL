@@ -931,6 +931,17 @@ class AcquisitionPanel(QWidget):
         self._lbl_motion_semantics_note.setStyleSheet("color: #666;")
         cv_form.addRow("", self._lbl_motion_semantics_note)
 
+        self._lbl_motion_actual_header = QLabel("Last measured motion (read-only):")
+        self._lbl_motion_actual_header.setStyleSheet("color: #666; font-weight: bold;")
+        cv_form.addRow("", self._lbl_motion_actual_header)
+
+        self._lbl_motion_actual_travel_um = QLabel("not available yet")
+        self._lbl_motion_actual_speed_um_s = QLabel("not available yet")
+        self._lbl_motion_actual_duration_s = QLabel("not available yet")
+        cv_form.addRow("Last actual travel (µm):", self._lbl_motion_actual_travel_um)
+        cv_form.addRow("Last actual speed (µm/s):", self._lbl_motion_actual_speed_um_s)
+        cv_form.addRow("Last motion duration (s):", self._lbl_motion_actual_duration_s)
+
         self._motion_protocol_stack.addWidget(cvw)
 
         # --- Protocol: Oscillatory drag (real-data) (not wired yet) ---
@@ -1045,6 +1056,23 @@ class AcquisitionPanel(QWidget):
         self._update_motion_run_button()
         self._refresh_stage_device_list(async_scan=True)
         return tab
+
+    def _update_motion_actual_metric_labels(
+        self,
+        *,
+        actual_travel_um: float | None = None,
+        actual_speed_um_s: float | None = None,
+        actual_duration_s: float | None = None,
+    ) -> None:
+        self._lbl_motion_actual_travel_um.setText(
+            f"{float(actual_travel_um):.3f}" if actual_travel_um is not None else "not available yet"
+        )
+        self._lbl_motion_actual_speed_um_s.setText(
+            f"{float(actual_speed_um_s):.3f}" if actual_speed_um_s is not None else "not available yet"
+        )
+        self._lbl_motion_actual_duration_s.setText(
+            f"{float(actual_duration_s):.4f}" if actual_duration_s is not None else "not available yet"
+        )
 
     def _open_stage_console(self) -> None:
         if self._stage_console_win is None:
@@ -1495,6 +1523,30 @@ class AcquisitionPanel(QWidget):
             qc_path=Path(qc_path) if qc_path else None,
             motion_result=motion_result,
         )
+        try:
+            stage_meta = self._load_json_file(Path(motion_result.stage_json_path))
+            actual_metric = stage_meta.get("actual_metric")
+            if not isinstance(actual_metric, dict):
+                actual_metric = {}
+            self._update_motion_actual_metric_labels(
+                actual_travel_um=(
+                    float(actual_metric["actual_travel_um"])
+                    if actual_metric.get("actual_travel_um") is not None
+                    else None
+                ),
+                actual_speed_um_s=(
+                    float(actual_metric["actual_speed_um_s"])
+                    if actual_metric.get("actual_speed_um_s") is not None
+                    else None
+                ),
+                actual_duration_s=(
+                    float(actual_metric["actual_motion_duration_s"])
+                    if actual_metric.get("actual_motion_duration_s") is not None
+                    else None
+                ),
+            )
+        except Exception:
+            self._update_motion_actual_metric_labels()
 
         self._stop_motion_elapsed_timer()
         self._lbl_motion_run_status.setText(

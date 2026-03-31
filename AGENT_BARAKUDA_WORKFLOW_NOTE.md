@@ -1,10 +1,11 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW RIGHT-PANEL MINIMUM-WIDTH HARDENING
-- current task = narrow right-panel minimum-width hardening
-- pipeline/control panel must never shrink below its true usable width
-- horizontal scrolling is not the solution for right-panel width
-- focus strictly on shell splitter floor + right panel minimum-size behavior
+## 0. CURRENT PHASE OVERRIDE — NARROW ACQUISITION MOTION DUAL-DISPLAY
+- current task = narrow Acquisition Motion dual-display UI phase
+- keep editable motion controls truthful (Travel metric, Speed/Accel/Decel raw regs)
+- add read-only measured metric motion outputs where available
+- no fake dynamic metric command mapping semantics
+- focus strictly on Acquisition Motion panel UI + narrow runtime wiring
 - no feature development
 - no business-logic changes
 - no broad redesign
