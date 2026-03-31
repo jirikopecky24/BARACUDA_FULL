@@ -769,27 +769,28 @@ class PipelinePanel(QWidget):
 
         layout.addWidget(self.tabs, stretch=1)
 
-        # Ensure the pipeline panel is never narrower than the widest tab
-        def _update_min_width_for_tab(index: int) -> None:
-            tab = self.tabs.widget(index)
-            if tab is None:
-                return
-            tab.adjustSize()
-            hint = tab.sizeHint()
-            if not hint.isValid():
-                return
-            # Add a small safety margin for scrollbars/padding
-            target_width = hint.width() + 32
-            target_width = max(470, min(target_width, 560))
-            current_min = self.minimumWidth()
-            if target_width > current_min:
-                self.setMinimumWidth(target_width)
+        # Ensure the pipeline panel never shrinks below the widest usable tab width.
+        def _recompute_min_width_floor() -> None:
+            widest = 0
+            for i in range(self.tabs.count()):
+                tab = self.tabs.widget(i)
+                if tab is None:
+                    continue
+                tab.adjustSize()
+                hint = tab.sizeHint()
+                if hint.isValid():
+                    widest = max(widest, int(hint.width()))
+            # Add a small safety margin for padding/scroll frame.
+            target_width = widest + 32
+            # Hard floor for practical OT control readability.
+            target_width = max(520, min(target_width, 620))
+            self.setMinimumWidth(target_width)
 
         self.setMaximumWidth(760)
 
-        self.tabs.currentChanged.connect(_update_min_width_for_tab)
-        # Apply once after construction for the initial tab
-        QTimer.singleShot(0, lambda: _update_min_width_for_tab(self.tabs.currentIndex()))
+        self.tabs.currentChanged.connect(lambda _idx: _recompute_min_width_floor())
+        # Apply once after construction
+        QTimer.singleShot(0, _recompute_min_width_floor)
         
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)

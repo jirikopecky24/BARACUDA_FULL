@@ -1,11 +1,10 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW ACQUISITION MOTION DUAL-DISPLAY
-- current task = narrow Acquisition Motion dual-display UI phase
-- keep editable motion controls truthful (Travel metric, Speed/Accel/Decel raw regs)
-- add read-only measured metric motion outputs where available
-- no fake dynamic metric command mapping semantics
-- focus strictly on Acquisition Motion panel UI + narrow runtime wiring
+## 0. CURRENT PHASE OVERRIDE — NARROW OT RIGHT-PANEL MINIMUM-WIDTH HARDENING
+- current task = narrow OT right-panel minimum-width hardening
+- OT pipeline panel must never shrink below true usable width
+- no horizontal-scroll-as-width-solution for OT panel
+- focus strictly on OT right panel floor + shell splitter/container enforcement
 - no feature development
 - no business-logic changes
 - no broad redesign

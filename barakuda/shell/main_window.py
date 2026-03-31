@@ -135,6 +135,7 @@ class ShellMainWindow(QMainWindow):
         self.dataset_dock.setWidget(self.dataset)
         self.dataset.setMinimumWidth(260)
         self.dataset_dock.setMinimumWidth(280)
+        self.dataset_dock.setMaximumWidth(380)
         self.dataset_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -192,9 +193,9 @@ class ShellMainWindow(QMainWindow):
             total = int(self._center_splitter.width())
             if total <= 0:
                 total = 1400
-            right_min = max(380, int(self._device_container.minimumWidth() or 0))
+            right_min = max(470, int(self._device_container.minimumWidth() or 0))
             right = max(right_min, int(total * 0.36))
-            left = max(320, total - right)
+            left = max(280, total - right)
             self._center_splitter.setSizes([left, right])
         except Exception:
             pass
@@ -207,9 +208,19 @@ class ShellMainWindow(QMainWindow):
         if w > 120:
             self._last_dataset_dock_width = w
 
+    def _sync_device_container_floor_from_panel(self) -> None:
+        if self._device_panel is None:
+            return
+        try:
+            panel_min = int(self._device_panel.minimumWidth() or 0)
+        except Exception:
+            panel_min = 0
+        base_floor = 520 if self._active_device_id == "optical_tweezers" else 470
+        self._device_container.setMinimumWidth(max(base_floor, panel_min))
+
     def _restore_dataset_dock_width(self) -> None:
         try:
-            target = max(280, int(self._last_dataset_dock_width))
+            target = min(380, max(280, int(self._last_dataset_dock_width)))
             self.resizeDocks([self.dataset_dock], [target], Qt.Orientation.Horizontal)
         except Exception:
             pass
@@ -485,6 +496,7 @@ class ShellMainWindow(QMainWindow):
         self._active_device_id = str(spec.device_id)
         self._device_panel = spec.create_panel()
         self._device_container_layout.addWidget(self._device_panel)
+        QTimer.singleShot(0, self._sync_device_container_floor_from_panel)
 
         if self._active_device_id == "optical_tweezers":
             try:
@@ -558,11 +570,12 @@ class ShellMainWindow(QMainWindow):
             except Exception:
                 pass
         else:
-            self._preview_stack.setMinimumWidth(320)
-            self._device_container.setMinimumWidth(470)
+            self._preview_stack.setMinimumWidth(280)
+            self._device_container.setMinimumWidth(520 if self._active_device_id == "optical_tweezers" else 470)
             self._device_container.setMaximumWidth(760)
             self._preview_stack.show()
             self.dataset_dock.show()
+            QTimer.singleShot(0, self._sync_device_container_floor_from_panel)
             if previous_device_id == "acquisition":
                 QTimer.singleShot(0, self._restore_dataset_dock_width)
                 QTimer.singleShot(0, self._restore_non_acq_splitter_sizes)
