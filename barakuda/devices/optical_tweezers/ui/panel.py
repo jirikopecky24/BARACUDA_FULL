@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
     QSizePolicy, QAbstractSpinBox, QTabWidget
 )
+from barakuda.core.truth_resolvers import build_collision_safe_export_path
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
 
 class NoWheelValueChangeFilter(QObject):
@@ -769,14 +770,16 @@ class PipelinePanel(QWidget):
 
         layout.addWidget(self.tabs, stretch=1)
 
-        # Ensure the pipeline panel never shrinks below the widest usable tab width.
-        def _recompute_min_width_floor() -> None:
+        # Compute one stable floor from all OT tabs and keep it fixed.
+        def _apply_stable_min_width_floor() -> None:
             widest = 0
-            for i in range(self.tabs.count()):
-                tab = self.tabs.widget(i)
-                if tab is None:
-                    continue
+            candidates = [self.tabs, tab_run_content, params_box, post_box, settings_box]
+            for tab in candidates:
+                tab.ensurePolished()
                 tab.adjustSize()
+                hint = tab.minimumSizeHint()
+                if hint.isValid():
+                    widest = max(widest, int(hint.width()))
                 hint = tab.sizeHint()
                 if hint.isValid():
                     widest = max(widest, int(hint.width()))
@@ -785,12 +788,13 @@ class PipelinePanel(QWidget):
             # Hard floor for practical OT control readability.
             target_width = max(520, min(target_width, 620))
             self.setMinimumWidth(target_width)
+            self.tabs.setMinimumWidth(target_width)
 
         self.setMaximumWidth(760)
-
-        self.tabs.currentChanged.connect(lambda _idx: _recompute_min_width_floor())
-        # Apply once after construction
-        QTimer.singleShot(0, _recompute_min_width_floor)
+        # Apply after construction (and once again after first layout pass),
+        # then keep fixed across tab switches.
+        QTimer.singleShot(0, _apply_stable_min_width_floor)
+        QTimer.singleShot(80, _apply_stable_min_width_floor)
         
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
@@ -1528,15 +1532,28 @@ class PipelinePanel(QWidget):
 
                 exports_dir = item_root / "exports"
                 exports_dir.mkdir(parents=True, exist_ok=True)
+                collision_count = 0
                 for aid, art in to_copy:
                     analysis_rel_path = art.get("analysis_rel_path")
                     if analysis_rel_path and manifest.analysis_dir is not None:
                         src = manifest.analysis_dir / analysis_rel_path
+                        rel_export_path = _Path(str(analysis_rel_path).replace("\\", "/"))
                     else:
                         src = item_root / art["path"]
-                    dst = exports_dir / _Path(art["path"]).name
+                        rel_export_path = _Path(str(art["path"]).replace("\\", "/"))
+                    dst, collision = build_collision_safe_export_path(
+                        exports_dir,
+                        str(rel_export_path),
+                    )
+                    if collision:
+                        collision_count += 1
                     _shutil.copy2(src, dst)
                     total_copied += 1
+                if collision_count > 0:
+                    self._export_status_lbl.setText(
+                        self._export_status_lbl.text()
+                        + f"\nCollision protection applied ({collision_count} rename(s))."
+                    )
                 export_dirs.append(str(exports_dir))
 
             if export_dirs:

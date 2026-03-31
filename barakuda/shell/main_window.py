@@ -5,7 +5,7 @@ from typing import Optional
 import re
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
     QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy
@@ -236,6 +236,36 @@ class ShellMainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _clamp_window_to_visible_screen(self) -> None:
+        """Keep the top-level window fully inside available desktop geometry."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        try:
+            frame = self.frameGeometry()
+            screen = self.screen()
+            if screen is None:
+                screen = QGuiApplication.screenAt(frame.center())
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+
+            available = screen.availableGeometry()
+            target_w = min(frame.width(), available.width())
+            target_h = min(frame.height(), available.height())
+            if target_w != frame.width() or target_h != frame.height():
+                self.resize(target_w, target_h)
+                frame = self.frameGeometry()
+
+            max_x = available.right() - frame.width() + 1
+            max_y = available.bottom() - frame.height() + 1
+            target_x = max(available.left(), min(frame.x(), max_x))
+            target_y = max(available.top(), min(frame.y(), max_y))
+            if target_x != frame.x() or target_y != frame.y():
+                self.move(target_x, target_y)
+        except Exception:
+            pass
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         
@@ -263,6 +293,11 @@ class ShellMainWindow(QMainWindow):
                 self._restore_non_acq_splitter_sizes()
             except Exception:
                 pass
+
+            # Clamp first shown geometry after initial layout settles to avoid
+            # opening partially outside the available desktop area.
+            QTimer.singleShot(0, self._clamp_window_to_visible_screen)
+            QTimer.singleShot(80, self._clamp_window_to_visible_screen)
 
             self.log_panel.log("Shell started.")
             self._set_device_by_index(0)

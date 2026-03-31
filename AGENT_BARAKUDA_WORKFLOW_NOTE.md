@@ -1,14 +1,14 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW OT RIGHT-PANEL MINIMUM-WIDTH HARDENING
-- current task = narrow OT right-panel minimum-width hardening
-- OT pipeline panel must never shrink below true usable width
-- no horizontal-scroll-as-width-solution for OT panel
-- focus strictly on OT right panel floor + shell splitter/container enforcement
+## 0. CURRENT PHASE OVERRIDE — NARROW SHELL STARTUP + OT TAB WIDTH STABILITY FIX
+- current task = narrow shell startup geometry fix + narrow OT tab-switch width stability fix
+- fix 1: startup window geometry must open fully visible on-screen (never partly above top edge)
+- fix 2: OT right pipeline panel width floor must stay stable across Run/Tracking/Postprocess/Settings tab switches
+- preserve functionality; no workflow changes
 - no feature development
 - no business-logic changes
 - no broad redesign
-- preserve current Acquisition + OT workflows and functionality
+- no cosmetic hacks
 - one phase only (strict phase separation; do not do next-phase work early)
 - stop after report and wait for explicit approval before continuing
 - no proceeding without explicit approval
