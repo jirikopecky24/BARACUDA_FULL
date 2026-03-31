@@ -545,9 +545,22 @@ class ShellMainWindow(QMainWindow):
         # Switch the preview stack to the correct panel
         # Acquisition has its own built-in preview — hide the shared one
         if self._active_device_id == "acquisition":
+            # Acquisition owns its own preview+controls layout.
+            # Collapse shared preview pane to avoid a large empty left area.
+            self._preview_stack.setMinimumWidth(0)
+            self._device_container.setMinimumWidth(760)
+            self._device_container.setMaximumWidth(16777215)
             self._preview_stack.hide()
             self.dataset_dock.hide()
+            try:
+                total = max(1, int(self._center_splitter.width()))
+                self._center_splitter.setSizes([0, total])
+            except Exception:
+                pass
         else:
+            self._preview_stack.setMinimumWidth(520)
+            self._device_container.setMinimumWidth(380)
+            self._device_container.setMaximumWidth(760)
             self._preview_stack.show()
             self.dataset_dock.show()
             if previous_device_id == "acquisition":

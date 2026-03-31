@@ -1,9 +1,10 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW RESPONSIVE LAYOUT REGRESSION FIX
-- current task = narrow responsive layout regression fix
-- investigate why panel widths are correct on first launch but shrink after tab/device/method switching
-- focus strictly on shell splitter sizing stability, panel width regression paths, and right-panel resize persistence
+## 0. CURRENT PHASE OVERRIDE — NARROW ACQUISITION LAYOUT BUGFIX
+- current task = narrow acquisition layout bugfix
+- remove wasted left-side width in Acquisition view
+- keep right-side control panel fully visible and usable
+- focus strictly on shell/acquisition width split behavior and panel visibility
 - no feature development
 - no business-logic changes
 - no broad redesign
