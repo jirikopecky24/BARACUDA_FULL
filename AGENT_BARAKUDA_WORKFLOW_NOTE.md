@@ -1,10 +1,11 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW ACQUISITION LAYOUT BUGFIX
-- current task = narrow acquisition layout bugfix
-- remove wasted left-side width in Acquisition view
-- keep right-side control panel fully visible and usable
-- focus strictly on shell/acquisition width split behavior and panel visibility
+## 0. CURRENT PHASE OVERRIDE — NARROW ACQUISITION MOTION UI CLEANUP
+- current task = narrow acquisition motion UI cleanup
+- remove extra metric mapping controls from Acquisition UI
+- keep only core motion inputs visible (Travel, Speed, Accel, Decel, standard motion fields)
+- remove UI-level mapping/profile warning+blocking in Acquisition motion panel
+- focus strictly on Acquisition motion panel simplicity and narrow wiring cleanup
 - no feature development
 - no business-logic changes
 - no broad redesign

@@ -923,11 +923,6 @@ class AcquisitionPanel(QWidget):
         )
         cv_form.addRow("Decel:", self._spin_motion_decel_um_s2)
 
-        self._lbl_metric_mapping_status = QLabel("")
-        self._lbl_metric_mapping_status.setWordWrap(True)
-        self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
-        cv_form.addRow("", self._lbl_metric_mapping_status)
-
         self._motion_protocol_stack.addWidget(cvw)
 
         # --- Protocol: Oscillatory drag (real-data) (not wired yet) ---
@@ -1225,49 +1220,22 @@ class AcquisitionPanel(QWidget):
         except Exception:
             scale_ok = False
 
-        mapping_profile, mapping_err = self._load_metric_mapping_profile()
-        mapping_ok = mapping_profile is not None
-
         enabled = (
             self._check_motion_enable.isChecked()
             and protocol_ok
             and scale_ok
-            and mapping_ok
             and self._stage is not None
             and self._camera.is_connected
         )
         self._btn_record_motion.setEnabled(enabled)
-        if hasattr(self, "_lbl_metric_mapping_status"):
-            if protocol_ok:
-                if mapping_ok:
-                    self._lbl_metric_mapping_status.setText(
-                        f"Validated metric mapping profile active: {mapping_profile.validation_id}"
-                    )
-                    self._lbl_metric_mapping_status.setStyleSheet("color: #1f7a1f;")
-                else:
-                    self._lbl_metric_mapping_status.setText(
-                        "Metric mapping profile missing. Record+Motion is blocked until validated "
-                        "mapping env vars are provided."
-                    )
-                    self._lbl_metric_mapping_status.setStyleSheet("color: #aa5500;")
-            else:
-                self._lbl_metric_mapping_status.setText("Protocol not wired for acquisition run.")
-                self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
-
-        if not mapping_ok and mapping_err:
-            self._btn_record_motion.setToolTip(
-                "Start synchronized recording + stage motion run.\n"
-                f"Blocked: {mapping_err}"
-            )
-        else:
-            self._btn_record_motion.setToolTip(
-                "Start synchronized recording + stage motion run.\n"
-                "Motion must be enabled and stage must be connected."
-            )
+        self._btn_record_motion.setToolTip(
+            "Start synchronized recording + stage motion run.\n"
+            "Motion must be enabled and stage must be connected."
+        )
 
     def _load_metric_mapping_profile(self) -> tuple[XimcMetricCalibration | None, str | None]:
+        # Optional environment-based mapping profile (legacy/internal path).
         try:
-            import os
             sp = float(os.environ["BARAKUDA_XIMC_SPEED_REG_PER_UM_S"])
             ap = float(os.environ["BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2"])
             dp = float(os.environ["BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"])
@@ -1281,11 +1249,7 @@ class AcquisitionPanel(QWidget):
                 validation_id=vid,
             ), None
         except Exception:
-            return None, (
-                "set BARAKUDA_XIMC_SPEED_REG_PER_UM_S, "
-                "BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2, "
-                "BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"
-            )
+            return None, "metric mapping profile not set"
 
     # ------------------------------------------------------------------ #
     #  Stage connect
@@ -1354,10 +1318,10 @@ class AcquisitionPanel(QWidget):
             axis=self._combo_motion_axis.currentText(),
             direction=direction,
             travel=travel_user,
-            # Legacy recipe register fields remain as internal fallback placeholders.
-            speed=1.0,
-            accel=20.0,
-            decel=20.0,
+            # UI core motion inputs are primary in this panel.
+            speed=float(self._spin_motion_speed_um_s.value()),
+            accel=float(self._spin_motion_accel_um_s2.value()),
+            decel=float(self._spin_motion_decel_um_s2.value()),
             pre_delay_s=self._spin_motion_pre_delay.value(),
             post_delay_s=self._spin_motion_post_delay.value(),
             sign_stage_to_image_x=self._spin_motion_sign_x.value(),
@@ -1399,20 +1363,16 @@ class AcquisitionPanel(QWidget):
                 axis=recipe.axis,
                 direction=int(recipe.direction),
                 travel_um=travel_um,
-                speed_um_s=float(self._spin_motion_speed_um_s.value()),
-                accel_um_s2=float(self._spin_motion_accel_um_s2.value()),
-                decel_um_s2=float(self._spin_motion_decel_um_s2.value()),
+                # UI keeps speed/accel/decel as primary controls; they are applied
+                # directly through recipe/backend fields in this cleanup phase.
+                speed_um_s=None,
+                accel_um_s2=None,
+                decel_um_s2=None,
                 pre_delay_s=float(recipe.pre_delay_s),
                 post_delay_s=float(recipe.post_delay_s),
             )
 
-            metric_mapping_profile, mapping_err = self._load_metric_mapping_profile()
-            if metric_mapping_profile is None:
-                self._lbl_motion_run_status.setText(
-                    "Missing validated metric mapping profile. "
-                    f"Blocked: {mapping_err or 'unknown mapping error'}"
-                )
-                return
+            metric_mapping_profile, _ = self._load_metric_mapping_profile()
 
         requested_roi = self._get_roi_tuple()
         roi = self._sync_roi_to_camera(requested_roi)
