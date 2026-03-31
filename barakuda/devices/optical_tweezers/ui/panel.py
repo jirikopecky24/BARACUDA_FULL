@@ -696,6 +696,7 @@ class PipelinePanel(QWidget):
         scroll_run = QScrollArea()
         scroll_run.setWidgetResizable(True)
         scroll_run.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_run.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_run.setWidget(tab_run_content)
         tab_run_layout.addWidget(scroll_run)
 
@@ -705,6 +706,7 @@ class PipelinePanel(QWidget):
         scroll_trk = QScrollArea()
         scroll_trk.setWidgetResizable(True)
         scroll_trk.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_trk.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_trk.setWidget(params_box)
         tab_tracking_layout.addWidget(scroll_trk)
 
@@ -714,6 +716,7 @@ class PipelinePanel(QWidget):
         scroll_post = QScrollArea()
         scroll_post.setWidgetResizable(True)
         scroll_post.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_post.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_post.setWidget(post_box)
         tab_postprocess_layout.addWidget(scroll_post)
         
@@ -723,6 +726,7 @@ class PipelinePanel(QWidget):
         scroll_exp = QScrollArea()
         scroll_exp.setWidgetResizable(True)
         scroll_exp.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_exp.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_exp.setWidget(export_box)
         tab_export_layout.addWidget(scroll_exp)
 
@@ -754,6 +758,7 @@ class PipelinePanel(QWidget):
         scroll_set = QScrollArea()
         scroll_set.setWidgetResizable(True)
         scroll_set.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_set.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_set.setWidget(settings_box)
         tab_settings_layout.addWidget(scroll_set)
 
@@ -775,7 +780,7 @@ class PipelinePanel(QWidget):
                 return
             # Add a small safety margin for scrollbars/padding
             target_width = hint.width() + 32
-            target_width = max(360, min(target_width, 520))
+            target_width = max(470, min(target_width, 560))
             current_min = self.minimumWidth()
             if target_width > current_min:
                 self.setMinimumWidth(target_width)

@@ -30,7 +30,7 @@ class ShellMainWindow(QMainWindow):
 
         self.setWindowTitle("BARAKUDA Analysis Suite — Modular")
         self.resize(1400, 860)
-        self.setMinimumSize(1100, 700)
+        self.setMinimumSize(1280, 700)
         self._set_window_icon_if_available()
 
         self.dataset = DatasetPanel()
@@ -79,7 +79,7 @@ class ShellMainWindow(QMainWindow):
         # Right-hand panel (device container with PipelinePanel / AFM panel)
         # should behave similarly to the Dataset dock: never collapse below
         # a comfortable minimum width so that labels and controls remain readable.
-        self._device_container.setMinimumWidth(380)
+        self._device_container.setMinimumWidth(470)
         self._device_container.setMaximumWidth(760)
         self._device_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
@@ -194,7 +194,7 @@ class ShellMainWindow(QMainWindow):
                 total = 1400
             right_min = max(380, int(self._device_container.minimumWidth() or 0))
             right = max(right_min, int(total * 0.36))
-            left = max(520, total - right)
+            left = max(320, total - right)
             self._center_splitter.setSizes([left, right])
         except Exception:
             pass
@@ -548,7 +548,7 @@ class ShellMainWindow(QMainWindow):
             # Acquisition owns its own preview+controls layout.
             # Collapse shared preview pane to avoid a large empty left area.
             self._preview_stack.setMinimumWidth(0)
-            self._device_container.setMinimumWidth(760)
+            self._device_container.setMinimumWidth(860)
             self._device_container.setMaximumWidth(16777215)
             self._preview_stack.hide()
             self.dataset_dock.hide()
@@ -558,8 +558,8 @@ class ShellMainWindow(QMainWindow):
             except Exception:
                 pass
         else:
-            self._preview_stack.setMinimumWidth(520)
-            self._device_container.setMinimumWidth(380)
+            self._preview_stack.setMinimumWidth(320)
+            self._device_container.setMinimumWidth(470)
             self._device_container.setMaximumWidth(760)
             self._preview_stack.show()
             self.dataset_dock.show()

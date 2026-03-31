@@ -1,11 +1,10 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW ACQUISITION MOTION SEMANTIC FIX
-- current task = narrow Acquisition motion semantic/UI truthfulness fix
-- keep Travel in truthful metric semantics where backend really maps it
-- present Speed/Accel/Decel truthfully as current legacy/raw controller register values
-- no fake metric wording for speed/accel/decel until real validated mapping exists
-- focus strictly on Acquisition motion panel wording/labels/tooltips
+## 0. CURRENT PHASE OVERRIDE — NARROW RIGHT-PANEL MINIMUM-WIDTH HARDENING
+- current task = narrow right-panel minimum-width hardening
+- pipeline/control panel must never shrink below its true usable width
+- horizontal scrolling is not the solution for right-panel width
+- focus strictly on shell splitter floor + right panel minimum-size behavior
 - no feature development
 - no business-logic changes
 - no broad redesign

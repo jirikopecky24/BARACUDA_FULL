@@ -389,14 +389,14 @@ class AcquisitionPanel(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        self.setMinimumSize(760, 560)
+        self.setMinimumSize(860, 560)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setChildrenCollapsible(False)
 
         # ---- LEFT: Live preview ----
         left = QWidget()
-        left.setMinimumWidth(420)
+        left.setMinimumWidth(320)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -442,8 +442,9 @@ class AcquisitionPanel(QWidget):
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        right_scroll.setMinimumWidth(340)
+        right_scroll.setMinimumWidth(470)
         right_scroll.setMaximumWidth(780)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
