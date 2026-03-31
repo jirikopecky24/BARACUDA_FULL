@@ -1,11 +1,10 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW ACQUISITION MOTION UI CLEANUP
-- current task = narrow acquisition motion UI cleanup
-- remove extra metric mapping controls from Acquisition UI
-- keep only core motion inputs visible (Travel, Speed, Accel, Decel, standard motion fields)
-- remove UI-level mapping/profile warning+blocking in Acquisition motion panel
-- focus strictly on Acquisition motion panel simplicity and narrow wiring cleanup
+## 0. CURRENT PHASE OVERRIDE — NARROW XIMC ALARM GUARD FIX
+- current task = narrow XIMC alarm guard fix
+- BARAKUDA currently blocks on a status combination that XILab still allows for valid motion
+- preserve fail-loud behavior for truly dangerous states
+- focus strictly on XIMC preflight status interpretation in Acquisition motion path
 - no feature development
 - no business-logic changes
 - no broad redesign

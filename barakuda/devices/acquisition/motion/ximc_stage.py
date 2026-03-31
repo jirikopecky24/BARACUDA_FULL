@@ -45,10 +45,32 @@ except Exception:
         _ll = None  # type: ignore
 
 
+def _is_nonfatal_alarm_combo(flags: int) -> bool:
+    """
+    Allow known nonfatal ALARM combinations observed in production setups.
+
+    Observed case:
+    - XILab shows HOMD + ErrV
+    - manual motion is still valid
+    - controller Flags include ALARM bit with ErrV (+ optional HOMD)
+
+    We keep fail-loud behavior for all other ALARM combinations.
+    """
+    alarm = 0x20
+    errv = 0x10
+    homd = 0x04
+    allowed_mask = alarm | errv | homd
+    has_alarm = (flags & alarm) != 0
+    has_errv = (flags & errv) != 0
+    has_only_allowed_bits = (flags & ~allowed_mask) == 0
+    return has_alarm and has_errv and has_only_allowed_bits
+
+
 def enumerate_ximc_devices() -> list[StageDeviceInfo]:
     """Return a list of discoverable XIMC devices, or empty list if SDK unavailable."""
     if not XIMC_AVAILABLE:
         return []
+
     results: list[StageDeviceInfo] = []
 
     # Prefer libximc highlevel.enumerate_devices if available.
@@ -296,12 +318,24 @@ class XimcStage(AbstractStage):
                 "MvCmdSts": int(getattr(_pre_status, "MvCmdSts", -1)),
                 "CurPosition": int(getattr(_pre_status, "CurPosition", -1)),
             })
-            # ALARM flag = bit 5 (0x20). If set, controller is in alarm state.
+            # ALARM handling:
+            # - keep fail-loud for dangerous ALARM states
+            # - allow known nonfatal ErrV(+HOMD) combinations seen in XILab-valid motion
             if _flags & 0x20:
-                raise RuntimeError(
-                    f"XIMC controller is in ALARM state (Flags=0x{_flags:02X}). "
-                    "Home the stage in XILab and reset the controller before moving."
-                )
+                if _is_nonfatal_alarm_combo(_flags):
+                    _dbg(
+                        "pre_motion nonfatal alarm combo allowed",
+                        "H1",
+                        {
+                            "Flags": _flags,
+                            "note": "ALARM+ErrV(+HOMD) treated as nonfatal for this setup",
+                        },
+                    )
+                else:
+                    raise RuntimeError(
+                        f"XIMC controller is in ALARM state (Flags=0x{_flags:02X}). "
+                        "Home the stage in XILab and reset the controller before moving."
+                    )
             # If controller already reports RUNNING from a previous command, stop it first.
             if int(getattr(_pre_status, "MvCmdSts", 0)) & 0x01:
                 _ll.lib.command_stop(self._device_id)
