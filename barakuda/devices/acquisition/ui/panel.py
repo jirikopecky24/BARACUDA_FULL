@@ -884,44 +884,51 @@ class AcquisitionPanel(QWidget):
         self._spin_motion_travel_um.setDecimals(3)
         self._spin_motion_travel_um.setSuffix(" µm")
         self._spin_motion_travel_um.setToolTip(
-            "Total travel distance in µm (user-facing).\n"
-            "Requires µm/unit to be known to convert safely for the backend."
+            "Total travel distance in micrometers (µm).\n"
+            "Backend converts this metric value to stage user units via stage µm/unit."
         )
         self._spin_motion_travel_um.valueChanged.connect(lambda _v: self._update_motion_run_button())
-        cv_form.addRow("Travel:", self._spin_motion_travel_um)
+        cv_form.addRow("Travel (µm):", self._spin_motion_travel_um)
 
         self._spin_motion_speed_um_s = _NoScrollDoubleSpinBox()
         self._spin_motion_speed_um_s.setRange(0.0, 1e12)
         self._spin_motion_speed_um_s.setValue(60.0)
         self._spin_motion_speed_um_s.setDecimals(3)
-        self._spin_motion_speed_um_s.setSuffix(" µm/s")
+        self._spin_motion_speed_um_s.setSuffix(" reg")
         self._spin_motion_speed_um_s.setToolTip(
-            "Speed in µm/s (user-facing).\n"
-            "Active command input. Converted to backend registers via validated mapping profile."
+            "XIMC raw speed register value (legacy backend path).\n"
+            "This is not interpreted as µm/s in the current runtime path."
         )
-        cv_form.addRow("Speed:", self._spin_motion_speed_um_s)
+        cv_form.addRow("Speed (raw reg):", self._spin_motion_speed_um_s)
 
         self._spin_motion_accel_um_s2 = _NoScrollDoubleSpinBox()
         self._spin_motion_accel_um_s2.setRange(0.0, 1e12)
         self._spin_motion_accel_um_s2.setValue(120.0)
         self._spin_motion_accel_um_s2.setDecimals(3)
-        self._spin_motion_accel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_accel_um_s2.setSuffix(" reg")
         self._spin_motion_accel_um_s2.setToolTip(
-            "Acceleration in µm/s² (user-facing).\n"
-            "Active command input. Converted to backend registers via validated mapping profile."
+            "XIMC raw acceleration register value (legacy backend path).\n"
+            "This is not interpreted as µm/s² in the current runtime path."
         )
-        cv_form.addRow("Accel:", self._spin_motion_accel_um_s2)
+        cv_form.addRow("Accel (raw reg):", self._spin_motion_accel_um_s2)
 
         self._spin_motion_decel_um_s2 = _NoScrollDoubleSpinBox()
         self._spin_motion_decel_um_s2.setRange(0.0, 1e12)
         self._spin_motion_decel_um_s2.setValue(120.0)
         self._spin_motion_decel_um_s2.setDecimals(3)
-        self._spin_motion_decel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_decel_um_s2.setSuffix(" reg")
         self._spin_motion_decel_um_s2.setToolTip(
-            "Deceleration in µm/s² (user-facing).\n"
-            "Active command input. Converted to backend registers via validated mapping profile."
+            "XIMC raw deceleration register value (legacy backend path).\n"
+            "This is not interpreted as µm/s² in the current runtime path."
         )
-        cv_form.addRow("Decel:", self._spin_motion_decel_um_s2)
+        cv_form.addRow("Decel (raw reg):", self._spin_motion_decel_um_s2)
+
+        self._lbl_motion_semantics_note = QLabel(
+            "Note: Travel is metric (µm). Speed/Accel/Decel currently use raw XIMC register values."
+        )
+        self._lbl_motion_semantics_note.setWordWrap(True)
+        self._lbl_motion_semantics_note.setStyleSheet("color: #666;")
+        cv_form.addRow("", self._lbl_motion_semantics_note)
 
         self._motion_protocol_stack.addWidget(cvw)
 
