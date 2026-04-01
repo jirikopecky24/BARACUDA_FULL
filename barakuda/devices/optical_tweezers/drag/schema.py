@@ -6,6 +6,7 @@ from typing import Any, Iterable, Literal
 
 
 Axis = Literal["x", "y"]
+DragAnchorMode = Literal["auto", "stage_validated", "detected_onset"]
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,8 @@ class AlignmentDiagnostics:
     onset_relaxed_used: bool = False
     onset_competing_durable_candidates: int = 0
     onset_ambiguity_score: float = 0.0
-    onset_confidence_class: str = "robust"
+    onset_confidence_class: str = "high"
+    onset_candidate_density: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,7 @@ class DragAnalysisConfig:
     drag_preflight_status: str | None = None
     drag_preflight_message: str | None = None
     current_drag_output_root: str | None = None
+    drag_anchor_mode: DragAnchorMode = "auto"
 
 
 @dataclass
@@ -321,6 +324,69 @@ class DragAnalysisResult:
     baseline_robustness_flag: str | None = None
     onset_robustness_flag: str | None = None
     kinematics_robustness_flag: str | None = None
+    baseline_robustness_message: str | None = None
+    onset_robustness_message: str | None = None
+    kinematics_robustness_message: str | None = None
+    baseline_strategy_primary: str | None = None
+    baseline_strategy_alt: str | None = None
+    baseline_position_primary_px: float | None = None
+    baseline_position_primary_um: float | None = None
+    baseline_position_alt_px: float | None = None
+    baseline_position_alt_um: float | None = None
+    offset_primary_um: float | None = None
+    offset_alt_um: float | None = None
+    eta_primary_pa_s: float | None = None
+    eta_alt_pa_s: float | None = None
+    baseline_strategy_difference_ratio: float | None = None
+    relaxed_onset_used: bool | None = None
+    competing_durable_candidates_count: int | None = None
+    onset_candidate_density: float | None = None
+    speed_stage_json: float | None = None
+    speed_trace_derived: float | None = None
+    speed_used_for_physics: float | None = None
+    speed_consistency_error_pct: float | None = None
+    expected_offset_if_eta_1mPas_um: float | None = None
+    expected_offset_if_eta_from_baseline_um: float | None = None
+    measured_offset_um: float | None = None
+    offset_underestimation_ratio_vs_water: float | None = None
+    offset_underestimation_ratio_vs_baseline: float | None = None
+    drag_validation_gate: str | None = None
+    drag_validation_reason: str | None = None
+    # Timing/alignment sanity layer
+    t_first_s: float | None = None
+    t_last_s: float | None = None
+    elapsed_time_s: float | None = None
+    expected_stage_start_video_s: float | None = None
+    expected_stage_stop_video_s: float | None = None
+    detected_stage_start_video_s: float | None = None
+    detected_stage_stop_video_s: float | None = None
+    stage_video_start_delta_s: float | None = None
+    stage_video_stop_delta_s: float | None = None
+    alignment_sanity_flag: bool | None = None
+    alignment_sanity_message: str | None = None
+    baseline_window_original_start_s: float | None = None
+    baseline_window_original_end_s: float | None = None
+    steady_window_original_start_s: float | None = None
+    steady_window_original_end_s: float | None = None
+    baseline_window_clipped_start_s: float | None = None
+    baseline_window_clipped_end_s: float | None = None
+    steady_window_clipped_start_s: float | None = None
+    steady_window_clipped_end_s: float | None = None
+    window_clipping_applied: bool | None = None
+    window_clipping_message: str | None = None
+    drag_anchor_mode: str | None = None
+    primary_timing_source_for_windows: str | None = None
+    detected_onset_consistency_flag: bool | None = None
+    detected_onset_consistency_message: str | None = None
+    stage_anchor_confidence: str | None = None
+    stage_anchor_reason: str | None = None
+    physics_primary_gate: str | None = None
+    detection_qc_gate: str | None = None
+    final_drag_verdict: str | None = None
+    final_drag_reason: str | None = None
+    stage_validated_physics_acceptable: bool | None = None
+    detected_onset_qc_only: bool | None = None
+    detected_onset_veto_applied: bool | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:

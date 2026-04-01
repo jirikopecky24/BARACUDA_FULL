@@ -95,7 +95,7 @@ def plot_drag_diagnostic(
     result: DragAnalysisResult,
     output_dir: Path,
 ) -> Path:
-    """Create a simple diagnostic plot of the drag response."""
+    """Create a DRAG diagnostic plot with relative-time primary axis."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{result.basename}_drag_diagnostic.png"
@@ -103,27 +103,56 @@ def plot_drag_diagnostic(
     fig, ax = plt.subplots(figsize=FIGURE_SIZE)
     ax.set_facecolor(PANEL_BG)
 
-    ax.plot(t_s, signal_px, color=PLOT_COLOR, alpha=0.7, label="signal (px)")
+    t_values = [float(v) for v in t_s]
+    if not t_values:
+        return path
+    t0 = min(t_values)
+    t_rel = [v - t0 for v in t_values]
+    ax.plot(t_rel, signal_px, color=PLOT_COLOR, alpha=0.7, label="signal (px)")
+
+    def _rel(ts: float | None) -> float | None:
+        if ts is None:
+            return None
+        return float(ts) - t0
 
     # Windows as spans
     ax.axvspan(
-        result.windows.baseline_start_s,
-        result.windows.baseline_end_s,
+        _rel(result.windows.baseline_start_s),
+        _rel(result.windows.baseline_end_s),
         color="#A5D6A7",
         alpha=0.2,
         label="baseline window",
     )
     ax.axvspan(
-        result.windows.steady_start_s,
-        result.windows.steady_end_s,
+        _rel(result.windows.steady_start_s),
+        _rel(result.windows.steady_end_s),
         color="#EF9A9A",
         alpha=0.2,
         label="steady window",
     )
 
-    # Motion times
+    expected_start_rel = _rel(result.expected_stage_start_video_s)
+    expected_stop_rel = _rel(result.expected_stage_stop_video_s)
+    if expected_start_rel is not None:
+        ax.axvline(
+            expected_start_rel,
+            color="#1565C0",
+            linestyle="-.",
+            linewidth=1.0,
+            label="expected stage start",
+        )
+    if expected_stop_rel is not None:
+        ax.axvline(
+            expected_stop_rel,
+            color="#0D47A1",
+            linestyle="-.",
+            linewidth=1.0,
+            label="expected stage stop",
+        )
+
+    # Detected motion times
     ax.axvline(
-        result.motion_start_video_s_detected,
+        _rel(result.motion_start_video_s_detected),
         color="#000000",
         linestyle="--",
         linewidth=1.0,
@@ -131,7 +160,7 @@ def plot_drag_diagnostic(
     )
     if result.motion_stop_video_s_stage_aligned is not None:
         ax.axvline(
-            result.motion_stop_video_s_stage_aligned,
+            _rel(result.motion_stop_video_s_stage_aligned),
             color="#555555",
             linestyle=":",
             linewidth=1.0,
@@ -141,8 +170,8 @@ def plot_drag_diagnostic(
     # Baseline / steady medians
     ax.hlines(
         result.baseline_position_px,
-        result.windows.baseline_start_s,
-        result.windows.baseline_end_s,
+        _rel(result.windows.baseline_start_s),
+        _rel(result.windows.baseline_end_s),
         colors="#2E7D32",
         linestyles="-",
         linewidth=1.5,
@@ -150,22 +179,50 @@ def plot_drag_diagnostic(
     )
     ax.hlines(
         result.steady_position_px,
-        result.windows.steady_start_s,
-        result.windows.steady_end_s,
+        _rel(result.windows.steady_start_s),
+        _rel(result.windows.steady_end_s),
         colors="#C62828",
         linestyles="-",
         linewidth=1.5,
         label="steady median",
     )
 
-    ax.set_xlabel("time [s]", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_xlabel("time from video start [s]", fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_ylabel("position [px]", fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_title("DRAG diagnostic", fontsize=TITLE_FONTSIZE, fontweight="bold")
+    title = "DRAG Diagnostic (relative video time)"
+    if result.alignment_sanity_flag is False:
+        title = "DRAG Diagnostic - Alignment Sanity Failed"
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold")
+    onset_class = result.alignment_diagnostics.onset_confidence_class if result.alignment_diagnostics else "n/a"
+    status_line_1 = (
+        f"primary={result.physics_primary_gate or 'n/a'} | detection_qc={result.detection_qc_gate or 'n/a'} | "
+        f"final={result.final_drag_verdict or result.drag_validation_gate or 'n/a'}"
+    )
+    status_line_2 = (
+        f"baseline={result.baseline_robustness_flag or 'n/a'} | kinematics={result.kinematics_robustness_flag or 'n/a'} | "
+        f"onset={onset_class}"
+    )
+    sanity_line = (
+        f"alignment: FAIL ({result.alignment_sanity_message})"
+        if result.alignment_sanity_flag is False
+        else "alignment: pass"
+    )
+    fig.text(
+        0.08,
+        0.905,
+        f"{status_line_1}\n{status_line_2}\n{sanity_line}",
+        fontsize=8,
+        va="top",
+        ha="left",
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.75, "edgecolor": "#C0C0C0"},
+    )
+    elapsed = (max(t_rel) - min(t_rel)) if t_rel else 0.0
+    ax.set_xlim(0.0, max(0.0, elapsed))
     ax.tick_params(labelsize=TICK_LABEL_FONTSIZE)
     ax.grid(True, linestyle="--", linewidth=0.5, color=GRID_COLOR)
     ax.legend(fontsize=TICK_LABEL_FONTSIZE)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.88))
     fig.savefig(path, dpi=PLOT_DPI)
     plt.close(fig)
     return path
