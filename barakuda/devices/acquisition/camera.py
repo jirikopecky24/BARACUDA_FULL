@@ -18,6 +18,10 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from barakuda.core.truth_resolvers import (
+    build_timing_truth_fallback,
+    build_timing_truth_from_timestamps,
+)
 from barakuda.devices.acquisition.camera_base import AbstractCamera, CameraDeviceInfo
 
 # ---------- Import guard for pypylon ----------
@@ -45,6 +49,45 @@ class RecordResult:
     fps_effective: Optional[float]
     dropped: int
     meta: dict = field(default_factory=dict)
+
+
+def _build_acquisition_timing_payload(
+    *,
+    frames_written: int,
+    timestamps: list[float],
+    fps_hint: float | None,
+    source_detail: str,
+) -> tuple[Optional[float], float, dict]:
+    if len(timestamps) > 1:
+        truth = build_timing_truth_from_timestamps(
+            frames=list(range(len(timestamps))),
+            times=timestamps,
+            source_detail=source_detail,
+        )
+    else:
+        truth = build_timing_truth_fallback(
+            frame_count=int(frames_written),
+            fps=fps_hint,
+            source_detail="acquisition_fallback_no_or_short_timestamps",
+            validation_message="too few timestamps for strict timing truth",
+        )
+    fps_effective = truth.effective_fps
+    elapsed = float(truth.elapsed_time_s or 0.0)
+    payload = {
+        "frame_count": int(truth.frame_count),
+        "t_first_s": truth.t_first_s,
+        "t_last_s": truth.t_last_s,
+        "elapsed_time_s": truth.elapsed_time_s,
+        "effective_fps": truth.effective_fps,
+        "timing_source": truth.timing_source,
+        "timing_source_detail": truth.timing_source_detail,
+        "timestamp_validation_pass": truth.timestamp_validation_pass,
+        "timestamp_validation_message": truth.timestamp_validation_message,
+        # Backward-compatible keys:
+        "fps_effective": truth.effective_fps,
+        "duration_s": round(elapsed, 6),
+    }
+    return fps_effective, elapsed, payload
 
 
 # ---------- BaslerCamera ----------
@@ -588,15 +631,11 @@ class BaslerCamera(AbstractCamera):
             except Exception:
                 pass
 
-        # Compute effective fps from actual timestamps
-        fps_effective: Optional[float] = None
-        if len(timestamps) > 1:
-            fps_effective = (len(timestamps) - 1) / (
-                timestamps[-1] - timestamps[0]
-            )
-
-        actual_duration = (
-            (timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0
+        fps_effective, actual_duration, timing_payload = _build_acquisition_timing_payload(
+            frames_written=frames,
+            timestamps=timestamps,
+            fps_hint=fps_hint,
+            source_detail="acquisition:avi_perf_counter_samples",
         )
 
         # Read actual gain value
@@ -608,10 +647,9 @@ class BaslerCamera(AbstractCamera):
             pass
 
         meta = {
-            "fps_effective": fps_effective,
+            **timing_payload,
             "fps_target_hint": fps_hint,
             "frames_written": frames,
-            "duration_s": round(actual_duration, 6),
             "exposure_us": exposure_us,
             "gain": actual_gain,
             "full_frame_w": self._sensor_w,
@@ -842,12 +880,12 @@ class BaslerCamera(AbstractCamera):
             for idx, ts in enumerate(timestamps):
                 tf.write(f"{idx},{ts:.9f}\n")
 
-        # Compute effective fps
-        fps_effective: Optional[float] = None
-        if len(timestamps) > 1:
-            fps_effective = (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
-
-        actual_duration = (timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0
+        fps_effective, actual_duration, timing_payload = _build_acquisition_timing_payload(
+            frames_written=frames,
+            timestamps=timestamps,
+            fps_hint=fps_hint,
+            source_detail="acquisition:raw_perf_counter_samples",
+        )
 
         actual_gain: Optional[float] = None
         try:
@@ -857,11 +895,10 @@ class BaslerCamera(AbstractCamera):
             pass
 
         meta = {
+            **timing_payload,
             "format": "raw",
-            "fps_effective": fps_effective,
             "fps_target_hint": fps_hint,
             "frames_written": frames,
-            "duration_s": round(actual_duration, 6),
             "exposure_us": exposure_us,
             "gain": actual_gain,
             "full_frame_w": self._sensor_w,
@@ -950,19 +987,18 @@ class BaslerCamera(AbstractCamera):
             for idx, ts in enumerate(timestamps):
                 tf.write(f"{idx},{ts:.9f}\n")
 
-        # Compute effective fps
-        fps_effective = 0.0
-        if len(timestamps) > 1:
-            fps_effective = (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
-
-        actual_duration = (timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0
+        fps_effective, actual_duration, timing_payload = _build_acquisition_timing_payload(
+            frames_written=frames,
+            timestamps=timestamps,
+            fps_hint=fps_target,
+            source_detail="acquisition:simulated_raw_timestamps",
+        )
 
         meta = {
+            **timing_payload,
             "format": "raw",
-            "fps_effective": fps_effective,
             "fps_target_hint": fps_target,
             "frames_written": frames,
-            "duration_s": round(actual_duration, 6),
             "exposure_us": 0,
             "gain": None,
             "full_frame_w": width,

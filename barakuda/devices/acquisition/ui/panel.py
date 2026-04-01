@@ -7,6 +7,7 @@ Fully import-guarded: shows a warning when pypylon is not available.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -55,6 +56,7 @@ from barakuda.core.run_protocol import (
 from barakuda.shell.widgets.run_protocol_dialog import RunProtocolDialog
 from barakuda.shell.stage_service import get_stage_service
 from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
+from .stage_scan_lifecycle import StageScanLifecycleGuard, StageScanToken
 try:
     from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
     _XIMC_AVAILABLE = True
@@ -62,6 +64,17 @@ except Exception:
     _XIMC_AVAILABLE = False
     XimcStage = None  # type: ignore
     enumerate_ximc_devices = lambda: []  # type: ignore
+
+
+_LOG = logging.getLogger(__name__)
+
+
+class _StageScanDispatchBridge(QObject):
+    # payload: (token, devices, com_desc)
+    ready = pyqtSignal(object, object, object)
+
+
+_STAGE_SCAN_BRIDGE = _StageScanDispatchBridge()
 
 
 
@@ -321,11 +334,13 @@ class AcquisitionPanel(QWidget):
         self._motion_worker: _RecordMotionWorker | None = None
         self._motion_elapsed_timer: QTimer | None = None
         self._motion_run_t0: float = 0.0
+        self._stage_scan_guard = StageScanLifecycleGuard()
+        self._panel_closing = False
 
         # Connect thread-safe fps signals to UI slots (always run in main thread)
         self._fps_done_signal.connect(self._on_fps_done)
         self._fps_result_signal.connect(self._on_fps_result)
-        self._stage_list_ready_signal.connect(self._on_stage_list_ready)
+        _STAGE_SCAN_BRIDGE.ready.connect(self._on_stage_scan_ready)
 
         # Sensor limits (updated on connect)
         self._sensor_w = self._DEFAULT_SENSOR_W
@@ -1134,20 +1149,53 @@ class AcquisitionPanel(QWidget):
             return
 
         if async_scan:
+            if self._panel_closing:
+                self._log("[XIMC scan] skipped: panel is closing.")
+                return
             self._combo_stage_device.addItem("Scanning devices…", None)
 
-            def _scan() -> None:
+            token = self._stage_scan_guard.start_request()
+            if token is None:
+                self._log("[XIMC scan] skipped: panel is closing.")
+                return
+            guard = self._stage_scan_guard
+            self._log(
+                f"[XIMC scan] started request_id={token.request_id} generation={token.generation}"
+            )
+
+            def _scan(scan_token: StageScanToken) -> None:
                 try:
                     devices = enumerate_ximc_devices()
                 except Exception:
                     devices = []
+                ok, reason = guard.should_publish(scan_token)
+                if not ok:
+                    _LOG.info(
+                        "XIMC scan request_id=%s cancelled before COM description lookup (%s).",
+                        scan_token.request_id,
+                        reason,
+                    )
+                    return
                 try:
-                    com_desc = self._get_windows_com_descriptions()
+                    com_desc = AcquisitionPanel._get_windows_com_descriptions()
                 except Exception:
                     com_desc = {}
-                self._stage_list_ready_signal.emit(devices, com_desc)
+                ok, reason = guard.should_publish(scan_token)
+                if not ok:
+                    _LOG.info(
+                        "XIMC scan request_id=%s finished but result discarded before UI dispatch (%s).",
+                        scan_token.request_id,
+                        reason,
+                    )
+                    return
+                _STAGE_SCAN_BRIDGE.ready.emit(scan_token, devices, com_desc)
 
-            threading.Thread(target=_scan, daemon=True, name="ximc-scan").start()
+            threading.Thread(
+                target=_scan,
+                args=(token,),
+                daemon=True,
+                name="ximc-scan",
+            ).start()
             return
 
         # Synchronous path (kept for explicit Refresh button if needed)
@@ -1159,6 +1207,19 @@ class AcquisitionPanel(QWidget):
             com_desc = self._get_windows_com_descriptions()
         except Exception:
             com_desc = {}
+        self._on_stage_list_ready(devices, com_desc)
+
+    def _on_stage_scan_ready(self, token: StageScanToken, devices, com_desc) -> None:
+        ok, reason = self._stage_scan_guard.should_publish(token)
+        if not ok:
+            if reason in {"panel_closing", "generation_mismatch"}:
+                self._log(
+                    f"[XIMC scan] finished request_id={token.request_id} but result discarded ({reason})."
+                )
+            return
+        self._log(
+            f"[XIMC scan] finished request_id={token.request_id}, applying device list update."
+        )
         self._on_stage_list_ready(devices, com_desc)
 
     def _on_stage_list_ready(self, devices, com_desc) -> None:
@@ -1472,6 +1533,8 @@ class AcquisitionPanel(QWidget):
     ) -> None:
         self._stage_svc.set_run_active(False)
         self._stage_svc.release_lease("acquisition")
+        timing_meta = dict(record_result.meta or {})
+        timing_source = str(timing_meta.get("timing_source") or "estimated")
         fps_str = (
             f"{record_result.fps_effective:.1f}"
             if record_result.fps_effective else "N/A"
@@ -1479,11 +1542,13 @@ class AcquisitionPanel(QWidget):
         self._log(
             f"Record+Motion done — frames={record_result.frames_written}  "
             f"fps_eff={fps_str}  dropped={record_result.dropped}  "
+            f"timing_source={timing_source}  "
             f"motion_start={motion_result.motion_start_s:.3f}s  "
             f"motion_stop={motion_result.motion_stop_s:.3f}s"
             if motion_result.motion_stop_s is not None else
             f"Record+Motion done — frames={record_result.frames_written}  "
             f"fps_eff={fps_str}  dropped={record_result.dropped}  "
+            f"timing_source={timing_source}  "
             f"motion_start={motion_result.motion_start_s:.3f}s  motion_stop=N/A"
         )
 
@@ -2175,6 +2240,9 @@ class AcquisitionPanel(QWidget):
             f"{result.fps_effective:.1f}" if result.fps_effective else "N/A"
         )
         meta = result.meta or {}
+        timing_source = str(meta.get("timing_source") or "estimated")
+        timing_detail = str(meta.get("timing_source_detail") or "")
+        elapsed_time_s = meta.get("elapsed_time_s")
         req_roi = self._roi_from_meta(meta.get("requested_roi"))
         rec_roi = self._roi_from_meta(meta.get("record_roi"))
         roi_line = ""
@@ -2188,13 +2256,17 @@ class AcquisitionPanel(QWidget):
         self._status.setText(
             f"✅ Record done — {result.frames_written} frames, "
             f"fps_eff={fps_str}, dropped={result.dropped}\n"
+            f"Timing: {timing_source} ({timing_detail})"
+            + (f", elapsed={float(elapsed_time_s):.6f}s" if elapsed_time_s is not None else "")
+            + "\n"
             f"Video: {result.video_path}\n"
             f"Meta:  {result.meta_path}"
             f"{roi_line}"
         )
         self._log(
             f"Recording done — frames={result.frames_written}  fps_eff={fps_str}"
-            f"  dropped={result.dropped}  video={result.video_path}"
+            f"  dropped={result.dropped}  timing_source={timing_source}"
+            f"  video={result.video_path}"
         )
         if req_roi is not None and rec_roi is not None:
             self._log(
@@ -2259,8 +2331,8 @@ class AcquisitionPanel(QWidget):
 
     def _on_record_progress(self, frames: int, elapsed: float) -> None:
         fps_target = self._spin_fps_hint.value()
-        fps_eff = frames / elapsed if elapsed > 0.5 else 0.0
-        fps_ratio = fps_eff / fps_target if fps_target > 0 else 0.0
+        fps_eff_est = frames / elapsed if elapsed > 0.5 else 0.0
+        fps_ratio = fps_eff_est / fps_target if fps_target > 0 else 0.0
         pct = fps_ratio * 100
 
         # Health tag
@@ -2275,7 +2347,7 @@ class AcquisitionPanel(QWidget):
         remaining = dur - elapsed if dur > 0 else 0.0
         rem_str = f" ~{max(0, remaining):.1f}s remaining" if dur > 0 else ""
         self._status.setText(
-            f"Recording… FPS={fps_eff:.0f} ({pct:.0f}%) "
+            f"Recording… FPS~{fps_eff_est:.0f} ({pct:.0f}%) "
             f"frames={frames}{rem_str} {tag}"
         )
 
@@ -2403,7 +2475,11 @@ class AcquisitionPanel(QWidget):
         rr = self._last_record_result
         if rr is not None:
             fps_e = f"{rr.fps_effective:.1f}" if rr.fps_effective else "N/A"
-            lines.append(f"Last rec: {rr.frames_written}fr  fps_eff={fps_e}  drop={rr.dropped}")
+            rr_meta = rr.meta or {}
+            timing_source = str(rr_meta.get("timing_source") or "estimated")
+            lines.append(
+                f"Last rec: {rr.frames_written}fr  fps_eff={fps_e}  drop={rr.dropped}  timing={timing_source}"
+            )
             lines.append(f"  video: {rr.video_path}")
             lines.append(f"  meta : {rr.meta_path}")
             meta = rr.meta or {}
@@ -2510,11 +2586,21 @@ class AcquisitionPanel(QWidget):
                 "basename": basename,
                 "recording_mode": recording_mode,
                 "fps_hint": fps_hint,
+                "frame_count": meta.get("frame_count", meta.get("frames_written")),
+                "t_first_s": meta.get("t_first_s"),
+                "t_last_s": meta.get("t_last_s"),
+                "elapsed_time_s": meta.get("elapsed_time_s", meta.get("duration_s")),
+                "effective_fps": meta.get("effective_fps", meta.get("fps_effective")),
+                "timing_source": meta.get("timing_source", "estimated"),
+                "timing_source_detail": meta.get("timing_source_detail"),
+                "timestamp_validation_pass": meta.get("timestamp_validation_pass"),
+                "timestamp_validation_message": meta.get("timestamp_validation_message"),
                 "exposure_us": meta.get("exposure_us"),
                 "gain": meta.get("gain"),
                 "pixel_format": meta.get("pixel_format"),
                 "roi": meta.get("record_roi") or meta.get("requested_roi"),
                 "timestamps_present": timestamps_present,
+                "camera_dropped_frames": meta.get("dropped_frames"),
             },
         }
 
@@ -2605,10 +2691,23 @@ class AcquisitionPanel(QWidget):
     #  Cleanup on widget destroy
     # ------------------------------------------------------------------ #
 
+    def _mark_panel_closing(self) -> None:
+        if self._panel_closing:
+            return
+        self._panel_closing = True
+        self._stage_scan_guard.cancel_all()
+        try:
+            _STAGE_SCAN_BRIDGE.ready.disconnect(self._on_stage_scan_ready)
+        except Exception:
+            pass
+        self._log("[XIMC scan] cancelled: panel closing/destruction.")
+
     def closeEvent(self, event) -> None:
+        self._mark_panel_closing()
         self._camera.disconnect()
         super().closeEvent(event)
 
     def deleteLater(self) -> None:
+        self._mark_panel_closing()
         self._camera.disconnect()
         super().deleteLater()
