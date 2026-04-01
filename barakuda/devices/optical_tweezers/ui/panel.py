@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
     QSizePolicy, QAbstractSpinBox, QTabWidget
 )
+from barakuda.core.truth_resolvers import build_collision_safe_export_path
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
 
 class NoWheelValueChangeFilter(QObject):
@@ -625,10 +626,17 @@ class PipelinePanel(QWidget):
         # TABS: replacing scrollable collapsibles
         # ══════════════════════════════════════════════════════════
         self.tabs = QTabWidget()
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         tab_run = QWidget()
         tab_run_layout = QVBoxLayout(tab_run)
         tab_run_layout.setContentsMargins(8, 8, 8, 8)
+
+        tab_run_content = QWidget()
+        tab_run_content_layout = QVBoxLayout(tab_run_content)
+        tab_run_content_layout.setContentsMargins(0, 0, 0, 0)
         
         # ── Profile Management ──
         prof_box = QWidget()
@@ -656,7 +664,7 @@ class PipelinePanel(QWidget):
         prof_layout.addWidget(prof_lbl)
         prof_layout.addLayout(row1)
         prof_layout.addLayout(row2)
-        tab_run_layout.addWidget(prof_box)
+        tab_run_content_layout.addWidget(prof_box)
 
         # ── Frame range ──
         range_form = QWidget()
@@ -668,23 +676,30 @@ class PipelinePanel(QWidget):
         output_root_row.addWidget(self._run_output_root, 1)
         output_root_row.addWidget(self._btn_browse_run_output_root)
         range_layout.addRow("Output Root", output_root_row)
-        tab_run_layout.addWidget(range_form)
+        tab_run_content_layout.addWidget(range_form)
 
         sep_range = QFrame()
         sep_range.setFrameShape(QFrame.Shape.HLine)
         sep_range.setStyleSheet("color: #ddd;")
-        tab_run_layout.addWidget(sep_range)
+        tab_run_content_layout.addWidget(sep_range)
 
         # ── Action buttons ──
-        tab_run_layout.addWidget(self.btn_preview_gate)
-        tab_run_layout.addWidget(self.btn_gate_report)
-        tab_run_layout.addWidget(self.btn_open_protocol)
-        tab_run_layout.addWidget(self.btn_run)
-        tab_run_layout.addWidget(self.btn_stop)
-        tab_run_layout.addWidget(self.btn_reset)
-        tab_run_layout.addWidget(self._progress_label)
-        tab_run_layout.addWidget(self.progress)
-        tab_run_layout.addStretch(1)
+        tab_run_content_layout.addWidget(self.btn_preview_gate)
+        tab_run_content_layout.addWidget(self.btn_gate_report)
+        tab_run_content_layout.addWidget(self.btn_open_protocol)
+        tab_run_content_layout.addWidget(self.btn_run)
+        tab_run_content_layout.addWidget(self.btn_stop)
+        tab_run_content_layout.addWidget(self.btn_reset)
+        tab_run_content_layout.addWidget(self._progress_label)
+        tab_run_content_layout.addWidget(self.progress)
+        tab_run_content_layout.addStretch(1)
+
+        scroll_run = QScrollArea()
+        scroll_run.setWidgetResizable(True)
+        scroll_run.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_run.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_run.setWidget(tab_run_content)
+        tab_run_layout.addWidget(scroll_run)
 
         tab_tracking = QWidget()
         tab_tracking_layout = QVBoxLayout(tab_tracking)
@@ -692,6 +707,7 @@ class PipelinePanel(QWidget):
         scroll_trk = QScrollArea()
         scroll_trk.setWidgetResizable(True)
         scroll_trk.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_trk.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_trk.setWidget(params_box)
         tab_tracking_layout.addWidget(scroll_trk)
 
@@ -701,6 +717,7 @@ class PipelinePanel(QWidget):
         scroll_post = QScrollArea()
         scroll_post.setWidgetResizable(True)
         scroll_post.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_post.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_post.setWidget(post_box)
         tab_postprocess_layout.addWidget(scroll_post)
         
@@ -710,6 +727,7 @@ class PipelinePanel(QWidget):
         scroll_exp = QScrollArea()
         scroll_exp.setWidgetResizable(True)
         scroll_exp.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_exp.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_exp.setWidget(export_box)
         tab_export_layout.addWidget(scroll_exp)
 
@@ -741,6 +759,7 @@ class PipelinePanel(QWidget):
         scroll_set = QScrollArea()
         scroll_set.setWidgetResizable(True)
         scroll_set.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_set.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_set.setWidget(settings_box)
         tab_settings_layout.addWidget(scroll_set)
 
@@ -751,24 +770,31 @@ class PipelinePanel(QWidget):
 
         layout.addWidget(self.tabs, stretch=1)
 
-        # Ensure the pipeline panel is never narrower than the widest tab
-        def _update_min_width_for_tab(index: int) -> None:
-            tab = self.tabs.widget(index)
-            if tab is None:
-                return
-            tab.adjustSize()
-            hint = tab.sizeHint()
-            if not hint.isValid():
-                return
-            # Add a small safety margin for scrollbars/padding
-            target_width = hint.width() + 32
-            current_min = self.minimumWidth()
-            if target_width > current_min:
-                self.setMinimumWidth(target_width)
+        # Compute one stable floor from all OT tabs and keep it fixed.
+        def _apply_stable_min_width_floor() -> None:
+            widest = 0
+            candidates = [self.tabs, tab_run_content, params_box, post_box, settings_box]
+            for tab in candidates:
+                tab.ensurePolished()
+                tab.adjustSize()
+                hint = tab.minimumSizeHint()
+                if hint.isValid():
+                    widest = max(widest, int(hint.width()))
+                hint = tab.sizeHint()
+                if hint.isValid():
+                    widest = max(widest, int(hint.width()))
+            # Add a small safety margin for padding/scroll frame.
+            target_width = widest + 32
+            # Hard floor for practical OT control readability.
+            target_width = max(520, min(target_width, 620))
+            self.setMinimumWidth(target_width)
+            self.tabs.setMinimumWidth(target_width)
 
-        self.tabs.currentChanged.connect(_update_min_width_for_tab)
-        # Apply once after construction for the initial tab
-        QTimer.singleShot(0, lambda: _update_min_width_for_tab(self.tabs.currentIndex()))
+        self.setMaximumWidth(760)
+        # Apply after construction (and once again after first layout pass),
+        # then keep fixed across tab switches.
+        QTimer.singleShot(0, _apply_stable_min_width_floor)
+        QTimer.singleShot(80, _apply_stable_min_width_floor)
         
         # ── Wheel Blocker ─────────────────────────────────────────
         self._wheel_blocker = NoWheelValueChangeFilter(self)
@@ -1506,15 +1532,28 @@ class PipelinePanel(QWidget):
 
                 exports_dir = item_root / "exports"
                 exports_dir.mkdir(parents=True, exist_ok=True)
+                collision_count = 0
                 for aid, art in to_copy:
                     analysis_rel_path = art.get("analysis_rel_path")
                     if analysis_rel_path and manifest.analysis_dir is not None:
                         src = manifest.analysis_dir / analysis_rel_path
+                        rel_export_path = _Path(str(analysis_rel_path).replace("\\", "/"))
                     else:
                         src = item_root / art["path"]
-                    dst = exports_dir / _Path(art["path"]).name
+                        rel_export_path = _Path(str(art["path"]).replace("\\", "/"))
+                    dst, collision = build_collision_safe_export_path(
+                        exports_dir,
+                        str(rel_export_path),
+                    )
+                    if collision:
+                        collision_count += 1
                     _shutil.copy2(src, dst)
                     total_copied += 1
+                if collision_count > 0:
+                    self._export_status_lbl.setText(
+                        self._export_status_lbl.text()
+                        + f"\nCollision protection applied ({collision_count} rename(s))."
+                    )
                 export_dirs.append(str(exports_dir))
 
             if export_dirs:

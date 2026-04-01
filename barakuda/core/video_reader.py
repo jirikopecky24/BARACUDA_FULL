@@ -7,6 +7,7 @@ from typing import Optional
 import json as _json
 import numpy as np
 
+from barakuda.core.truth_resolvers import resolve_timing_truth_for_run
 from barakuda.devices.optical_tweezers import perf as ot_perf
 
 
@@ -16,9 +17,20 @@ class VideoMeta:
     width: int
     height: int
     frame_count: int
+    effective_fps: float | None = None
+    timing_source: str = "estimated"
+    timing_source_detail: str = ""
+    t_first_s: float | None = None
+    t_last_s: float | None = None
+    elapsed_time_s: float | None = None
+    timestamp_validation_pass: bool = False
+    timestamp_validation_message: str = ""
+    frame_to_time_s: dict[int, float] | None = None
 
     @property
     def duration_s(self) -> Optional[float]:
+        if self.elapsed_time_s is not None:
+            return float(self.elapsed_time_s)
         if self.fps <= 0 or self.frame_count <= 0:
             return None
         return float(self.frame_count) / float(self.fps)
@@ -144,6 +156,7 @@ class VideoReader:
         # --- Check sibling meta.json for fps_effective ---
         # Patterns: <stem>_meta.json  OR  <filename>_meta.json
         _fps_from_meta = False
+        meta_payload: dict | None = None
         for suffix in (
             self.path.stem + "_meta.json",
             self.path.name + "_meta.json",
@@ -153,6 +166,8 @@ class VideoReader:
                 try:
                     with open(meta_path, "r", encoding="utf-8") as _mf:
                         _ext = _json.load(_mf)
+                    if isinstance(_ext, dict):
+                        meta_payload = _ext
                     _val = float(_ext.get("fps_effective", 0))
                     if 0 < _val < 100_000:
                         fps = _val
@@ -161,6 +176,15 @@ class VideoReader:
                         break
                 except Exception:
                     pass
+
+        timing_truth = resolve_timing_truth_for_run(
+            video_path=self.path,
+            frame_count=frame_count,
+            fps_hint=fps,
+            meta=meta_payload,
+        )
+        if timing_truth.effective_fps is not None and timing_truth.effective_fps > 0:
+            fps = float(timing_truth.effective_fps)
 
         ok, frame_bgr = cap.read()
         if not ok or frame_bgr is None:
@@ -174,7 +198,25 @@ class VideoReader:
             height = int(frame_rgb.shape[0])
 
         self._cap = cap
-        self._meta = VideoMeta(fps=fps, width=width, height=height, frame_count=frame_count)
+        self._meta = VideoMeta(
+            fps=fps,
+            width=width,
+            height=height,
+            frame_count=frame_count,
+            effective_fps=(
+                float(timing_truth.effective_fps)
+                if timing_truth.effective_fps is not None and timing_truth.effective_fps > 0
+                else float(fps) if fps > 0 else None
+            ),
+            timing_source=timing_truth.timing_source,
+            timing_source_detail=timing_truth.timing_source_detail,
+            t_first_s=timing_truth.t_first_s,
+            t_last_s=timing_truth.t_last_s,
+            elapsed_time_s=timing_truth.elapsed_time_s,
+            timestamp_validation_pass=timing_truth.timestamp_validation_pass,
+            timestamp_validation_message=timing_truth.timestamp_validation_message,
+            frame_to_time_s=timing_truth.frame_to_time_s,
+        )
 
         self._last_i = 0
         self._last_rgb = frame_rgb.astype(np.uint8, copy=False)
@@ -218,7 +260,34 @@ class VideoReader:
         self._raw_h = h
         self._raw_w = w
 
-        self._meta = VideoMeta(fps=fps, width=w, height=h, frame_count=frame_count)
+        timing_truth = resolve_timing_truth_for_run(
+            video_path=self.path,
+            frame_count=frame_count,
+            fps_hint=fps,
+            meta=meta,
+        )
+        if timing_truth.effective_fps is not None and timing_truth.effective_fps > 0:
+            fps = float(timing_truth.effective_fps)
+
+        self._meta = VideoMeta(
+            fps=fps,
+            width=w,
+            height=h,
+            frame_count=frame_count,
+            effective_fps=(
+                float(timing_truth.effective_fps)
+                if timing_truth.effective_fps is not None and timing_truth.effective_fps > 0
+                else float(fps) if fps > 0 else None
+            ),
+            timing_source=timing_truth.timing_source,
+            timing_source_detail=timing_truth.timing_source_detail,
+            t_first_s=timing_truth.t_first_s,
+            t_last_s=timing_truth.t_last_s,
+            elapsed_time_s=timing_truth.elapsed_time_s,
+            timestamp_validation_pass=timing_truth.timestamp_validation_pass,
+            timestamp_validation_message=timing_truth.timestamp_validation_message,
+            frame_to_time_s=timing_truth.frame_to_time_s,
+        )
 
         # Cache first frame as RGB
         gray = self._raw_mmap[0]

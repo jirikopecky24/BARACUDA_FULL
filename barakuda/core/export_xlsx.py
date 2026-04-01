@@ -406,7 +406,21 @@ def export_ot_results_xlsx(
     post_json = _first_existing(run_dir / "audit" / f"{base_name}_postprocess.json", output_dir / f"{base_name}_postprocess.json")
     psd_fit_json = _first_existing(run_dir / "audit" / f"{base_name}_psd_fit.json", run_dir / "csv" / f"{base_name}_psd_fit.json", run_dir / "tracking" / f"{base_name}_psd_fit.json", output_dir / f"{base_name}_psd_fit.json")
     calibration_json = _first_existing(run_dir / "audit" / f"{base_name}_calibration.json", run_dir / "csv" / f"{base_name}_calibration.json", run_dir / "tracking" / f"{base_name}_calibration.json", output_dir / f"{base_name}_calibration.json")
-    drag_json = _first_existing(run_dir / "audit" / f"{base_name}_drag.json", run_dir / "physics" / f"{base_name}_drag.json", output_dir / f"{base_name}_drag.json")
+    drag_summary_json = _first_existing(
+        run_dir / "audit" / f"{base_name}_drag_summary.json",
+        run_dir / "physics" / f"{base_name}_drag_summary.json",
+        output_dir / f"{base_name}_drag_summary.json",
+    )
+    drag_json = _first_existing(
+        run_dir / "audit" / f"{base_name}_drag.json",
+        run_dir / "physics" / f"{base_name}_drag.json",
+        output_dir / f"{base_name}_drag.json",
+    )
+    run_protocol_json = _first_existing(
+        run_dir / "audit" / "run_protocol.json",
+        run_dir / "run_protocol.json",
+        output_dir / "run_protocol.json",
+    )
 
     meta_pairs: list[tuple[str, str]] = []
     if run_json is not None:
@@ -440,9 +454,38 @@ def export_ot_results_xlsx(
             cal_pairs = [("status", "MISSING"), ("reason", "No calibration artifacts found")]
         sheet_by_key["calibration"] = _add_pairs_sheet("CALIBRATION", cal_pairs)
 
-    drag_payload = _load_json(drag_json)
+    drag_source_kind = "none"
+    drag_source_path: Path | None = None
+    protocol_payload = _load_json(run_protocol_json)
+    protocol_provenance = (protocol_payload or {}).get("provenance") or {}
+    drag_payload = _load_json(drag_summary_json)
+    if drag_payload is not None:
+        drag_source_kind = "drag_summary"
+        drag_source_path = drag_summary_json
+    else:
+        drag_payload = _load_json(drag_json)
+        if drag_payload is not None:
+            drag_source_kind = "legacy_drag_json"
+            drag_source_path = drag_json
     if drag_payload is not None:
         drag_pairs: list[tuple[str, str]] = []
+        drag_pairs.append(("report_source_kind", drag_source_kind))
+        drag_pairs.append(("report_source_path", str(drag_source_path) if drag_source_path is not None else ""))
+        if protocol_provenance:
+            for key in (
+                "current_drag_input_path",
+                "current_drag_output_root",
+                "current_drag_report_path",
+                "brownian_baseline_folder",
+                "selected_calibration_path",
+                "selected_trajectory_path",
+                "selected_timestamps_path",
+                "selected_stage_meta_path",
+                "selected_stage_trace_path",
+            ):
+                drag_pairs.append((f"provenance.{key}", protocol_provenance.get(key, "")))
+        if drag_source_kind == "legacy_drag_json":
+            drag_pairs.append(("warning", "legacy drag source used"))
         _flatten("drag.", drag_payload, drag_pairs)
         sheet_by_key["drag"] = _add_pairs_sheet("DRAG", drag_pairs)
 
@@ -484,9 +527,16 @@ def export_ot_results_xlsx(
                     fit_sheet.append(["CALIBRATION", key, diagnostics_payload[key], "calibration diagnostics"])
     if drag_payload is not None:
         fit_sheet.append([])
-        fit_sheet.append(["DRAG", "offset_um", drag_payload.get("means_um", {}).get("offset_um", ""), "offset_um = steady_mean_um - baseline_mean_um"])
-        fit_sheet.append(["DRAG", "ratio_drag_over_brownian", "", "ratio = abs(kappa_drag_n_per_m) / abs(kappa_brownian_n_per_m)"])
-        fit_sheet.append(["DRAG", "delta_n_per_m", "", "delta = kappa_drag_n_per_m - kappa_brownian_n_per_m"])
+        if drag_source_kind == "drag_summary":
+            fit_sheet.append(["DRAG", "drag_force_n", drag_payload.get("drag_force_n", ""), "drag_force_n = kappa_n_per_m * abs_offset_m"])
+            fit_sheet.append(["DRAG", "kappa_pn_per_um", drag_payload.get("kappa_pn_per_um", ""), "baseline calibration stiffness"])
+            fit_sheet.append(["DRAG", "abs_offset_um", drag_payload.get("abs_offset_um", ""), "abs_offset_um = |steady_um - baseline_um|"])
+            fit_sheet.append(["DRAG", "actual_speed_um_s", drag_payload.get("actual_speed_um_s", ""), "speed inferred from stage timing"])
+            fit_sheet.append(["DRAG", "eta_pa_s", drag_payload.get("eta_pa_s", ""), "viscosity inferred from drag force and speed"])
+        else:
+            fit_sheet.append(["DRAG", "offset_um", drag_payload.get("means_um", {}).get("offset_um", ""), "offset_um = steady_mean_um - baseline_mean_um"])
+            fit_sheet.append(["DRAG", "ratio_drag_over_brownian", "", "ratio = abs(kappa_drag_n_per_m) / abs(kappa_brownian_n_per_m)"])
+            fit_sheet.append(["DRAG", "delta_n_per_m", "", "delta = kappa_drag_n_per_m - kappa_brownian_n_per_m"])
     _format_sheet(fit_sheet)
     sheet_by_key["fits"] = fit_sheet
 

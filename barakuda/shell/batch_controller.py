@@ -41,6 +41,12 @@ from barakuda.core.run_protocol import (
     save_protocol,
     protocol_path_for_run,
 )
+from barakuda.core.truth_resolvers import (
+    TimingTruth,
+    resolve_bead_parameters_for_run,
+    resolve_scale_for_run,
+    resolve_timing_truth_for_run,
+)
 
 from barakuda.core.tracking import Detection, choose_tracking_polarity, track_particle, Roi, TrackingMethod, roi_follow_center
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
@@ -52,6 +58,7 @@ from barakuda.devices.optical_tweezers.drag.calibration_import import (
 from barakuda.devices.optical_tweezers.drag.pipeline import (
     run_drag_from_raw,
 )
+from barakuda.devices.optical_tweezers.drag.io import evaluate_drag_preflight
 from barakuda.devices.optical_tweezers.drag.alignment import DragAlignmentError
 from barakuda.devices.optical_tweezers.drag.active_umbrella import (
     ActiveUmbrellaConfig,
@@ -112,11 +119,17 @@ class BatchController:
 
     def _normalize_ot_postprocess_params(self, post_params: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(post_params)
-        diameter_um = float(normalized.get("bead_diameter_um", 1.0))
-        if not np.isfinite(diameter_um) or diameter_um <= 0:
-            raise ValueError("bead_diameter_um must be > 0")
-        normalized["bead_diameter_um"] = float(diameter_um)
-        normalized["bead_radius_um"] = float(diameter_um * 0.5)
+        bead = resolve_bead_parameters_for_run(
+            bead_diameter_um=normalized.get("bead_diameter_um"),
+            bead_radius_um=normalized.get("bead_radius_um"),
+            bead_source="postprocess_config",
+            allow_fallback=False,
+        )
+        normalized["bead_diameter_um"] = float(bead.bead_diameter_um)
+        normalized["bead_radius_um"] = float(bead.bead_radius_um)
+        normalized["bead_source"] = bead.bead_source
+        normalized["bead_source_warning"] = bead.bead_source_warning
+        normalized["bead_fallback_used"] = bool(bead.fallback_used)
         return normalized
 
     def _parse_capture_tokens(self, p: Path) -> dict[str, Any]:
@@ -269,7 +282,7 @@ class BatchController:
 
             scale_params = device_panel.get_scale_params()
             um_per_px_auto = float(scale_params.get("um_per_px", 0.0))
-            dia_auto = float(post_params.get("bead_diameter_um", 1.0))
+            dia_auto = float(post_params.get("bead_diameter_um"))
             margin_auto = float(tracking_params.get("roi_margin", 1.8))
             frame0 = reader.get_frame(0)
             roi = auto_roi_rs(frame0, um_per_px_auto, dia_auto, margin_factor=margin_auto)
@@ -753,6 +766,52 @@ class BatchController:
                 return item_root
         return None
 
+    @staticmethod
+    def _resolve_timing_truth_from_meta(
+        *,
+        video_path: Path,
+        meta_obj: Any,
+        frame_count: int,
+        fps_hint: float | None,
+    ) -> TimingTruth:
+        required_fields = (
+            "frame_count",
+            "t_first_s",
+            "t_last_s",
+            "elapsed_time_s",
+            "effective_fps",
+            "timing_source",
+            "timing_source_detail",
+            "timestamp_validation_pass",
+            "timestamp_validation_message",
+        )
+        if all(hasattr(meta_obj, key) for key in required_fields):
+            resolved_frame_count = int(getattr(meta_obj, "frame_count"))
+            effective_fps = getattr(meta_obj, "effective_fps")
+            if effective_fps is None:
+                maybe_fps = getattr(meta_obj, "fps", None)
+                effective_fps = float(maybe_fps) if maybe_fps is not None else None
+            return TimingTruth(
+                frame_count=resolved_frame_count,
+                t_first_s=getattr(meta_obj, "t_first_s"),
+                t_last_s=getattr(meta_obj, "t_last_s"),
+                elapsed_time_s=getattr(meta_obj, "elapsed_time_s"),
+                effective_fps=float(effective_fps) if effective_fps is not None else None,
+                timing_source=str(getattr(meta_obj, "timing_source") or "estimated"),
+                timing_source_detail=str(getattr(meta_obj, "timing_source_detail") or ""),
+                timestamp_validation_pass=bool(getattr(meta_obj, "timestamp_validation_pass")),
+                timestamp_validation_message=str(
+                    getattr(meta_obj, "timestamp_validation_message") or ""
+                ),
+                frame_to_time_s=getattr(meta_obj, "frame_to_time_s", None),
+            )
+        return resolve_timing_truth_for_run(
+            video_path=video_path,
+            frame_count=int(frame_count),
+            fps_hint=float(fps_hint) if fps_hint is not None else None,
+            meta=None,
+        )
+
     # ---------------- Run Batch ----------------
 
     def run_batch(
@@ -853,9 +912,13 @@ class BatchController:
             tracking_elapsed_ms: float | None = None
             postprocess_elapsed_ms: float | None = None
             locked_invert = False
+            _item_id_for_run: str | None = None
+            _dataset_item_root: Path | None = None
+            _source_item_json_path: Path | None = None
 
             original_input_path = Path(batch_input.original_path)
             file_path = Path(batch_input.resolved_video_path)
+            stem = Path(file_path).stem
             dataset_set_status_fn(original_input_path, "running")
             
             # Inform the mock panel of the current file being processed
@@ -926,9 +989,9 @@ class BatchController:
                 stage_speed_um_s=float(post_params.get("stage_speed_um_s", 0.0)),
                 drag_axis=str(post_params.get("drag_axis", "x")),
                 viscosity_pa_s=float(post_params.get("viscosity_pa_s", 1.0e-3)),
-                bead_radius_um=float(post_params.get("bead_radius_um", 0.5)),
+                bead_radius_um=float(post_params.get("bead_radius_um")),
                 temperature_c=float(post_params.get("temperature_c", 25.0)),
-                bead_diameter_um=float(post_params.get("bead_diameter_um", 1.0)),
+                bead_diameter_um=float(post_params.get("bead_diameter_um")),
             )
 
             use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
@@ -939,14 +1002,22 @@ class BatchController:
             try:
                 reader = VideoReader(file_path)
                 fps = float(reader.meta.fps)
+                fc = int(reader.meta.frame_count)
+                timing_truth = self._resolve_timing_truth_from_meta(
+                    video_path=file_path,
+                    meta_obj=reader.meta,
+                    frame_count=fc,
+                    fps_hint=fps,
+                )
+                if timing_truth.effective_fps is not None and timing_truth.effective_fps > 0:
+                    fps = float(timing_truth.effective_fps)
                 
                 # UI→runtime propagation: respect FPS Override (0=auto) when enabled.
                 # This affects time axis `t_s` written into the canonical trajectory CSV
                 # and is therefore an input to PSD/drag timing-based physics.
                 fps_override_ui = float(tracking_params.get("fps_override", 0.0))
-                if fps_override_ui > 0:
+                if fps_override_ui > 0 and timing_truth.timing_source != "timestamps":
                     fps = fps_override_ui
-                fc = int(reader.meta.frame_count)
                 _reader_w = int(getattr(reader.meta, "width", 0)) or None
                 _reader_h = int(getattr(reader.meta, "height", 0)) or None
 
@@ -991,7 +1062,7 @@ class BatchController:
                 if s > e:
                     s, e = 0, e
 
-                um_per_px: float | None = None
+                um_per_px_candidate: float | None = None
                 um_src = "none"
 
                 # Scale policy (audit-first):
@@ -1000,13 +1071,20 @@ class BatchController:
                 # This prevents silent "um_per_px=None" causing calibration exports to disappear.
                 _sidecar_info = load_dataset_scale(file_path) if use_dataset_scale else None
                 if _sidecar_info is not None and _sidecar_info.um_per_px is not None and float(_sidecar_info.um_per_px) > 0:
-                    um_per_px = float(_sidecar_info.um_per_px)
+                    um_per_px_candidate = float(_sidecar_info.um_per_px)
                     um_src = str(_sidecar_info.source)
 
                 # UI fallback (also used when use_dataset_scale=False)
-                if um_per_px is None and ui_um_per_px > 0:
-                    um_per_px = float(ui_um_per_px)
+                if um_per_px_candidate is None and ui_um_per_px > 0:
+                    um_per_px_candidate = float(ui_um_per_px)
                     um_src = "ui" if not use_dataset_scale else "ui_fallback"
+
+                scale_resolution = resolve_scale_for_run(
+                    explicit_scale_um_per_px=um_per_px_candidate,
+                    scale_source=um_src,
+                )
+                um_per_px = scale_resolution.um_per_px
+                um_src = scale_resolution.scale_source
 
                 # Stage µm/unit precedence:
                 # 1) UI override (use_dataset_stage_scale=False OR no sidecar value)
@@ -1040,6 +1118,17 @@ class BatchController:
                         "adaptive_roi": adaptive_roi,
                         "fps": fps,
                         "frame_count": fc,
+                        "timing": {
+                            "frame_count": int(timing_truth.frame_count),
+                            "t_first_s": timing_truth.t_first_s,
+                            "t_last_s": timing_truth.t_last_s,
+                            "elapsed_time_s": timing_truth.elapsed_time_s,
+                            "effective_fps": timing_truth.effective_fps,
+                            "timing_source": timing_truth.timing_source,
+                            "timing_source_detail": timing_truth.timing_source_detail,
+                            "timestamp_validation_pass": timing_truth.timestamp_validation_pass,
+                            "timestamp_validation_message": timing_truth.timestamp_validation_message,
+                        },
                         "annulus_enabled": ann_enabled,
                         "annulus_auto": ann_auto,
                         "annulus_r_inner_px": ann_r_in,
@@ -1051,6 +1140,7 @@ class BatchController:
                     "calibration": {
                         "um_per_px": um_per_px,
                         "source": um_src,
+                        "scale_warning": scale_resolution.scale_warning,
                         "stage_um_per_unit": stage_um_per_unit,
                         "stage_um_per_unit_source": stage_um_per_unit_src,
                     },
@@ -1069,6 +1159,9 @@ class BatchController:
                         "bead_radius_um": float(pp.bead_radius_um),
                         "temperature_c": float(pp.temperature_c),
                         "bead_diameter_um": float(pp.bead_diameter_um),
+                        "bead_source": str(post_params.get("bead_source", "postprocess_config")),
+                        "bead_source_warning": post_params.get("bead_source_warning"),
+                        "bead_fallback_used": bool(post_params.get("bead_fallback_used", False)),
                     },
                 }
 
@@ -1242,6 +1335,16 @@ class BatchController:
                     f_meta.write(f"# end_frame={e}\n")
                     f_meta.write(f"# um_per_px={um_per_px}\n")
                     f_meta.write(f"# um_per_px_source={um_src}\n")
+                    f_meta.write(f"# timing_source={timing_truth.timing_source}\n")
+                    f_meta.write(f"# timing_source_detail={timing_truth.timing_source_detail}\n")
+                    f_meta.write(f"# elapsed_time_s={timing_truth.elapsed_time_s}\n")
+                    f_meta.write(f"# effective_fps={timing_truth.effective_fps}\n")
+                    f_meta.write(
+                        f"# timestamp_validation_pass={timing_truth.timestamp_validation_pass}\n"
+                    )
+                    f_meta.write(
+                        f"# timestamp_validation_message={timing_truth.timestamp_validation_message}\n"
+                    )
 
                     w = csv.writer(f_meta)
                     w.writerow(["frame", "t_s", "x_px", "y_px", "quality", "peak", "roi_x", "roi_y", "roi_w", "roi_h"])
@@ -1306,7 +1409,14 @@ class BatchController:
                             # Follow the detected center with fixed window size.
                             current_roi = roi_follow_center(frame.shape, current_roi, det.x_px, det.y_px)
 
-                        t_s = (fi / fps) if fps > 0 else 0.0
+                        if timing_truth.frame_to_time_s is not None and timing_truth.t_first_s is not None:
+                            ts_abs = timing_truth.frame_to_time_s.get(int(fi))
+                            if ts_abs is not None:
+                                t_s = float(ts_abs - float(timing_truth.t_first_s))
+                            else:
+                                t_s = (fi / fps) if fps > 0 else 0.0
+                        else:
+                            t_s = (fi / fps) if fps > 0 else 0.0
                         w.writerow([
                             fi,
                             f"{t_s:.9f}",
@@ -1390,7 +1500,42 @@ class BatchController:
                             if not baseline_folder:
                                 raise ValueError("Brownian baseline folder is required for Drag calibration.")
 
+                            run_dir_drag = file_path.parent
+                            drag_item_root = self._detect_dataset_item_root(file_path)
+                            preflight = evaluate_drag_preflight(
+                                current_drag_input_path=file_path,
+                                run_dir=run_dir_drag,
+                                brownian_baseline_folder=Path(baseline_folder),
+                            )
+                            self._log(f"[DRAG preflight] current_drag_input_path={preflight.get('current_drag_input_path')}")
+                            self._log(f"[DRAG preflight] current_drag_item_root={preflight.get('current_drag_item_root')}")
+                            self._log(
+                                "[DRAG preflight] current_drag_trajectory_path="
+                                f"{preflight.get('current_drag_trajectory_path')}"
+                            )
+                            self._log(
+                                f"[DRAG preflight] brownian_baseline_folder={preflight.get('brownian_baseline_folder')}"
+                            )
+                            self._log(
+                                "[DRAG preflight] baseline_selection_mode="
+                                f"{preflight.get('baseline_selection_mode')}"
+                            )
+                            self._log(
+                                f"[DRAG preflight] verdict={preflight.get('drag_preflight_status')}: "
+                                f"{preflight.get('drag_preflight_message')}"
+                            )
+                            self._log(f"[DRAG preflight] current_drag_output_root={run_dir}")
+                            if str(preflight.get("drag_preflight_status", "")).startswith("failed_"):
+                                raise ValueError(str(preflight.get("drag_preflight_message") or "DRAG preflight failed."))
+
                             brownian_cal = load_brownian_calibration_from_folder(Path(baseline_folder))
+                            self._log(
+                                "[DRAG preflight] baseline_calibration_artifacts="
+                                f"path={brownian_cal.calibration_path}, "
+                                f"um_per_px={brownian_cal.um_per_px}, "
+                                f"kappa_x={brownian_cal.kappa_x_n_per_m}, "
+                                f"kappa_y={brownian_cal.kappa_y_n_per_m}"
+                            )
 
                             axis = str(post_params.get("drag_axis", "x")).lower().strip()
                             if axis not in {"x", "y"}:
@@ -1432,7 +1577,6 @@ class BatchController:
                             # when available in *_stage.json (new Acquisition runs).
                             # Otherwise keep UI/dataset-scale fallback so legacy runs
                             # still remain analyzable.
-                            run_dir_drag = file_path.parent
                             drag_stage_um_per_unit: float | None = stage_um_per_unit
                             stage_protocol_type = "constant_velocity"
                             stage_payload: dict[str, Any] = {}
@@ -1491,6 +1635,15 @@ class BatchController:
                                     f"brownian_calibration.kappa_{'x' if axis == 'x' else 'y'}_n_per_m"
                                 ),
                                 selected_calibration_path=brownian_cal.calibration_path,
+                                current_drag_input_path=str(file_path.resolve()),
+                                current_drag_item_root=(
+                                    str(drag_item_root.resolve()) if drag_item_root is not None else None
+                                ),
+                                brownian_baseline_folder=str(Path(baseline_folder).resolve()),
+                                baseline_selection_mode=str(preflight.get("baseline_selection_mode")),
+                                drag_preflight_status=str(preflight.get("drag_preflight_status")),
+                                drag_preflight_message=str(preflight.get("drag_preflight_message")),
+                                current_drag_output_root=str(Path(run_dir).resolve()),
                             )
 
                             # DRAG expects the acquisition/run folder where RAW + stage files live.
@@ -1499,6 +1652,43 @@ class BatchController:
                                 run_dir=run_dir_drag,
                                 drag_config=drag_cfg,
                                 tracking_config=config["tracking"],
+                                output_root=run_dir,
+                            )
+                            self._log(
+                                f"[DRAG output] trajectory={drag_outputs.get('trajectory')}"
+                            )
+                            self._log(
+                                f"[DRAG output] summary_json={drag_outputs.get('summary_json')}"
+                            )
+                            self._log(
+                                f"[DRAG output] summary_csv={drag_outputs.get('summary_csv')}"
+                            )
+                            self._log(
+                                f"[DRAG output] alignment_diagnostics_json={drag_outputs.get('alignment_diagnostics_json')}"
+                            )
+                            self._log(
+                                f"[DRAG output] diagnostic_png={drag_outputs.get('diagnostic_png')}"
+                            )
+                            self._log(
+                                f"[DRAG source_of_truth] selected_calibration_path={drag_result.selected_calibration_path}"
+                            )
+                            self._log(
+                                f"[DRAG source_of_truth] selected_timestamps_path={drag_result.selected_timestamps_path}"
+                            )
+                            self._log(
+                                f"[DRAG source_of_truth] selected_stage_meta_path={drag_result.selected_stage_meta_path}"
+                            )
+                            self._log(
+                                f"[DRAG source_of_truth] selected_stage_trace_path={drag_result.selected_stage_trace_path}"
+                            )
+                            self._log(
+                                f"[DRAG source_of_truth] selected_trajectory_path={drag_result.selected_trajectory_path}"
+                            )
+                            self._log(
+                                f"[DRAG source_of_truth] report_source_kind={drag_result.report_source_kind}"
+                            )
+                            self._log(
+                                f"[DRAG source_of_truth] report_source_path={drag_result.report_source_path}"
                             )
 
                             if "oscillatory" in stage_protocol_type:
@@ -1525,9 +1715,9 @@ class BatchController:
                                     umbrella_cfg,
                                     trajectory_path=drag_outputs.get("trajectory"),
                                 )
-                                protocol_path = protocol_path_for_run(run_dir_drag)
+                                protocol_path = protocol_path_for_run(run_dir)
                                 try:
-                                    existing_protocol = load_protocol(run_dir_drag)
+                                    existing_protocol = load_protocol(run_dir)
                                 except Exception:
                                     existing_protocol = create_protocol_from_context()
                                 osc_updates = {
@@ -1584,23 +1774,23 @@ class BatchController:
                                         osc_updates,
                                         allow_manual_overwrite=False,
                                     )
-                                    saved_protocol = save_protocol(merged_protocol, run_dir_drag)
+                                    saved_protocol = save_protocol(merged_protocol, run_dir)
                                     protocol_path = saved_protocol
                                 except Exception as exc:
                                     raise RuntimeError(
-                                        f"Oscillatory run_protocol update failed for run_dir={run_dir_drag}: {exc}"
+                                        f"Oscillatory run_protocol update failed for run_dir={run_dir}: {exc}"
                                     ) from exc
 
                                 osc_summary_json = export_oscillatory_summary_json(
                                     osc_result,
-                                    run_dir_drag,
+                                    dir_audit,
                                     protocol_path=(
                                         str(protocol_path) if protocol_path else None
                                     ),
                                 )
                                 osc_summary_csv = export_oscillatory_summary_csv(
                                     osc_result,
-                                    run_dir_drag,
+                                    dir_csv,
                                     protocol_path=(
                                         str(protocol_path) if protocol_path else None
                                     ),
@@ -1626,7 +1816,7 @@ class BatchController:
                                         t_video_s=t_arr[m],
                                         response_um=y_arr[m],
                                         result=osc_result,
-                                        output_dir=run_dir_drag,
+                                        output_dir=dir_results,
                                     )
                                 except Exception:
                                     osc_diag_png = None
@@ -1634,7 +1824,7 @@ class BatchController:
                                 drag_outputs["oscillatory_summary_csv"] = osc_summary_csv
                                 drag_outputs["oscillatory_diagnostic_png"] = osc_diag_png
                                 try:
-                                    existing_protocol = load_protocol(run_dir_drag)
+                                    existing_protocol = load_protocol(run_dir)
                                     followup_updates = {
                                         "analysis": {
                                             "summary_references": {
@@ -1653,47 +1843,13 @@ class BatchController:
                                         followup_updates,
                                         allow_manual_overwrite=False,
                                     )
-                                    save_protocol(merged_protocol, run_dir_drag)
+                                    save_protocol(merged_protocol, run_dir)
                                 except Exception as exc:
                                     raise RuntimeError(
-                                        f"Oscillatory run_protocol summary_references update failed for run_dir={run_dir_drag}: {exc}"
+                                        f"Oscillatory run_protocol summary_references update failed for run_dir={run_dir}: {exc}"
                                     ) from exc
 
-                            # Mirror key DRAG artifacts into analysis directories for reports.
-                            try:
-                                traj_src = drag_outputs.get("trajectory")
-                                if traj_src and Path(traj_src).is_file():
-                                    shutil.copy2(traj_src, dir_csv / Path(traj_src).name)
-
-                                summary_json = drag_outputs.get("summary_json")
-                                if summary_json and Path(summary_json).is_file():
-                                    shutil.copy2(summary_json, dir_audit / Path(summary_json).name)
-
-                                summary_csv = drag_outputs.get("summary_csv")
-                                if summary_csv and Path(summary_csv).is_file():
-                                    shutil.copy2(summary_csv, dir_csv / Path(summary_csv).name)
-
-                                alignment_diag_json = drag_outputs.get("alignment_diagnostics_json")
-                                if alignment_diag_json and Path(alignment_diag_json).is_file():
-                                    shutil.copy2(alignment_diag_json, dir_audit / Path(alignment_diag_json).name)
-
-                                diagnostic_png = drag_outputs.get("diagnostic_png")
-                                if diagnostic_png and Path(diagnostic_png).is_file():
-                                    shutil.copy2(diagnostic_png, dir_results / Path(diagnostic_png).name)
-
-                                osc_summary_json = drag_outputs.get("oscillatory_summary_json")
-                                if osc_summary_json and Path(osc_summary_json).is_file():
-                                    shutil.copy2(osc_summary_json, dir_audit / Path(osc_summary_json).name)
-
-                                osc_summary_csv = drag_outputs.get("oscillatory_summary_csv")
-                                if osc_summary_csv and Path(osc_summary_csv).is_file():
-                                    shutil.copy2(osc_summary_csv, dir_csv / Path(osc_summary_csv).name)
-
-                                osc_diag_png = drag_outputs.get("oscillatory_diagnostic_png")
-                                if osc_diag_png and Path(osc_diag_png).is_file():
-                                    shutil.copy2(osc_diag_png, dir_results / Path(osc_diag_png).name)
-                            except Exception as copy_err:  # noqa: BLE001
-                                self._log(f"WARN: DRAG artifacts copy failed ({file_path.name}): {copy_err!r}")
+                            self._log(f"[DRAG output] current_drag_output_root={run_dir}")
 
                             # DRAG postprocess time is tracked for perf summary
                             postprocess_elapsed_ms = None
@@ -1776,20 +1932,20 @@ class BatchController:
                             stage_speed = stage_speed_ui if stage_speed_ui > 0 else float(tok["speed"])
                             axis = str(post_params.get("drag_axis", "x")).lower().strip()
                             eta = float(post_params.get("viscosity_pa_s", 1.0e-3))
-                            r_um = float(post_params.get("bead_radius_um", 0.5))
+                            r_um = float(pp.bead_radius_um)
 
-                            if ui_um_per_px <= 0:
+                            if um_per_px is None or float(um_per_px) <= 0:
                                 self._log("[DRAGGING] um_per_px must be > 0 for stiffness comparison.")
                             else:
                                 base_info = baseline_by_key[key]
 
                                 # baseline mean from static (first 50%)
                                 baseline_mean_um = self._mean_axis_um(
-                                    Path(base_info["trajectory_csv"]), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=False
+                                    Path(base_info["trajectory_csv"]), axis=axis, um_per_px=float(um_per_px), fraction=0.5, tail=False
                                 )
                                 # steady mean from drag: last 50%
                                 steady_mean_um = self._mean_axis_um(
-                                    Path(dir_csv / f"{file_path.stem}_trajectory.csv"), axis=axis, um_per_px=ui_um_per_px, fraction=0.5, tail=True
+                                    Path(dir_csv / f"{file_path.stem}_trajectory.csv"), axis=axis, um_per_px=float(um_per_px), fraction=0.5, tail=True
                                 )
 
                                 offset_um = float(steady_mean_um - baseline_mean_um)
@@ -1836,7 +1992,7 @@ class BatchController:
                                         "stage_speed_um_s": float(stage_speed),
                                         "viscosity_pa_s": float(eta),
                                         "bead_radius_um": float(r_um),
-                                        "um_per_px": float(ui_um_per_px),
+                                        "um_per_px": float(um_per_px),
                                     },
                                     "means_um": {
                                         "baseline_mean_um": float(baseline_mean_um),
@@ -2080,6 +2236,29 @@ class BatchController:
                         item_pdf_path = dir_results / f"{_report_date}-OT-{_report_item_id}-report.pdf"
                         export_ot_item_pdf(item_pdf_path, item_summary)
                         item_summary.setdefault("artifacts", {})["item_pdf"] = str(item_pdf_path)
+                        self._log(f"[DRAG output] report_pdf={item_pdf_path}")
+                        try:
+                            existing_protocol = load_protocol(run_dir)
+                            _analysis = existing_protocol.get("analysis") or {}
+                            if str(_analysis.get("analysis_type", "")).lower() in {"drag", "oscillatory"}:
+                                followup_updates = {
+                                    "analysis": {
+                                        "summary_references": {
+                                            "current_drag_report_path": str(item_pdf_path),
+                                        }
+                                    },
+                                    "provenance": {
+                                        "current_drag_report_path": str(item_pdf_path),
+                                    },
+                                }
+                                merged_protocol = merge_protocol(
+                                    existing_protocol,
+                                    followup_updates,
+                                    allow_manual_overwrite=False,
+                                )
+                                save_protocol(merged_protocol, run_dir)
+                        except Exception:
+                            pass
                 except Exception as e:
                     self._log(f"WARN: item report export failed ({file_path.name}): {e!r}")
                 _ot_report_items.append(item_summary)
@@ -2232,22 +2411,44 @@ class BatchController:
                 )
 
             except Exception as e:
-                _ot_report_items.append(
-                    build_ot_item_summary(
-                        run_dir=run_dir,
-                        base_name=(Path(file_path).stem if 'file_path' in locals() else original_input_path.stem),
-                        item_id=_item_id_for_run or (_dataset_item_root.name if '_dataset_item_root' in locals() and _dataset_item_root is not None else original_input_path.stem),
-                        source_input_path=str(original_input_path),
-                        original_input_path=str(original_input_path),
-                        resolved_video_path=(str(file_path) if 'file_path' in locals() else None),
-                        status="failed",
-                        run_id=run_id,
-                        batch_id=_ot_batch_id,
-                        output_root=(str(_ot_output_root) if _ot_output_root is not None else None),
-                        error=str(e),
-                        file_name=(file_path.name if 'file_path' in locals() else original_input_path.name),
-                    )
+                failed_item_id = _item_id_for_run or (
+                    _dataset_item_root.name if _dataset_item_root is not None else original_input_path.stem
                 )
+                failed_base_name = Path(file_path).stem
+                failed_file_name = file_path.name
+                failed_resolved_video_path = str(file_path)
+                try:
+                    _ot_report_items.append(
+                        build_ot_item_summary(
+                            run_dir=run_dir,
+                            base_name=failed_base_name,
+                            item_id=failed_item_id,
+                            source_input_path=str(original_input_path),
+                            original_input_path=str(original_input_path),
+                            resolved_video_path=failed_resolved_video_path,
+                            status="failed",
+                            run_id=run_id,
+                            batch_id=_ot_batch_id,
+                            output_root=(str(_ot_output_root) if _ot_output_root is not None else None),
+                            error=str(e),
+                            file_name=failed_file_name,
+                        )
+                    )
+                except Exception as summary_err:
+                    self._log(
+                        f"WARN: failed to build failed-item summary for {failed_file_name}: {summary_err!r}"
+                    )
+                    _ot_report_items.append(
+                        {
+                            "item_id": failed_item_id,
+                            "source_input_path": str(original_input_path),
+                            "status": "failed",
+                            "run_id": run_id,
+                            "batch_id": _ot_batch_id,
+                            "error": str(e),
+                            "file_name": failed_file_name,
+                        }
+                    )
                 dataset_set_status_fn(original_input_path, "failed")
                 self._log(f"ERROR: {file_path.name}: {e!r}")
                 self._log_perf_summary(

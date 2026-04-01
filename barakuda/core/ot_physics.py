@@ -208,7 +208,7 @@ class DragParams:
     stage_speed_um_s: float
     axis: str = "x"               # "x" | "y"
     viscosity_pa_s: float = 1.0e-3
-    bead_radius_um: float = 0.5   # 1 µm diameter bead -> 0.5 µm radius
+    bead_radius_um: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -295,7 +295,7 @@ K_B = 1.380649e-23  # J/K
 @dataclass(frozen=True)
 class CalibrationParams:
     temperature_c: float = 25.0
-    bead_diameter_um: float = 1.0  # default as requested
+    bead_diameter_um: float = 0.0
     viscosity_pa_s_override: float = 0.0  # if >0, use as provided instead of inferred
 
 

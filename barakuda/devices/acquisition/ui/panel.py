@@ -7,6 +7,7 @@ Fully import-guarded: shows a warning when pypylon is not available.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -55,6 +56,7 @@ from barakuda.core.run_protocol import (
 from barakuda.shell.widgets.run_protocol_dialog import RunProtocolDialog
 from barakuda.shell.stage_service import get_stage_service
 from barakuda.shell.stage_console_window import StageConsoleWindow, StageConsoleSnapshot
+from .stage_scan_lifecycle import StageScanLifecycleGuard, StageScanToken
 try:
     from barakuda.devices.acquisition.motion.ximc_stage import XimcStage, enumerate_ximc_devices
     _XIMC_AVAILABLE = True
@@ -62,6 +64,17 @@ except Exception:
     _XIMC_AVAILABLE = False
     XimcStage = None  # type: ignore
     enumerate_ximc_devices = lambda: []  # type: ignore
+
+
+_LOG = logging.getLogger(__name__)
+
+
+class _StageScanDispatchBridge(QObject):
+    # payload: (token, devices, com_desc)
+    ready = pyqtSignal(object, object, object)
+
+
+_STAGE_SCAN_BRIDGE = _StageScanDispatchBridge()
 
 
 
@@ -321,11 +334,13 @@ class AcquisitionPanel(QWidget):
         self._motion_worker: _RecordMotionWorker | None = None
         self._motion_elapsed_timer: QTimer | None = None
         self._motion_run_t0: float = 0.0
+        self._stage_scan_guard = StageScanLifecycleGuard()
+        self._panel_closing = False
 
         # Connect thread-safe fps signals to UI slots (always run in main thread)
         self._fps_done_signal.connect(self._on_fps_done)
         self._fps_result_signal.connect(self._on_fps_result)
-        self._stage_list_ready_signal.connect(self._on_stage_list_ready)
+        _STAGE_SCAN_BRIDGE.ready.connect(self._on_stage_scan_ready)
 
         # Sensor limits (updated on connect)
         self._sensor_w = self._DEFAULT_SENSOR_W
@@ -389,11 +404,14 @@ class AcquisitionPanel(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        self.setMinimumSize(860, 560)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
 
         # ---- LEFT: Live preview ----
         left = QWidget()
+        left.setMinimumWidth(320)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -439,7 +457,9 @@ class AcquisitionPanel(QWidget):
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        right_scroll.setMinimumWidth(340)
+        right_scroll.setMinimumWidth(470)
+        right_scroll.setMaximumWidth(780)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -681,6 +701,8 @@ class AcquisitionPanel(QWidget):
         self._status.setToolTip("Connection state, preview FPS, recording progress.")
         # -- Assemble tabs --
         tabs = QTabWidget()
+        tabs.setUsesScrollButtons(True)
+        tabs.setElideMode(Qt.TextElideMode.ElideRight)
 
         # Tab 0: Camera (connection + settings)
         tab_camera = QWidget()
@@ -727,6 +749,11 @@ class AcquisitionPanel(QWidget):
         # Splitter stretch factors: preview=3, controls=2 (~60/40)
         self._splitter.setStretchFactor(0, 3)
         self._splitter.setStretchFactor(1, 2)
+        try:
+            self._splitter.setCollapsible(0, False)
+            self._splitter.setCollapsible(1, False)
+        except Exception:
+            pass
 
         root.addWidget(self._splitter)
 
@@ -873,49 +900,62 @@ class AcquisitionPanel(QWidget):
         self._spin_motion_travel_um.setDecimals(3)
         self._spin_motion_travel_um.setSuffix(" µm")
         self._spin_motion_travel_um.setToolTip(
-            "Total travel distance in µm (user-facing).\n"
-            "Requires µm/unit to be known to convert safely for the backend."
+            "Total travel distance in micrometers (µm).\n"
+            "Backend converts this metric value to stage user units via stage µm/unit."
         )
         self._spin_motion_travel_um.valueChanged.connect(lambda _v: self._update_motion_run_button())
-        cv_form.addRow("Travel:", self._spin_motion_travel_um)
+        cv_form.addRow("Travel (µm):", self._spin_motion_travel_um)
 
         self._spin_motion_speed_um_s = _NoScrollDoubleSpinBox()
         self._spin_motion_speed_um_s.setRange(0.0, 1e12)
         self._spin_motion_speed_um_s.setValue(60.0)
         self._spin_motion_speed_um_s.setDecimals(3)
-        self._spin_motion_speed_um_s.setSuffix(" µm/s")
+        self._spin_motion_speed_um_s.setSuffix(" reg")
         self._spin_motion_speed_um_s.setToolTip(
-            "Speed in µm/s (user-facing).\n"
-            "Active command input. Converted to backend registers via validated mapping profile."
+            "XIMC raw speed register value (legacy backend path).\n"
+            "This is not interpreted as µm/s in the current runtime path."
         )
-        cv_form.addRow("Speed:", self._spin_motion_speed_um_s)
+        cv_form.addRow("Speed (raw reg):", self._spin_motion_speed_um_s)
 
         self._spin_motion_accel_um_s2 = _NoScrollDoubleSpinBox()
         self._spin_motion_accel_um_s2.setRange(0.0, 1e12)
         self._spin_motion_accel_um_s2.setValue(120.0)
         self._spin_motion_accel_um_s2.setDecimals(3)
-        self._spin_motion_accel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_accel_um_s2.setSuffix(" reg")
         self._spin_motion_accel_um_s2.setToolTip(
-            "Acceleration in µm/s² (user-facing).\n"
-            "Active command input. Converted to backend registers via validated mapping profile."
+            "XIMC raw acceleration register value (legacy backend path).\n"
+            "This is not interpreted as µm/s² in the current runtime path."
         )
-        cv_form.addRow("Accel:", self._spin_motion_accel_um_s2)
+        cv_form.addRow("Accel (raw reg):", self._spin_motion_accel_um_s2)
 
         self._spin_motion_decel_um_s2 = _NoScrollDoubleSpinBox()
         self._spin_motion_decel_um_s2.setRange(0.0, 1e12)
         self._spin_motion_decel_um_s2.setValue(120.0)
         self._spin_motion_decel_um_s2.setDecimals(3)
-        self._spin_motion_decel_um_s2.setSuffix(" µm/s²")
+        self._spin_motion_decel_um_s2.setSuffix(" reg")
         self._spin_motion_decel_um_s2.setToolTip(
-            "Deceleration in µm/s² (user-facing).\n"
-            "Active command input. Converted to backend registers via validated mapping profile."
+            "XIMC raw deceleration register value (legacy backend path).\n"
+            "This is not interpreted as µm/s² in the current runtime path."
         )
-        cv_form.addRow("Decel:", self._spin_motion_decel_um_s2)
+        cv_form.addRow("Decel (raw reg):", self._spin_motion_decel_um_s2)
 
-        self._lbl_metric_mapping_status = QLabel("")
-        self._lbl_metric_mapping_status.setWordWrap(True)
-        self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
-        cv_form.addRow("", self._lbl_metric_mapping_status)
+        self._lbl_motion_semantics_note = QLabel(
+            "Note: Travel is metric (µm). Speed/Accel/Decel currently use raw XIMC register values."
+        )
+        self._lbl_motion_semantics_note.setWordWrap(True)
+        self._lbl_motion_semantics_note.setStyleSheet("color: #666;")
+        cv_form.addRow("", self._lbl_motion_semantics_note)
+
+        self._lbl_motion_actual_header = QLabel("Last measured motion (read-only):")
+        self._lbl_motion_actual_header.setStyleSheet("color: #666; font-weight: bold;")
+        cv_form.addRow("", self._lbl_motion_actual_header)
+
+        self._lbl_motion_actual_travel_um = QLabel("not available yet")
+        self._lbl_motion_actual_speed_um_s = QLabel("not available yet")
+        self._lbl_motion_actual_duration_s = QLabel("not available yet")
+        cv_form.addRow("Last actual travel (µm):", self._lbl_motion_actual_travel_um)
+        cv_form.addRow("Last actual speed (µm/s):", self._lbl_motion_actual_speed_um_s)
+        cv_form.addRow("Last motion duration (s):", self._lbl_motion_actual_duration_s)
 
         self._motion_protocol_stack.addWidget(cvw)
 
@@ -1032,6 +1072,23 @@ class AcquisitionPanel(QWidget):
         self._refresh_stage_device_list(async_scan=True)
         return tab
 
+    def _update_motion_actual_metric_labels(
+        self,
+        *,
+        actual_travel_um: float | None = None,
+        actual_speed_um_s: float | None = None,
+        actual_duration_s: float | None = None,
+    ) -> None:
+        self._lbl_motion_actual_travel_um.setText(
+            f"{float(actual_travel_um):.3f}" if actual_travel_um is not None else "not available yet"
+        )
+        self._lbl_motion_actual_speed_um_s.setText(
+            f"{float(actual_speed_um_s):.3f}" if actual_speed_um_s is not None else "not available yet"
+        )
+        self._lbl_motion_actual_duration_s.setText(
+            f"{float(actual_duration_s):.4f}" if actual_duration_s is not None else "not available yet"
+        )
+
     def _open_stage_console(self) -> None:
         if self._stage_console_win is None:
             self._stage_console_win = StageConsoleWindow(
@@ -1092,20 +1149,53 @@ class AcquisitionPanel(QWidget):
             return
 
         if async_scan:
+            if self._panel_closing:
+                self._log("[XIMC scan] skipped: panel is closing.")
+                return
             self._combo_stage_device.addItem("Scanning devices…", None)
 
-            def _scan() -> None:
+            token = self._stage_scan_guard.start_request()
+            if token is None:
+                self._log("[XIMC scan] skipped: panel is closing.")
+                return
+            guard = self._stage_scan_guard
+            self._log(
+                f"[XIMC scan] started request_id={token.request_id} generation={token.generation}"
+            )
+
+            def _scan(scan_token: StageScanToken) -> None:
                 try:
                     devices = enumerate_ximc_devices()
                 except Exception:
                     devices = []
+                ok, reason = guard.should_publish(scan_token)
+                if not ok:
+                    _LOG.info(
+                        "XIMC scan request_id=%s cancelled before COM description lookup (%s).",
+                        scan_token.request_id,
+                        reason,
+                    )
+                    return
                 try:
-                    com_desc = self._get_windows_com_descriptions()
+                    com_desc = AcquisitionPanel._get_windows_com_descriptions()
                 except Exception:
                     com_desc = {}
-                self._stage_list_ready_signal.emit(devices, com_desc)
+                ok, reason = guard.should_publish(scan_token)
+                if not ok:
+                    _LOG.info(
+                        "XIMC scan request_id=%s finished but result discarded before UI dispatch (%s).",
+                        scan_token.request_id,
+                        reason,
+                    )
+                    return
+                _STAGE_SCAN_BRIDGE.ready.emit(scan_token, devices, com_desc)
 
-            threading.Thread(target=_scan, daemon=True, name="ximc-scan").start()
+            threading.Thread(
+                target=_scan,
+                args=(token,),
+                daemon=True,
+                name="ximc-scan",
+            ).start()
             return
 
         # Synchronous path (kept for explicit Refresh button if needed)
@@ -1117,6 +1207,19 @@ class AcquisitionPanel(QWidget):
             com_desc = self._get_windows_com_descriptions()
         except Exception:
             com_desc = {}
+        self._on_stage_list_ready(devices, com_desc)
+
+    def _on_stage_scan_ready(self, token: StageScanToken, devices, com_desc) -> None:
+        ok, reason = self._stage_scan_guard.should_publish(token)
+        if not ok:
+            if reason in {"panel_closing", "generation_mismatch"}:
+                self._log(
+                    f"[XIMC scan] finished request_id={token.request_id} but result discarded ({reason})."
+                )
+            return
+        self._log(
+            f"[XIMC scan] finished request_id={token.request_id}, applying device list update."
+        )
         self._on_stage_list_ready(devices, com_desc)
 
     def _on_stage_list_ready(self, devices, com_desc) -> None:
@@ -1214,49 +1317,22 @@ class AcquisitionPanel(QWidget):
         except Exception:
             scale_ok = False
 
-        mapping_profile, mapping_err = self._load_metric_mapping_profile()
-        mapping_ok = mapping_profile is not None
-
         enabled = (
             self._check_motion_enable.isChecked()
             and protocol_ok
             and scale_ok
-            and mapping_ok
             and self._stage is not None
             and self._camera.is_connected
         )
         self._btn_record_motion.setEnabled(enabled)
-        if hasattr(self, "_lbl_metric_mapping_status"):
-            if protocol_ok:
-                if mapping_ok:
-                    self._lbl_metric_mapping_status.setText(
-                        f"Validated metric mapping profile active: {mapping_profile.validation_id}"
-                    )
-                    self._lbl_metric_mapping_status.setStyleSheet("color: #1f7a1f;")
-                else:
-                    self._lbl_metric_mapping_status.setText(
-                        "Metric mapping profile missing. Record+Motion is blocked until validated "
-                        "mapping env vars are provided."
-                    )
-                    self._lbl_metric_mapping_status.setStyleSheet("color: #aa5500;")
-            else:
-                self._lbl_metric_mapping_status.setText("Protocol not wired for acquisition run.")
-                self._lbl_metric_mapping_status.setStyleSheet("color: #666;")
-
-        if not mapping_ok and mapping_err:
-            self._btn_record_motion.setToolTip(
-                "Start synchronized recording + stage motion run.\n"
-                f"Blocked: {mapping_err}"
-            )
-        else:
-            self._btn_record_motion.setToolTip(
-                "Start synchronized recording + stage motion run.\n"
-                "Motion must be enabled and stage must be connected."
-            )
+        self._btn_record_motion.setToolTip(
+            "Start synchronized recording + stage motion run.\n"
+            "Motion must be enabled and stage must be connected."
+        )
 
     def _load_metric_mapping_profile(self) -> tuple[XimcMetricCalibration | None, str | None]:
+        # Optional environment-based mapping profile (legacy/internal path).
         try:
-            import os
             sp = float(os.environ["BARAKUDA_XIMC_SPEED_REG_PER_UM_S"])
             ap = float(os.environ["BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2"])
             dp = float(os.environ["BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"])
@@ -1270,11 +1346,7 @@ class AcquisitionPanel(QWidget):
                 validation_id=vid,
             ), None
         except Exception:
-            return None, (
-                "set BARAKUDA_XIMC_SPEED_REG_PER_UM_S, "
-                "BARAKUDA_XIMC_ACCEL_REG_PER_UM_S2, "
-                "BARAKUDA_XIMC_DECEL_REG_PER_UM_S2"
-            )
+            return None, "metric mapping profile not set"
 
     # ------------------------------------------------------------------ #
     #  Stage connect
@@ -1343,10 +1415,10 @@ class AcquisitionPanel(QWidget):
             axis=self._combo_motion_axis.currentText(),
             direction=direction,
             travel=travel_user,
-            # Legacy recipe register fields remain as internal fallback placeholders.
-            speed=1.0,
-            accel=20.0,
-            decel=20.0,
+            # UI core motion inputs are primary in this panel.
+            speed=float(self._spin_motion_speed_um_s.value()),
+            accel=float(self._spin_motion_accel_um_s2.value()),
+            decel=float(self._spin_motion_decel_um_s2.value()),
             pre_delay_s=self._spin_motion_pre_delay.value(),
             post_delay_s=self._spin_motion_post_delay.value(),
             sign_stage_to_image_x=self._spin_motion_sign_x.value(),
@@ -1388,20 +1460,16 @@ class AcquisitionPanel(QWidget):
                 axis=recipe.axis,
                 direction=int(recipe.direction),
                 travel_um=travel_um,
-                speed_um_s=float(self._spin_motion_speed_um_s.value()),
-                accel_um_s2=float(self._spin_motion_accel_um_s2.value()),
-                decel_um_s2=float(self._spin_motion_decel_um_s2.value()),
+                # UI keeps speed/accel/decel as primary controls; they are applied
+                # directly through recipe/backend fields in this cleanup phase.
+                speed_um_s=None,
+                accel_um_s2=None,
+                decel_um_s2=None,
                 pre_delay_s=float(recipe.pre_delay_s),
                 post_delay_s=float(recipe.post_delay_s),
             )
 
-            metric_mapping_profile, mapping_err = self._load_metric_mapping_profile()
-            if metric_mapping_profile is None:
-                self._lbl_motion_run_status.setText(
-                    "Missing validated metric mapping profile. "
-                    f"Blocked: {mapping_err or 'unknown mapping error'}"
-                )
-                return
+            metric_mapping_profile, _ = self._load_metric_mapping_profile()
 
         requested_roi = self._get_roi_tuple()
         roi = self._sync_roi_to_camera(requested_roi)
@@ -1465,6 +1533,8 @@ class AcquisitionPanel(QWidget):
     ) -> None:
         self._stage_svc.set_run_active(False)
         self._stage_svc.release_lease("acquisition")
+        timing_meta = dict(record_result.meta or {})
+        timing_source = str(timing_meta.get("timing_source") or "estimated")
         fps_str = (
             f"{record_result.fps_effective:.1f}"
             if record_result.fps_effective else "N/A"
@@ -1472,11 +1542,13 @@ class AcquisitionPanel(QWidget):
         self._log(
             f"Record+Motion done — frames={record_result.frames_written}  "
             f"fps_eff={fps_str}  dropped={record_result.dropped}  "
+            f"timing_source={timing_source}  "
             f"motion_start={motion_result.motion_start_s:.3f}s  "
             f"motion_stop={motion_result.motion_stop_s:.3f}s"
             if motion_result.motion_stop_s is not None else
             f"Record+Motion done — frames={record_result.frames_written}  "
             f"fps_eff={fps_str}  dropped={record_result.dropped}  "
+            f"timing_source={timing_source}  "
             f"motion_start={motion_result.motion_start_s:.3f}s  motion_stop=N/A"
         )
 
@@ -1516,6 +1588,30 @@ class AcquisitionPanel(QWidget):
             qc_path=Path(qc_path) if qc_path else None,
             motion_result=motion_result,
         )
+        try:
+            stage_meta = self._load_json_file(Path(motion_result.stage_json_path))
+            actual_metric = stage_meta.get("actual_metric")
+            if not isinstance(actual_metric, dict):
+                actual_metric = {}
+            self._update_motion_actual_metric_labels(
+                actual_travel_um=(
+                    float(actual_metric["actual_travel_um"])
+                    if actual_metric.get("actual_travel_um") is not None
+                    else None
+                ),
+                actual_speed_um_s=(
+                    float(actual_metric["actual_speed_um_s"])
+                    if actual_metric.get("actual_speed_um_s") is not None
+                    else None
+                ),
+                actual_duration_s=(
+                    float(actual_metric["actual_motion_duration_s"])
+                    if actual_metric.get("actual_motion_duration_s") is not None
+                    else None
+                ),
+            )
+        except Exception:
+            self._update_motion_actual_metric_labels()
 
         self._stop_motion_elapsed_timer()
         self._lbl_motion_run_status.setText(
@@ -2144,6 +2240,9 @@ class AcquisitionPanel(QWidget):
             f"{result.fps_effective:.1f}" if result.fps_effective else "N/A"
         )
         meta = result.meta or {}
+        timing_source = str(meta.get("timing_source") or "estimated")
+        timing_detail = str(meta.get("timing_source_detail") or "")
+        elapsed_time_s = meta.get("elapsed_time_s")
         req_roi = self._roi_from_meta(meta.get("requested_roi"))
         rec_roi = self._roi_from_meta(meta.get("record_roi"))
         roi_line = ""
@@ -2157,13 +2256,17 @@ class AcquisitionPanel(QWidget):
         self._status.setText(
             f"✅ Record done — {result.frames_written} frames, "
             f"fps_eff={fps_str}, dropped={result.dropped}\n"
+            f"Timing: {timing_source} ({timing_detail})"
+            + (f", elapsed={float(elapsed_time_s):.6f}s" if elapsed_time_s is not None else "")
+            + "\n"
             f"Video: {result.video_path}\n"
             f"Meta:  {result.meta_path}"
             f"{roi_line}"
         )
         self._log(
             f"Recording done — frames={result.frames_written}  fps_eff={fps_str}"
-            f"  dropped={result.dropped}  video={result.video_path}"
+            f"  dropped={result.dropped}  timing_source={timing_source}"
+            f"  video={result.video_path}"
         )
         if req_roi is not None and rec_roi is not None:
             self._log(
@@ -2228,8 +2331,8 @@ class AcquisitionPanel(QWidget):
 
     def _on_record_progress(self, frames: int, elapsed: float) -> None:
         fps_target = self._spin_fps_hint.value()
-        fps_eff = frames / elapsed if elapsed > 0.5 else 0.0
-        fps_ratio = fps_eff / fps_target if fps_target > 0 else 0.0
+        fps_eff_est = frames / elapsed if elapsed > 0.5 else 0.0
+        fps_ratio = fps_eff_est / fps_target if fps_target > 0 else 0.0
         pct = fps_ratio * 100
 
         # Health tag
@@ -2244,7 +2347,7 @@ class AcquisitionPanel(QWidget):
         remaining = dur - elapsed if dur > 0 else 0.0
         rem_str = f" ~{max(0, remaining):.1f}s remaining" if dur > 0 else ""
         self._status.setText(
-            f"Recording… FPS={fps_eff:.0f} ({pct:.0f}%) "
+            f"Recording… FPS~{fps_eff_est:.0f} ({pct:.0f}%) "
             f"frames={frames}{rem_str} {tag}"
         )
 
@@ -2372,7 +2475,11 @@ class AcquisitionPanel(QWidget):
         rr = self._last_record_result
         if rr is not None:
             fps_e = f"{rr.fps_effective:.1f}" if rr.fps_effective else "N/A"
-            lines.append(f"Last rec: {rr.frames_written}fr  fps_eff={fps_e}  drop={rr.dropped}")
+            rr_meta = rr.meta or {}
+            timing_source = str(rr_meta.get("timing_source") or "estimated")
+            lines.append(
+                f"Last rec: {rr.frames_written}fr  fps_eff={fps_e}  drop={rr.dropped}  timing={timing_source}"
+            )
             lines.append(f"  video: {rr.video_path}")
             lines.append(f"  meta : {rr.meta_path}")
             meta = rr.meta or {}
@@ -2479,11 +2586,21 @@ class AcquisitionPanel(QWidget):
                 "basename": basename,
                 "recording_mode": recording_mode,
                 "fps_hint": fps_hint,
+                "frame_count": meta.get("frame_count", meta.get("frames_written")),
+                "t_first_s": meta.get("t_first_s"),
+                "t_last_s": meta.get("t_last_s"),
+                "elapsed_time_s": meta.get("elapsed_time_s", meta.get("duration_s")),
+                "effective_fps": meta.get("effective_fps", meta.get("fps_effective")),
+                "timing_source": meta.get("timing_source", "estimated"),
+                "timing_source_detail": meta.get("timing_source_detail"),
+                "timestamp_validation_pass": meta.get("timestamp_validation_pass"),
+                "timestamp_validation_message": meta.get("timestamp_validation_message"),
                 "exposure_us": meta.get("exposure_us"),
                 "gain": meta.get("gain"),
                 "pixel_format": meta.get("pixel_format"),
                 "roi": meta.get("record_roi") or meta.get("requested_roi"),
                 "timestamps_present": timestamps_present,
+                "camera_dropped_frames": meta.get("dropped_frames"),
             },
         }
 
@@ -2574,10 +2691,23 @@ class AcquisitionPanel(QWidget):
     #  Cleanup on widget destroy
     # ------------------------------------------------------------------ #
 
+    def _mark_panel_closing(self) -> None:
+        if self._panel_closing:
+            return
+        self._panel_closing = True
+        self._stage_scan_guard.cancel_all()
+        try:
+            _STAGE_SCAN_BRIDGE.ready.disconnect(self._on_stage_scan_ready)
+        except Exception:
+            pass
+        self._log("[XIMC scan] cancelled: panel closing/destruction.")
+
     def closeEvent(self, event) -> None:
+        self._mark_panel_closing()
         self._camera.disconnect()
         super().closeEvent(event)
 
     def deleteLater(self) -> None:
+        self._mark_panel_closing()
         self._camera.disconnect()
         super().deleteLater()

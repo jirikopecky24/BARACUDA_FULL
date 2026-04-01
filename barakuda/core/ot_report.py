@@ -264,6 +264,15 @@ def _wrap(value: Any, width: int = 64) -> str:
     return textwrap.fill(text, width=width, break_long_words=False, break_on_hyphens=False)
 
 
+def _is_drag_report(summary: dict[str, Any]) -> bool:
+    metrics = summary.get("metrics") or {}
+    diagnostics = summary.get("diagnostics") or {}
+    source_kind = str(diagnostics.get("report_source_kind") or "").strip().lower()
+    analysis_type = str(diagnostics.get("analysis_type") or "").strip().lower()
+    mode = str(metrics.get("mode") or "").strip().lower()
+    return source_kind == "drag_summary" or analysis_type == "drag" or mode in {"drag", "dragging"}
+
+
 def _display_path(path_value: Any, width: int = 72) -> str:
     if not path_value:
         return "n/a"
@@ -392,12 +401,15 @@ def _presentation_key(key: str) -> str:
         "eta_mean_pa_s": "Mean viscosity",
         "D_m2_s": "Diffusion coefficient",
         "lost_fraction": "Lost tracking fraction",
-        "dropped_frames": "Dropped frames",
+        "camera_dropped_frames": "Camera dropped frames",
+        "tracking_lost_frames": "Tracking lost frames",
         "warning_count": "Warnings",
         "drag_force_n": "Drag force",
         "offset_um": "Drag offset",
         "kappa_drag_pn_per_um": "Drag stiffness",
         "ratio_drag_over_brownian": "Drag/Brownian stiffness ratio",
+        "report_source_kind": "Report source kind",
+        "report_source_path": "Report source path",
         "error": "Failure reason",
         "warnings": "Warnings detail",
         "qc_png": "QC image",
@@ -459,8 +471,18 @@ def build_ot_item_summary(
     dir_results = run_dir / "results" if run_dir is not None else None
 
     run_json = _load_json(_first_existing(dir_audit / "run.json" if dir_audit else None, run_dir / "run.json" if run_dir else None))
+    run_protocol_json = _load_json(
+        _first_existing(
+            dir_audit / "run_protocol.json" if dir_audit else None,
+            run_dir / "run_protocol.json" if run_dir else None,
+        )
+    )
     post_json = _load_json(dir_audit / f"{base_name}_postprocess.json" if dir_audit else None)
     calibration_json = _load_json(dir_audit / f"{base_name}_calibration.json" if dir_audit else None)
+    drag_summary_json = _load_json(dir_audit / f"{base_name}_drag_summary.json" if dir_audit else None)
+    drag_alignment_json = _load_json(
+        dir_audit / f"{base_name}_alignment_diagnostics.json" if dir_audit else None
+    )
     compare_json = _load_json(dir_audit / f"{base_name}_compare.json" if dir_audit else None)
     drag_json = _load_json(dir_audit / f"{base_name}_drag.json" if dir_audit else None)
     cal_csv = _read_metric_csv(dir_csv / f"{base_name}_calibration.csv" if dir_csv else None)
@@ -471,7 +493,11 @@ def build_ot_item_summary(
     warnings: list[str] = []
 
     cfg = ((run_json or {}).get("config") or {})
+    provenance_cfg = (run_protocol_json or {}).get("provenance") or (run_json or {}).get("provenance") or {}
+    analysis_cfg = (run_protocol_json or {}).get("analysis") or (run_json or {}).get("analysis") or {}
+    summary_refs_cfg = analysis_cfg.get("summary_references") or {}
     tracking_cfg = cfg.get("tracking") or {}
+    timing_cfg = tracking_cfg.get("timing") or {}
     post_cfg = cfg.get("postprocess") or {}
     cal_cfg = cfg.get("calibration") or {}
     calibration_bead_diameter_um = _parse_float((calibration_json or {}).get("bead_diameter_um"))
@@ -479,8 +505,14 @@ def build_ot_item_summary(
 
     metrics["fps"] = _parse_float(tracking_cfg.get("fps"))
     metrics["um_per_px"] = _parse_float(cal_cfg.get("um_per_px"))
+    metrics["scale_source"] = cal_cfg.get("source")
     metrics["temperature_c"] = _parse_float(post_cfg.get("temperature_c"))
     metrics["bead_diameter_um"] = _parse_float(post_cfg.get("bead_diameter_um"))
+    metrics["bead_source"] = post_cfg.get("bead_source")
+    diagnostics["bead_fallback_used"] = bool(post_cfg.get("bead_fallback_used", False))
+    bead_source_warning = post_cfg.get("bead_source_warning")
+    if bead_source_warning:
+        warnings.append(str(bead_source_warning))
     if metrics["bead_diameter_um"] is None:
         metrics["bead_diameter_um"] = calibration_bead_diameter_um
     metrics["bead_radius_um"] = calibration_bead_radius_um
@@ -491,6 +523,45 @@ def build_ot_item_summary(
     metrics["mode"] = str(post_cfg.get("physics_mode") or derived_mean.get("mode") or "")
     metrics["drag_axis"] = str(post_cfg.get("drag_axis") or "")
     metrics["stage_speed_um_s"] = _parse_float(post_cfg.get("stage_speed_um_s"))
+    diagnostics["elapsed_time_s"] = _parse_float(timing_cfg.get("elapsed_time_s"))
+    diagnostics["effective_fps"] = _parse_float(timing_cfg.get("effective_fps"))
+    diagnostics["timing_source"] = timing_cfg.get("timing_source")
+    diagnostics["timing_source_detail"] = timing_cfg.get("timing_source_detail")
+    diagnostics["timestamp_validation_pass"] = timing_cfg.get("timestamp_validation_pass")
+    diagnostics["timestamp_validation_message"] = timing_cfg.get("timestamp_validation_message")
+    diagnostics["current_drag_input_path"] = provenance_cfg.get("current_drag_input_path")
+    diagnostics["current_drag_item_root"] = provenance_cfg.get("current_drag_item_root")
+    diagnostics["brownian_baseline_folder"] = provenance_cfg.get("brownian_baseline_folder")
+    diagnostics["baseline_selection_mode"] = provenance_cfg.get("baseline_selection_mode")
+    diagnostics["drag_preflight_status"] = provenance_cfg.get("drag_preflight_status")
+    diagnostics["drag_preflight_message"] = provenance_cfg.get("drag_preflight_message")
+    diagnostics["current_drag_output_root"] = provenance_cfg.get("current_drag_output_root")
+    diagnostics["current_drag_report_path"] = provenance_cfg.get("current_drag_report_path")
+    diagnostics["current_drag_summary_json_path"] = provenance_cfg.get("current_drag_summary_json_path")
+    diagnostics["current_drag_summary_csv_path"] = provenance_cfg.get("current_drag_summary_csv_path")
+    diagnostics["current_drag_diagnostic_png_path"] = provenance_cfg.get("current_drag_diagnostic_png_path")
+    diagnostics["current_drag_alignment_json_path"] = provenance_cfg.get("current_drag_alignment_json_path")
+    diagnostics["current_drag_protocol_summary_json"] = summary_refs_cfg.get("summary_json")
+    diagnostics["analysis_type"] = (
+        analysis_cfg.get("analysis_type")
+        or ((run_json or {}).get("analysis") or {}).get("analysis_type")
+    )
+    diagnostics["camera_dropped_frames"] = _parse_float(
+        ((cfg.get("acquisition") or {}).get("camera_dropped_frames"))
+    )
+    if diagnostics["camera_dropped_frames"] is None and run_dir is not None:
+        raw_dir = run_dir / "raw"
+        for candidate in (
+            raw_dir / "video_meta.json",
+            raw_dir / f"{base_name}_meta.json",
+        ):
+            payload = _load_json(candidate)
+            if payload:
+                diagnostics["camera_dropped_frames"] = _parse_float(
+                    payload.get("dropped_frames")
+                )
+                if diagnostics["camera_dropped_frames"] is not None:
+                    break
 
     if calibration_json:
         kappa = calibration_json.get("kappa") or {}
@@ -552,23 +623,172 @@ def build_ot_item_summary(
         diagnostics["derived_gamma_ns_m"] = _parse_float(derived_mean.get("gamma_Ns_m"))
         diagnostics["derived_D_um2_s"] = _parse_float(derived_mean.get("D_um2_s"))
 
-    if compare_json:
+    if drag_summary_json:
+        diagnostics["report_source_kind"] = drag_summary_json.get("report_source_kind") or "drag_summary"
+        diagnostics["report_source_path"] = drag_summary_json.get("report_source_path") or (
+            str((dir_audit / f"{base_name}_drag_summary.json")) if dir_audit else None
+        )
+        diagnostics["drag_force_n"] = _parse_float(drag_summary_json.get("drag_force_n"))
+        diagnostics["offset_um"] = _parse_float(
+            drag_summary_json.get("abs_offset_um")
+            if drag_summary_json.get("abs_offset_um") is not None
+            else drag_summary_json.get("offset_um_stage_signed")
+        )
+        metrics["kappa_drag_pn_per_um"] = _parse_float(drag_summary_json.get("kappa_pn_per_um"))
+        diagnostics["drag_axis"] = drag_summary_json.get("axis")
+        diagnostics["drag_analysis_axis"] = drag_summary_json.get("analysis_axis")
+        diagnostics["drag_stage_axis"] = drag_summary_json.get("stage_axis")
+        diagnostics["drag_protocol_type"] = drag_summary_json.get("protocol_type")
+        diagnostics["selected_calibration_path"] = drag_summary_json.get("selected_calibration_path")
+        diagnostics["selected_trajectory_path"] = drag_summary_json.get("selected_trajectory_path")
+        diagnostics["selected_timestamps_path"] = drag_summary_json.get("selected_timestamps_path")
+        diagnostics["selected_stage_meta_path"] = drag_summary_json.get("selected_stage_meta_path")
+        diagnostics["selected_stage_trace_path"] = drag_summary_json.get("selected_stage_trace_path")
+        diagnostics["timing_source"] = drag_summary_json.get("timing_source") or diagnostics.get("timing_source")
+        diagnostics["motion_kinematics_source"] = drag_summary_json.get("motion_kinematics_source")
+        diagnostics["kappa_source"] = drag_summary_json.get("kappa_source")
+        diagnostics["um_per_px_source"] = drag_summary_json.get("um_per_px_source")
+        diagnostics["baseline_selection_mode"] = drag_summary_json.get("baseline_selection_mode") or diagnostics.get(
+            "baseline_selection_mode"
+        )
+        diagnostics["drag_preflight_status"] = drag_summary_json.get("drag_preflight_status") or diagnostics.get(
+            "drag_preflight_status"
+        )
+        diagnostics["drag_preflight_message"] = drag_summary_json.get("drag_preflight_message") or diagnostics.get(
+            "drag_preflight_message"
+        )
+        diagnostics["alignment_status"] = drag_summary_json.get("alignment_status")
+        diagnostics["alignment_message"] = drag_summary_json.get("alignment_message")
+        diagnostics["alignment_offset_s"] = _parse_float(drag_summary_json.get("alignment_offset_s"))
+        diagnostics["motion_start_stage_s"] = _parse_float(drag_summary_json.get("motion_start_stage_s"))
+        diagnostics["motion_stop_stage_s"] = _parse_float(drag_summary_json.get("motion_stop_stage_s"))
+        diagnostics["motion_start_video_s_detected"] = _parse_float(
+            drag_summary_json.get("motion_start_video_s_detected")
+        )
+        diagnostics["motion_stop_video_s_stage_aligned"] = _parse_float(
+            drag_summary_json.get("motion_stop_video_s_stage_aligned")
+        )
+        diagnostics["baseline_start_s"] = _parse_float(drag_summary_json.get("baseline_start_s"))
+        diagnostics["baseline_end_s"] = _parse_float(drag_summary_json.get("baseline_end_s"))
+        diagnostics["steady_start_s"] = _parse_float(drag_summary_json.get("steady_start_s"))
+        diagnostics["steady_end_s"] = _parse_float(drag_summary_json.get("steady_end_s"))
+        diagnostics["actual_motion_duration_s"] = _parse_float(drag_summary_json.get("actual_motion_duration_s"))
+        diagnostics["actual_speed_um_s"] = _parse_float(drag_summary_json.get("actual_speed_um_s"))
+        diagnostics["eta_pa_s"] = _parse_float(drag_summary_json.get("eta_pa_s"))
+        diagnostics["analysis_status"] = drag_summary_json.get("analysis_status")
+        diagnostics["physics_status"] = drag_summary_json.get("physics_status")
+        diagnostics["drag_physics_confidence"] = drag_summary_json.get("drag_physics_confidence")
+        diagnostics["drag_physics_warning"] = drag_summary_json.get("drag_physics_warning")
+        diagnostics["baseline_robustness_flag"] = drag_summary_json.get("baseline_robustness_flag")
+        diagnostics["onset_robustness_flag"] = drag_summary_json.get("onset_robustness_flag")
+        diagnostics["kinematics_robustness_flag"] = drag_summary_json.get("kinematics_robustness_flag")
+        diagnostics["offset_current_windows_um"] = _parse_float(drag_summary_json.get("offset_current_windows_um"))
+        diagnostics["offset_alt_baseline_um"] = _parse_float(drag_summary_json.get("offset_alt_baseline_um"))
+        diagnostics["eta_current_windows"] = _parse_float(drag_summary_json.get("eta_current_windows"))
+        diagnostics["eta_alt_baseline"] = _parse_float(drag_summary_json.get("eta_alt_baseline"))
+        diagnostics["baseline_reference_median_px"] = _parse_float(drag_summary_json.get("baseline_reference_median_px"))
+        diagnostics["baseline_reference_window_start_s"] = _parse_float(
+            drag_summary_json.get("baseline_reference_window_start_s")
+        )
+        diagnostics["baseline_reference_window_end_s"] = _parse_float(
+            drag_summary_json.get("baseline_reference_window_end_s")
+        )
+        diagnostics["baseline_median_delta_px"] = _parse_float(drag_summary_json.get("baseline_median_delta_px"))
+        diagnostics["baseline_median_delta_um"] = _parse_float(drag_summary_json.get("baseline_median_delta_um"))
+        diagnostics["stage_speed_from_trace_um_s"] = _parse_float(drag_summary_json.get("stage_speed_from_trace_um_s"))
+        diagnostics["stage_speed_relative_diff"] = _parse_float(drag_summary_json.get("stage_speed_relative_diff"))
+        diagnostics["stage_speed_consistent"] = drag_summary_json.get("stage_speed_consistent")
+        metrics["mode"] = "DRAG"
+        diagnostics["timestamp_validation_pass"] = drag_summary_json.get(
+            "timestamp_validation_pass",
+            diagnostics.get("timestamp_validation_pass"),
+        )
+        diagnostics["timestamp_validation_message"] = drag_summary_json.get(
+            "timestamp_validation_message",
+            diagnostics.get("timestamp_validation_message"),
+        )
+        qc_map = {
+            "baseline_window_ok": drag_summary_json.get("qc_baseline_window_ok"),
+            "steady_window_ok": drag_summary_json.get("qc_steady_window_ok"),
+            "sufficient_steady_duration": drag_summary_json.get("qc_sufficient_steady_duration"),
+            "alignment_confident": drag_summary_json.get("qc_alignment_confident"),
+            "stage_speed_available": drag_summary_json.get("qc_stage_speed_available"),
+            "physics_ready": drag_summary_json.get("qc_physics_ready"),
+            "offset_detected": drag_summary_json.get("qc_offset_detected"),
+        }
+        diagnostics["drag_qc_flags"] = qc_map
+        for warn in drag_summary_json.get("warnings") or []:
+            warnings.append(str(warn))
+    if diagnostics.get("report_source_kind") is None and provenance_cfg.get("report_source_kind"):
+        diagnostics["report_source_kind"] = provenance_cfg.get("report_source_kind")
+    if diagnostics.get("report_source_path") is None and provenance_cfg.get("report_source_path"):
+        diagnostics["report_source_path"] = provenance_cfg.get("report_source_path")
+    for key in (
+        "selected_calibration_path",
+        "selected_trajectory_path",
+        "selected_timestamps_path",
+        "selected_stage_meta_path",
+        "selected_stage_trace_path",
+        "current_drag_input_path",
+        "brownian_baseline_folder",
+        "current_drag_output_root",
+        "current_drag_report_path",
+    ):
+        if diagnostics.get(key) is None and provenance_cfg.get(key):
+            diagnostics[key] = provenance_cfg.get(key)
+    if diagnostics.get("timing_source") is None and provenance_cfg.get("timing_source"):
+        diagnostics["timing_source"] = provenance_cfg.get("timing_source")
+    if drag_alignment_json:
+        diagnostics["alignment_baseline_end_s"] = _parse_float(drag_alignment_json.get("baseline_end_s"))
+        diagnostics["alignment_baseline_median"] = _parse_float(drag_alignment_json.get("baseline_median"))
+        diagnostics["alignment_baseline_mad"] = _parse_float(drag_alignment_json.get("baseline_mad"))
+        diagnostics["alignment_baseline_sigma"] = _parse_float(drag_alignment_json.get("baseline_sigma"))
+        diagnostics["alignment_onset_threshold_sigma"] = _parse_float(
+            drag_alignment_json.get("onset_threshold_sigma")
+        )
+        diagnostics["alignment_onset_threshold_abs"] = _parse_float(
+            drag_alignment_json.get("onset_threshold_abs")
+        )
+        diagnostics["alignment_onset_min_hold_s"] = _parse_float(drag_alignment_json.get("onset_min_hold_s"))
+        diagnostics["alignment_n_baseline_samples"] = _parse_float(
+            drag_alignment_json.get("n_baseline_samples")
+        )
+        diagnostics["alignment_n_total_samples"] = _parse_float(drag_alignment_json.get("n_total_samples"))
+        diagnostics["alignment_n_frames_outside_baseline"] = _parse_float(
+            drag_alignment_json.get("n_frames_outside_baseline")
+        )
+        diagnostics["alignment_failure_reason"] = drag_alignment_json.get("failure_reason")
+        diagnostics["alignment_message"] = (
+            diagnostics.get("alignment_message") or drag_alignment_json.get("message")
+        )
+        diagnostics["onset_relaxed_used"] = drag_alignment_json.get("onset_relaxed_used")
+        diagnostics["onset_competing_durable_candidates"] = _parse_float(
+            drag_alignment_json.get("onset_competing_durable_candidates")
+        )
+        diagnostics["onset_ambiguity_score"] = _parse_float(drag_alignment_json.get("onset_ambiguity_score"))
+        diagnostics["onset_confidence_class"] = drag_alignment_json.get("onset_confidence_class")
+    if compare_json and metrics.get("kappa_drag_pn_per_um") is None:
         delta = compare_json.get("delta") or {}
         dragging = compare_json.get("dragging") or {}
         metrics["kappa_drag_pn_per_um"] = _parse_float(dragging.get("kappa_pn_per_um"))
         diagnostics["ratio_drag_over_brownian"] = _parse_float(delta.get("ratio_drag_over_brownian"))
         diagnostics["delta_n_per_m"] = _parse_float(delta.get("delta_n_per_m"))
-    if drag_json:
+    if drag_json and diagnostics.get("drag_force_n") is None:
         dragging = drag_json.get("dragging") or {}
         means_um = drag_json.get("means_um") or {}
         diagnostics["drag_force_n"] = _parse_float(dragging.get("drag_force_n"))
         diagnostics["offset_um"] = _parse_float(means_um.get("offset_um"))
+    if diagnostics.get("report_source_kind") is None and (
+        compare_json is not None or drag_json is not None
+    ):
+        diagnostics["report_source_kind"] = "legacy_drag_json"
+        diagnostics["report_source_path"] = str((dir_audit / f"{base_name}_drag.json")) if dir_audit else None
+        warnings.append("legacy drag source used")
 
     if post_json:
         pp_summary = post_json.get("summary") or {}
         qc = pp_summary.get("qc") or {}
-        diagnostics["lost_frames"] = _parse_float(qc.get("lost_frames"))
-        diagnostics["dropped_frames"] = diagnostics["lost_frames"]
+        diagnostics["tracking_lost_frames"] = _parse_float(qc.get("lost_frames"))
         diagnostics["lost_fraction"] = _parse_float(qc.get("lost_fraction"))
 
     for warning in (post_json or {}).get("summary", {}).get("warnings", []):
@@ -594,7 +814,20 @@ def build_ot_item_summary(
         "results_dir": str(dir_results) if dir_results is not None and dir_results.exists() else None,
         "xlsx": str(dir_results / f"{base_name}_results.xlsx") if dir_results is not None else None,
         "results_csv": str(dir_csv / f"{base_name}_results.csv") if dir_csv is not None else None,
+        "drag_summary_json": str(dir_audit / f"{base_name}_drag_summary.json") if dir_audit is not None else None,
+        "alignment_diagnostics_json": str(dir_audit / f"{base_name}_alignment_diagnostics.json") if dir_audit is not None else None,
+        "run_protocol_json": str(dir_audit / "run_protocol.json") if dir_audit is not None else None,
         "trajectory_csv": str(dir_csv / f"{base_name}_trajectory.csv") if dir_csv is not None else None,
+        "drag_windows_csv": str(dir_csv / f"{base_name}_drag_windows.csv") if dir_csv is not None else None,
+        "drag_trace_annotated_csv": str(dir_csv / f"{base_name}_drag_trace_annotated.csv") if dir_csv is not None else None,
+        "current_drag_output_root": provenance_cfg.get("current_drag_output_root"),
+        "current_drag_report_path": provenance_cfg.get("current_drag_report_path"),
+        "current_drag_summary_json_path": provenance_cfg.get("current_drag_summary_json_path"),
+        "current_drag_summary_csv_path": provenance_cfg.get("current_drag_summary_csv_path"),
+        "current_drag_diagnostic_png_path": provenance_cfg.get("current_drag_diagnostic_png_path"),
+        "drag_diagnostic_png": provenance_cfg.get("current_drag_diagnostic_png_path")
+        or (str(dir_results / f"{base_name}_drag_diagnostic.png") if dir_results is not None else None),
+        "current_drag_alignment_json_path": provenance_cfg.get("current_drag_alignment_json_path"),
         "msd_csv": str(dir_csv / f"{base_name}_msd.csv") if dir_csv is not None else None,
         "psd_x_csv": str(dir_csv / f"{base_name}_psd_x.csv") if dir_csv is not None else None,
         "psd_y_csv": str(dir_csv / f"{base_name}_psd_y.csv") if dir_csv is not None else None,
@@ -633,6 +866,36 @@ def build_ot_item_summary(
 def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, str, str]]:
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
+    if _is_drag_report(summary):
+        rows: list[tuple[str, str, Any, str, str]] = [
+            ("Identity", "Item ID", summary.get("item_id"), "", "item_id"),
+            ("Identity", "Status", _fmt_status(summary.get("status")), "", "status"),
+            ("Identity", "Run ID", summary.get("run_id"), "", "run_id"),
+            ("Identity", "Source input", summary.get("source_input_path"), "", "source_input_path"),
+            ("Drag", "Analysis mode", "DRAG", "", "mode"),
+            ("Drag", "Drag force", diagnostics.get("drag_force_n"), "N", "drag_force_n"),
+            ("Drag", "Viscosity", diagnostics.get("eta_pa_s"), "Pa*s", "eta_pa_s"),
+            ("Drag", "Drag stiffness", metrics.get("kappa_drag_pn_per_um"), "pN/um", "kappa_drag_pn_per_um"),
+            ("Drag", "Actual speed", diagnostics.get("actual_speed_um_s"), "um/s", "actual_speed_um_s"),
+            ("Drag", "Absolute offset", diagnostics.get("offset_um"), "um", "offset_um"),
+            ("Drag", "Alignment status", diagnostics.get("alignment_status"), "", "alignment_status"),
+            ("Drag", "Physics status", diagnostics.get("physics_status"), "", "physics_status"),
+            ("Provenance", "Current drag input", diagnostics.get("current_drag_input_path"), "", "current_drag_input_path"),
+            ("Provenance", "Current drag output root", diagnostics.get("current_drag_output_root"), "", "current_drag_output_root"),
+            ("Provenance", "Brownian baseline folder", diagnostics.get("brownian_baseline_folder"), "", "brownian_baseline_folder"),
+            ("Provenance", "Selected calibration source", diagnostics.get("selected_calibration_path"), "", "selected_calibration_path"),
+            ("Provenance", "Selected trajectory source", diagnostics.get("selected_trajectory_path"), "", "selected_trajectory_path"),
+            ("Provenance", "Selected timestamps source", diagnostics.get("selected_timestamps_path"), "", "selected_timestamps_path"),
+            ("Provenance", "Selected stage meta path", diagnostics.get("selected_stage_meta_path"), "", "selected_stage_meta_path"),
+            ("Provenance", "Selected stage trace path", diagnostics.get("selected_stage_trace_path"), "", "selected_stage_trace_path"),
+            ("Provenance", "Timing source", diagnostics.get("timing_source"), "", "timing_source"),
+            ("Provenance", "Report source kind", diagnostics.get("report_source_kind"), "", "report_source_kind"),
+            ("Provenance", "Report source path", diagnostics.get("report_source_path"), "", "report_source_path"),
+        ]
+        warnings = summary.get("warnings") or []
+        if warnings:
+            rows.append(("QC", "Warnings detail", " | ".join(str(w) for w in warnings), "", "warnings"))
+        return rows
     rows: list[tuple[str, str, Any, str, str]] = [
         ("Identity", "Item ID", summary.get("item_id"), "", "item_id"),
         ("Identity", "Status", _fmt_status(summary.get("status")), "", "status"),
@@ -644,8 +907,13 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
         ("Input", "Analysis mode", metrics.get("mode"), "", "mode"),
         ("Input", "Frame rate", metrics.get("fps"), "Hz", "fps"),
         ("Input", "Scale", metrics.get("um_per_px"), "um/px", "um_per_px"),
+        ("Input", "Scale source", metrics.get("scale_source"), "", "scale_source"),
         ("Input", "Temperature", metrics.get("temperature_c"), "C", "temperature_c"),
         ("Input", "Bead diameter", metrics.get("bead_diameter_um"), "um", "bead_diameter_um"),
+        ("Input", "Bead source", metrics.get("bead_source"), "", "bead_source"),
+        ("Input", "Timing source", diagnostics.get("timing_source"), "", "timing_source"),
+        ("Input", "Elapsed time", diagnostics.get("elapsed_time_s"), "s", "elapsed_time_s"),
+        ("Input", "Effective fps", diagnostics.get("effective_fps"), "Hz", "effective_fps"),
         ("Key results", "Corner frequency X", diagnostics.get("fc_x_hz"), "Hz", "fc_x_hz"),
         ("Key results", "Corner frequency Y", diagnostics.get("fc_y_hz"), "Hz", "fc_y_hz"),
         ("Key results", "Trap stiffness X", metrics.get("kappa_x_pn_per_um"), "pN/um", "kappa_x_pn_per_um"),
@@ -653,12 +921,38 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
         ("Key results", "Mean viscosity", metrics.get("eta_mean_pa_s"), "Pa*s", "eta_mean_pa_s"),
         ("Key results", "Diffusion coefficient", metrics.get("D_m2_s"), "m^2/s", "D_m2_s"),
         ("QC", "Lost tracking fraction", diagnostics.get("lost_fraction"), "", "lost_fraction"),
-        ("QC", "Dropped frames", diagnostics.get("dropped_frames"), "frames", "dropped_frames"),
+        ("QC", "Camera dropped frames", diagnostics.get("camera_dropped_frames"), "frames", "camera_dropped_frames"),
+        ("QC", "Tracking lost frames", diagnostics.get("tracking_lost_frames"), "frames", "tracking_lost_frames"),
         ("QC", "Warnings", diagnostics.get("warning_count"), "", "warning_count"),
+        ("QC", "Timestamp validation pass", diagnostics.get("timestamp_validation_pass"), "", "timestamp_validation_pass"),
         ("Drag", "Drag force", diagnostics.get("drag_force_n"), "N", "drag_force_n"),
         ("Drag", "Drag offset", diagnostics.get("offset_um"), "um", "offset_um"),
         ("Drag", "Drag stiffness", metrics.get("kappa_drag_pn_per_um"), "pN/um", "kappa_drag_pn_per_um"),
         ("Drag", "Drag/Brownian stiffness ratio", diagnostics.get("ratio_drag_over_brownian"), "", "ratio_drag_over_brownian"),
+        ("Drag", "Current drag input", diagnostics.get("current_drag_input_path"), "", "current_drag_input_path"),
+        ("Drag", "Brownian baseline folder", diagnostics.get("brownian_baseline_folder"), "", "brownian_baseline_folder"),
+        ("Drag", "Selected calibration source", diagnostics.get("selected_calibration_path"), "", "selected_calibration_path"),
+        ("Drag", "Selected trajectory source", diagnostics.get("selected_trajectory_path"), "", "selected_trajectory_path"),
+        ("Drag", "Selected timestamps source", diagnostics.get("selected_timestamps_path"), "", "selected_timestamps_path"),
+        ("Drag", "Alignment status", diagnostics.get("alignment_status"), "", "alignment_status"),
+        ("Drag", "Alignment message", diagnostics.get("alignment_message"), "", "alignment_message"),
+        ("Drag", "Baseline window", f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", "s", "baseline_window"),
+        ("Drag", "Steady window", f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", "s", "steady_window"),
+        ("Drag", "Actual speed", diagnostics.get("actual_speed_um_s"), "um/s", "actual_speed_um_s"),
+        ("Drag", "Viscosity", diagnostics.get("eta_pa_s"), "Pa*s", "eta_pa_s"),
+        ("Drag", "Analysis status", diagnostics.get("analysis_status"), "", "analysis_status"),
+        ("Drag", "Physics status", diagnostics.get("physics_status"), "", "physics_status"),
+        ("Drag", "Drag physics confidence", diagnostics.get("drag_physics_confidence"), "", "drag_physics_confidence"),
+        ("Drag", "Drag physics warning", diagnostics.get("drag_physics_warning"), "", "drag_physics_warning"),
+        ("Drag", "Offset current windows", diagnostics.get("offset_current_windows_um"), "um", "offset_current_windows_um"),
+        ("Drag", "Offset alt baseline", diagnostics.get("offset_alt_baseline_um"), "um", "offset_alt_baseline_um"),
+        ("Drag", "Eta current windows", diagnostics.get("eta_current_windows"), "Pa*s", "eta_current_windows"),
+        ("Drag", "Eta alt baseline", diagnostics.get("eta_alt_baseline"), "Pa*s", "eta_alt_baseline"),
+        ("Drag", "Onset robustness flag", diagnostics.get("onset_robustness_flag"), "", "onset_robustness_flag"),
+        ("Drag", "Baseline robustness flag", diagnostics.get("baseline_robustness_flag"), "", "baseline_robustness_flag"),
+        ("Drag", "Kinematics robustness flag", diagnostics.get("kinematics_robustness_flag"), "", "kinematics_robustness_flag"),
+        ("Drag", "Report source kind", diagnostics.get("report_source_kind"), "", "report_source_kind"),
+        ("Drag", "Report source path", diagnostics.get("report_source_path"), "", "report_source_path"),
     ]
     if summary.get("error"):
         rows.append(("Status", "Failure reason", summary.get("error"), "", "error"))
@@ -677,6 +971,26 @@ def _identity_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Generated", _wrap(summary.get("created_at") or datetime.now().isoformat(timespec="seconds"), 56)],
         ["Source file", _wrap(Path(str(summary.get("source_input_path") or "")).name if summary.get("source_input_path") else "n/a", 56)],
     ]
+
+
+def _drag_cover_rows(summary: dict[str, Any]) -> tuple[list[list[str]], list[list[str]]]:
+    diagnostics = summary.get("diagnostics") or {}
+    metrics = summary.get("metrics") or {}
+    source_name = Path(str(summary.get("source_input_path") or "")).name if summary.get("source_input_path") else "n/a"
+    rows = [
+        ["Item", _wrap(summary.get("item_id"), 56)],
+        ["Status", _fmt_status(summary.get("status"))],
+        ["Run ID", _wrap(summary.get("run_id"), 56)],
+        ["Source file", _wrap(source_name, 56)],
+        ["Drag force [N]", _fmt_value(diagnostics.get("drag_force_n"))],
+        ["Viscosity [Pa*s]", _fmt_value(diagnostics.get("eta_pa_s"))],
+        ["Drag stiffness [pN/um]", _fmt_value(metrics.get("kappa_drag_pn_per_um"))],
+        ["Actual speed [um/s]", _fmt_value(diagnostics.get("actual_speed_um_s"))],
+        ["Absolute offset [um]", _fmt_value(diagnostics.get("offset_um"))],
+        ["Alignment status", _wrap(diagnostics.get("alignment_status"), 56)],
+        ["Physics status", _wrap(diagnostics.get("physics_status"), 56)],
+    ]
+    return rows[:6], rows[6:]
 
 
 def _path_entries_for_item(summary: dict[str, Any]) -> list[tuple[str, list[str]]]:
@@ -718,13 +1032,77 @@ def _fmt_key_result(value: Any, unit: str, sig_figs: int = 3) -> str:
 
 def _conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
     metrics = summary.get("metrics") or {}
+    diagnostics = summary.get("diagnostics") or {}
     return [
         ["Analysis mode", _wrap(metrics.get("mode"), 50)],
         ["Frame rate", _fmt_measure(metrics.get("fps"), "Hz")],
+        ["Effective fps", _fmt_measure(diagnostics.get("effective_fps"), "Hz")],
+        ["Elapsed time", _fmt_measure(diagnostics.get("elapsed_time_s"), "s")],
+        ["Timing source", _wrap(diagnostics.get("timing_source"), 50)],
         ["Scale", _fmt_measure(metrics.get("um_per_px"), "um/px")],
+        ["Scale source", _wrap(metrics.get("scale_source"), 50)],
         ["Temperature", _fmt_measure(metrics.get("temperature_c"), "C")],
         ["Bead diameter", _fmt_measure(metrics.get("bead_diameter_um"), "um")],
         ["Bead radius", _fmt_measure(metrics.get("bead_radius_um"), "um")],
+        ["Bead source", _wrap(metrics.get("bead_source"), 50)],
+        ["Current drag input", _wrap(diagnostics.get("current_drag_input_path"), 50)],
+        ["Brownian baseline folder", _wrap(diagnostics.get("brownian_baseline_folder"), 50)],
+        ["Selected calibration source", _wrap(diagnostics.get("selected_calibration_path"), 50)],
+        ["Selected trajectory source", _wrap(diagnostics.get("selected_trajectory_path"), 50)],
+        ["Selected timestamps source", _wrap(diagnostics.get("selected_timestamps_path"), 50)],
+        ["Report source kind", _wrap(diagnostics.get("report_source_kind"), 50)],
+        ["Report source path", _wrap(diagnostics.get("report_source_path"), 50)],
+    ]
+
+
+def _drag_conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
+    diagnostics = summary.get("diagnostics") or {}
+    warnings = summary.get("warnings") or []
+    qc_flags = diagnostics.get("drag_qc_flags") or {}
+    qc_text = ", ".join(f"{k}={v}" for k, v in qc_flags.items()) if qc_flags else "n/a"
+    return [
+        ["Analysis mode", "DRAG"],
+        ["Current drag input", _wrap(diagnostics.get("current_drag_input_path"), 52)],
+        ["Current drag output root", _wrap(diagnostics.get("current_drag_output_root"), 52)],
+        ["Current drag report path", _wrap(diagnostics.get("current_drag_report_path"), 52)],
+        ["Brownian baseline folder", _wrap(diagnostics.get("brownian_baseline_folder"), 52)],
+        ["Selected calibration source", _wrap(diagnostics.get("selected_calibration_path"), 52)],
+        ["Selected trajectory source", _wrap(diagnostics.get("selected_trajectory_path"), 52)],
+        ["Selected timestamps source", _wrap(diagnostics.get("selected_timestamps_path"), 52)],
+        ["Selected stage meta path", _wrap(diagnostics.get("selected_stage_meta_path"), 52)],
+        ["Selected stage trace path", _wrap(diagnostics.get("selected_stage_trace_path"), 52)],
+        ["Report source kind", _wrap(diagnostics.get("report_source_kind"), 52)],
+        ["Report source path", _wrap(diagnostics.get("report_source_path"), 52)],
+        ["Timing source", _wrap(diagnostics.get("timing_source"), 52)],
+        ["Drag physics confidence", _wrap(diagnostics.get("drag_physics_confidence"), 52)],
+        ["Drag physics warning", _wrap(diagnostics.get("drag_physics_warning"), 52)],
+        ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
+        ["Baseline window [s]", _wrap(f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", 52)],
+        ["Steady window [s]", _wrap(f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", 52)],
+        ["Motion start stage [s]", _fmt_value(diagnostics.get("motion_start_stage_s"))],
+        ["Motion start video [s]", _fmt_value(diagnostics.get("motion_start_video_s_detected"))],
+        ["Motion stop stage-aligned video [s]", _fmt_value(diagnostics.get("motion_stop_video_s_stage_aligned"))],
+        ["Alignment offset [s]", _fmt_value(diagnostics.get("alignment_offset_s"))],
+        ["Warnings", _wrap(" | ".join(str(w) for w in warnings) if warnings else "none", 52)],
+        ["QC flags", _wrap(qc_text, 52)],
+    ]
+
+
+def _drag_alignment_rows(summary: dict[str, Any]) -> list[list[str]]:
+    diagnostics = summary.get("diagnostics") or {}
+    return [
+        ["Alignment status", _wrap(diagnostics.get("alignment_status"), 52)],
+        ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
+        ["Baseline median", _fmt_value(diagnostics.get("alignment_baseline_median"))],
+        ["Baseline MAD", _fmt_value(diagnostics.get("alignment_baseline_mad"))],
+        ["Baseline sigma", _fmt_value(diagnostics.get("alignment_baseline_sigma"))],
+        ["Onset threshold sigma", _fmt_value(diagnostics.get("alignment_onset_threshold_sigma"))],
+        ["Onset threshold abs", _fmt_value(diagnostics.get("alignment_onset_threshold_abs"))],
+        ["Onset min hold [s]", _fmt_value(diagnostics.get("alignment_onset_min_hold_s"))],
+        ["Baseline samples", _fmt_value(diagnostics.get("alignment_n_baseline_samples"))],
+        ["Total samples", _fmt_value(diagnostics.get("alignment_n_total_samples"))],
+        ["Frames outside baseline", _fmt_value(diagnostics.get("alignment_n_frames_outside_baseline"))],
+        ["Failure reason", _wrap(diagnostics.get("alignment_failure_reason"), 52)],
     ]
 
 
@@ -733,8 +1111,36 @@ def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
     warnings = summary.get("warnings") or []
     rows = [
         ["Lost tracking fraction", _fmt_value(diagnostics.get("lost_fraction"))],
-        ["Dropped frames", _fmt_value(diagnostics.get("dropped_frames"))],
+        ["Camera dropped frames", _fmt_value(diagnostics.get("camera_dropped_frames"))],
+        ["Tracking lost frames", _fmt_value(diagnostics.get("tracking_lost_frames"))],
+        ["Timestamp validation pass", _fmt_value(diagnostics.get("timestamp_validation_pass"))],
+        ["Timestamp validation message", _wrap(diagnostics.get("timestamp_validation_message"), 52)],
         ["Warnings", _fmt_value(diagnostics.get("warning_count"))],
+        ["Alignment status", _wrap(diagnostics.get("alignment_status"), 52)],
+        ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
+        ["Baseline window [s]", _wrap(f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", 52)],
+        ["Steady window [s]", _wrap(f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", 52)],
+        ["Motion start stage [s]", _fmt_value(diagnostics.get("motion_start_stage_s"))],
+        ["Motion start video [s]", _fmt_value(diagnostics.get("motion_start_video_s_detected"))],
+        ["Motion stop stage-aligned video [s]", _fmt_value(diagnostics.get("motion_stop_video_s_stage_aligned"))],
+        ["Alignment offset [s]", _fmt_value(diagnostics.get("alignment_offset_s"))],
+        ["Drag force [N]", _fmt_value(diagnostics.get("drag_force_n"))],
+        ["Offset [um]", _fmt_value(diagnostics.get("offset_um"))],
+        ["Drag stiffness [pN/um]", _fmt_value((summary.get("metrics") or {}).get("kappa_drag_pn_per_um"))],
+        ["Viscosity [Pa*s]", _fmt_value(diagnostics.get("eta_pa_s"))],
+        ["Actual speed [um/s]", _fmt_value(diagnostics.get("actual_speed_um_s"))],
+        ["Stage speed from trace [um/s]", _fmt_value(diagnostics.get("stage_speed_from_trace_um_s"))],
+        ["Stage speed relative diff", _fmt_value(diagnostics.get("stage_speed_relative_diff"))],
+        ["Stage speed consistent", _fmt_value(diagnostics.get("stage_speed_consistent"))],
+        ["Offset current windows [um]", _fmt_value(diagnostics.get("offset_current_windows_um"))],
+        ["Offset alt baseline [um]", _fmt_value(diagnostics.get("offset_alt_baseline_um"))],
+        ["Eta current windows [Pa*s]", _fmt_value(diagnostics.get("eta_current_windows"))],
+        ["Eta alt baseline [Pa*s]", _fmt_value(diagnostics.get("eta_alt_baseline"))],
+        ["Baseline robustness flag", _fmt_value(diagnostics.get("baseline_robustness_flag"))],
+        ["Onset robustness flag", _fmt_value(diagnostics.get("onset_robustness_flag"))],
+        ["Kinematics robustness flag", _fmt_value(diagnostics.get("kinematics_robustness_flag"))],
+        ["Analysis status", _fmt_value(diagnostics.get("analysis_status"))],
+        ["Physics status", _fmt_value(diagnostics.get("physics_status"))],
     ]
     if summary.get("error"):
         rows.append(["Failure reason", _wrap(summary.get("error"), 52)])
@@ -1112,7 +1518,11 @@ def _render_cover_page(
     plt.close(fig)
 
 
-def _render_theory_page(pdf, page_counter: PageCounter | None = None) -> None:
+def _render_theory_page(
+    pdf,
+    page_counter: PageCounter | None = None,
+    physics_mode: str | None = None,
+) -> None:
     """Render a page explaining the theoretical basis of OT calibration with proper equations."""
     import matplotlib.pyplot as plt
 
@@ -1145,10 +1555,19 @@ def _render_theory_page(pdf, page_counter: PageCounter | None = None) -> None:
     y -= line_height * 1.5
 
     # Intro
+    _mode = str(physics_mode or "").upper().strip()
+    if _mode == "DRAGGING":
+        intro_line = (
+            "This report includes drag/motion-calibrated results. Brownian formulas are shown for cross-checking"
+        )
+    else:
+        intro_line = (
+            "This report presents results from passive calibration of optical tweezers using Brownian motion"
+        )
     ax.text(
         0.0,
         y,
-        "This report presents results from passive calibration of optical tweezers using Brownian motion",
+        intro_line,
         fontsize=FONT_SIZE_NORMAL,
         color=TEXT_COLOR,
         transform=ax.transAxes,
@@ -1156,10 +1575,15 @@ def _render_theory_page(pdf, page_counter: PageCounter | None = None) -> None:
         ha="left",
     )
     y -= line_height
+    second_line = (
+        "The DRAG sections use stage-aligned motion timing and steady-state displacement windows."
+        if _mode == "DRAGGING"
+        else "analysis of a trapped microsphere."
+    )
     ax.text(
         0.0,
         y,
-        "analysis of a trapped microsphere.",
+        second_line,
         fontsize=FONT_SIZE_NORMAL,
         color=TEXT_COLOR,
         transform=ax.transAxes,
@@ -1450,6 +1874,48 @@ def _render_theory_page(pdf, page_counter: PageCounter | None = None) -> None:
         ha="left",
     )
 
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_drag_theory_page(
+    pdf,
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Drag Theory and Method", page_counter=page_counter)
+
+    ax = fig.add_axes([PAGE_MARGIN_LEFT, PAGE_MARGIN_BOTTOM + 0.02, 1 - PAGE_MARGIN_LEFT - PAGE_MARGIN_RIGHT, 0.76])
+    ax.axis("off")
+
+    lines = [
+        "Constant-velocity drag method",
+        "",
+        "1) Current drag trajectory is analyzed in the active run.",
+        "2) Brownian baseline is used only for calibration (kappa, optional scale).",
+        "3) Baseline and steady-state windows are resolved on the current drag trajectory.",
+        "4) Offset is computed between baseline and steady-state positions.",
+        "5) Drag force is inferred as: F_drag = kappa * offset.",
+        "6) Viscosity is inferred from drag force and actual stage speed.",
+        "",
+        "Provenance note:",
+        "Current trajectory source is intentionally independent from baseline source.",
+        "The report always lists both sources explicitly for auditability.",
+    ]
+    ax.text(
+        0.0,
+        0.98,
+        "\n".join(lines),
+        fontsize=10.5,
+        color=TEXT_COLOR,
+        va="top",
+        family=FONT_FAMILY,
+        linespacing=1.5,
+    )
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -1871,6 +2337,39 @@ def _render_preview_grid_page(
     plt.close(fig)
 
 
+def _render_drag_windows_table_page(
+    pdf,
+    windows_csv: Path,
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    rows: list[list[str]] = []
+    try:
+        with windows_csv.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(
+                    [
+                        _fmt_value(row.get("window")),
+                        _fmt_value(row.get("start_s")),
+                        _fmt_value(row.get("end_s")),
+                        _fmt_value(row.get("duration_s")),
+                    ]
+                )
+    except Exception:
+        rows = []
+    if not rows:
+        return
+    _render_paginated_table(
+        pdf,
+        "Drag Windows",
+        ["Window", "Start [s]", "End [s]", "Duration [s]"],
+        rows,
+        rows_per_page=18,
+        page_counter=page_counter,
+    )
+
+
 def _render_image_pages(
     pdf,
     title: str,
@@ -1927,6 +2426,7 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
     report_path.parent.mkdir(parents=True, exist_ok=True)
     artifacts = summary.get("artifacts") or {}
     preview_paths = [Path(p) for p in (artifacts.get("preview_grid_pngs") or []) if p]
+    drag_mode = _is_drag_report(summary)
 
     psd_entries = [
         entry
@@ -1950,55 +2450,116 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
     page_counter = PageCounter()
 
     with PdfPages(report_path) as pdf:
-        # Cover page - no page number
-        _render_cover_page(
-            pdf,
-            title=f"Item Report: {summary.get('item_id')}",
-            subtitle="Item-level summary",
-            left_rows=_identity_rows(summary),
-            right_rows=_key_result_rows(summary),
-            eyebrow="Scientific Summary",
-            page_counter=page_counter,
-        )
-        # Theory page
-        _render_theory_page(pdf, page_counter=page_counter)
-        # Conditions page
-        _render_dual_table_page(
-            pdf,
-            "Item Conditions And Quality Control",
-            "Acquisition and analysis conditions",
-            _conditions_rows(summary),
-            "Quality control and report notes",
-            _qc_rows(summary),
-            page_counter=page_counter,
-        )
-        # Preview grid page (optional)
-        if preview_paths:
-            _render_preview_grid_page(pdf, preview_paths, page_counter=page_counter)
-        # Trajectory: heatmap with marginal histograms only (no MSD here)
-        trajectory_csv = artifacts.get("trajectory_csv")
-        if trajectory_csv and Path(trajectory_csv).is_file():
-            _render_trajectory_heatmap_page(
+        if drag_mode:
+            left_rows, right_rows = _drag_cover_rows(summary)
+            _render_cover_page(
                 pdf,
-                Path(trajectory_csv),
-                title="Trajectory",
+                title=f"DRAG Item Report: {summary.get('item_id')}",
+                subtitle="Constant-velocity drag summary",
+                left_rows=left_rows,
+                right_rows=right_rows,
+                eyebrow="DRAG Summary",
                 page_counter=page_counter,
             )
-        # PSD plots
-        if psd_entries:
-            _render_plot_pages(pdf, "Power Spectral Density", psd_entries,
-                              layout="vertical", items_per_page=2, page_counter=page_counter)
-        # Histogram X and Y curves
-        if hist_curve_entries_xy:
-            _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries_xy,
-                              layout="vertical", items_per_page=2, page_counter=page_counter)
-        # Histogram R curve + MSD on one page
-        _render_histogram_r_and_msd_page(
-            pdf,
-            artifacts.get("hist_r_csv"),
-            artifacts.get("msd_csv"),
-            page_counter=page_counter,
-        )
+            _render_drag_theory_page(pdf, page_counter=page_counter)
+            _render_dual_table_page(
+                pdf,
+                "Drag Conditions, Provenance And QC",
+                "Drag provenance and timing conditions",
+                _drag_conditions_rows(summary),
+                "Alignment and quality-control notes",
+                _qc_rows(summary),
+                page_counter=page_counter,
+            )
+            drag_diag = _build_image_entry("Drag diagnostic figure", artifacts.get("drag_diagnostic_png"))
+            if drag_diag is not None:
+                _render_image_pages(
+                    pdf,
+                    "Drag Diagnostic Figure",
+                    [drag_diag],
+                    layout="vertical",
+                    items_per_page=1,
+                    page_counter=page_counter,
+                )
+            _render_paginated_table(
+                pdf,
+                "Alignment Diagnostics Summary",
+                ["Field", "Value"],
+                _drag_alignment_rows(summary),
+                rows_per_page=18,
+                page_counter=page_counter,
+            )
+            windows_csv = artifacts.get("drag_windows_csv")
+            if windows_csv and Path(windows_csv).is_file():
+                _render_drag_windows_table_page(pdf, Path(windows_csv), page_counter=page_counter)
+            trace_entry = _build_plot_entry(
+                "Annotated drag trace",
+                artifacts.get("drag_trace_annotated_csv"),
+                ("video_time_s", "stage_time_aligned_s"),
+                ("axis_px",),
+                "Time [s]",
+                "Axis position [px]",
+                False,
+                False,
+            )
+            if trace_entry is not None:
+                _render_plot_pages(
+                    pdf,
+                    "Drag Windows And Annotated Trace",
+                    [trace_entry],
+                    layout="vertical",
+                    items_per_page=1,
+                    page_counter=page_counter,
+                )
+            if preview_paths:
+                _render_preview_grid_page(pdf, preview_paths, page_counter=page_counter)
+        else:
+            # Cover page - no page number
+            _render_cover_page(
+                pdf,
+                title=f"Item Report: {summary.get('item_id')}",
+                subtitle="Item-level summary",
+                left_rows=_identity_rows(summary),
+                right_rows=_key_result_rows(summary),
+                eyebrow="Scientific Summary",
+                page_counter=page_counter,
+            )
+            _render_theory_page(
+                pdf,
+                page_counter=page_counter,
+                physics_mode=(summary.get("metrics") or {}).get("mode"),
+            )
+            _render_dual_table_page(
+                pdf,
+                "Item Conditions And Quality Control",
+                "Acquisition and analysis conditions",
+                _conditions_rows(summary),
+                "Quality control and report notes",
+                _qc_rows(summary),
+                page_counter=page_counter,
+            )
+            if preview_paths:
+                _render_preview_grid_page(pdf, preview_paths, page_counter=page_counter)
+            trajectory_csv = artifacts.get("trajectory_csv")
+            if trajectory_csv and Path(trajectory_csv).is_file():
+                _render_trajectory_heatmap_page(
+                    pdf,
+                    Path(trajectory_csv),
+                    title="Trajectory",
+                    page_counter=page_counter,
+                )
+            if psd_entries:
+                _render_plot_pages(pdf, "Power Spectral Density", psd_entries,
+                                  layout="vertical", items_per_page=2, page_counter=page_counter)
+            if hist_curve_entries_xy:
+                _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries_xy,
+                                  layout="vertical", items_per_page=2, page_counter=page_counter)
+            _render_histogram_r_and_msd_page(
+                pdf,
+                artifacts.get("hist_r_csv"),
+                artifacts.get("msd_csv"),
+                page_counter=page_counter,
+            )
         # Artifact appendix removed - file structure is consistent across analyses
         # and documented in the user manual
     return report_path

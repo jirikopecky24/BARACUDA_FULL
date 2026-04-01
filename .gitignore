@@ -216,3 +216,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 runs/
+
+# BARAKUDA local runtime artifacts (outside canonical runs tree)
+debug-*.log
+barakuda_crash.log
+*_drag_diagnostic.png
+*_tracking_preview.png

@@ -32,6 +32,18 @@ class DragRunPaths:
     # instead of the preferred canonical filename.
     # Keys: meta_path, timestamps_path, stage_meta_path, stage_trace_path, trajectory_path
     used_fallbacks: dict[str, str] = field(default_factory=dict)
+    # Per-artifact selection provenance.
+    # Shape:
+    # {
+    #   "<artifact_key>": {
+    #       "selected_artifact_path": "...",
+    #       "artifact_selection_mode": "...",
+    #       "artifact_selection_warning": "...|None",
+    #       "candidate_files": [...],
+    #       "searched_directories": [...],
+    #   }
+    # }
+    artifact_selection: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -115,6 +127,8 @@ class DragRunLoaded:
     # Authoritative video time axis (frame index -> timestamp_s)
     frame_indices: list[int]
     frame_timestamps_s: list[float]
+    timestamp_validation_pass: bool = True
+    timestamp_validation_message: str = "timestamps validated"
 
 
 @dataclass(frozen=True)
@@ -148,6 +162,10 @@ class AlignmentDiagnostics:
     candidate_durations_s: tuple[float, ...]
     failure_reason: str
     message: str
+    onset_relaxed_used: bool = False
+    onset_competing_durable_candidates: int = 0
+    onset_ambiguity_score: float = 0.0
+    onset_confidence_class: str = "robust"
 
 
 @dataclass(frozen=True)
@@ -174,6 +192,13 @@ class DragAnalysisConfig:
     stage_um_per_unit_source: str | None = None
     kappa_source: str | None = None
     selected_calibration_path: str | None = None
+    current_drag_input_path: str | None = None
+    current_drag_item_root: str | None = None
+    brownian_baseline_folder: str | None = None
+    baseline_selection_mode: str | None = None
+    drag_preflight_status: str | None = None
+    drag_preflight_message: str | None = None
+    current_drag_output_root: str | None = None
 
 
 @dataclass
@@ -254,9 +279,48 @@ class DragAnalysisResult:
     selected_stage_meta_path: str | None = None
     selected_stage_trace_path: str | None = None
     selected_timestamps_path: str | None = None
+    selected_trajectory_path: str | None = None
+    current_drag_input_path: str | None = None
+    current_drag_item_root: str | None = None
+    brownian_baseline_folder: str | None = None
+    baseline_selection_mode: str | None = None
+    drag_preflight_status: str | None = None
+    drag_preflight_message: str | None = None
+    current_drag_output_root: str | None = None
+    current_drag_report_path: str | None = None
+    current_drag_summary_json_path: str | None = None
+    current_drag_summary_csv_path: str | None = None
+    current_drag_diagnostic_png_path: str | None = None
+    current_drag_alignment_json_path: str | None = None
     used_fallbacks: dict[str, str] = field(default_factory=dict)
+    artifact_selection: dict[str, dict[str, Any]] = field(default_factory=dict)
     timing_source: str | None = None
     motion_kinematics_source: str | None = None
+    timestamp_validation_pass: bool = True
+    timestamp_validation_message: str = "timestamps validated"
+    report_source_kind: str | None = None
+    report_source_path: str | None = None
+    alignment_message: str | None = None
+    commanded_travel_user_ref: float | None = None
+    commanded_speed_user_s_ref: float | None = None
+    # Physics hardening audit layer
+    offset_current_windows_um: float | None = None
+    offset_alt_baseline_um: float | None = None
+    eta_current_windows: float | None = None
+    eta_alt_baseline: float | None = None
+    baseline_reference_median_px: float | None = None
+    baseline_reference_window_start_s: float | None = None
+    baseline_reference_window_end_s: float | None = None
+    baseline_median_delta_px: float | None = None
+    baseline_median_delta_um: float | None = None
+    stage_speed_from_trace_um_s: float | None = None
+    stage_speed_relative_diff: float | None = None
+    stage_speed_consistent: bool | None = None
+    drag_physics_confidence: str | None = None
+    drag_physics_warning: str | None = None
+    baseline_robustness_flag: str | None = None
+    onset_robustness_flag: str | None = None
+    kinematics_robustness_flag: str | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:

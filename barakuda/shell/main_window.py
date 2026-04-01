@@ -5,10 +5,10 @@ from typing import Optional
 import re
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter
+    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -30,6 +30,7 @@ class ShellMainWindow(QMainWindow):
 
         self.setWindowTitle("BARAKUDA Analysis Suite — Modular")
         self.resize(1400, 860)
+        self.setMinimumSize(1280, 700)
         self._set_window_icon_if_available()
 
         self.dataset = DatasetPanel()
@@ -72,19 +73,25 @@ class ShellMainWindow(QMainWindow):
         self._preview_stack.addWidget(self._afm_preview)
         self._preview_stack.addWidget(self._ot_preview)
         self._preview_stack.setCurrentWidget(self._afm_preview)
+        self._preview_stack.setMinimumWidth(520)
+        self._preview_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Right-hand panel (device container with PipelinePanel / AFM panel)
         # should behave similarly to the Dataset dock: never collapse below
         # a comfortable minimum width so that labels and controls remain readable.
-        self._device_container.setMinimumWidth(380)
+        self._device_container.setMinimumWidth(470)
+        self._device_container.setMaximumWidth(760)
+        self._device_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self._center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._center_splitter.addWidget(self._preview_stack)
         self._center_splitter.addWidget(self._device_container)
         self._center_splitter.setStretchFactor(0, 3)
         self._center_splitter.setStretchFactor(1, 2)
+        self._center_splitter.setChildrenCollapsible(False)
         # Do not allow the right panel to be collapsed to 0px.
         try:
+            self._center_splitter.setCollapsible(0, False)
             self._center_splitter.setCollapsible(1, False)
         except Exception:
             # Older Qt versions may not support setCollapsible; safe to ignore.
@@ -126,6 +133,9 @@ class ShellMainWindow(QMainWindow):
         # ---------------- Dock widgets (Dataset / Pipeline / Log) ----------------
         self.dataset_dock = QDockWidget("Dataset", self)
         self.dataset_dock.setWidget(self.dataset)
+        self.dataset.setMinimumWidth(260)
+        self.dataset_dock.setMinimumWidth(280)
+        self.dataset_dock.setMaximumWidth(380)
         self.dataset_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -157,6 +167,63 @@ class ShellMainWindow(QMainWindow):
         self._first_show = True
         self._manual_roi_edited_paths = set()
         self._last_ot_bead_diameter_um: Optional[float] = None
+        self._last_non_acq_splitter_sizes: Optional[list[int]] = None
+        self._last_dataset_dock_width: int = 300
+
+    def _remember_non_acq_splitter_sizes(self) -> None:
+        """Persist user-adjusted center splitter widths for OT/AFM view."""
+        try:
+            sizes = [int(v) for v in self._center_splitter.sizes()]
+        except Exception:
+            return
+        if len(sizes) != 2:
+            return
+        if sizes[0] <= 0 or sizes[1] <= 0:
+            return
+        self._last_non_acq_splitter_sizes = sizes
+
+    def _restore_non_acq_splitter_sizes(self) -> None:
+        """Restore previous OT/AFM splitter widths, fallback to proportional default."""
+        try:
+            remembered = self._last_non_acq_splitter_sizes
+            if remembered and len(remembered) == 2 and remembered[0] > 0 and remembered[1] > 0:
+                self._center_splitter.setSizes(remembered)
+                return
+
+            total = int(self._center_splitter.width())
+            if total <= 0:
+                total = 1400
+            right_min = max(470, int(self._device_container.minimumWidth() or 0))
+            right = max(right_min, int(total * 0.36))
+            left = max(280, total - right)
+            self._center_splitter.setSizes([left, right])
+        except Exception:
+            pass
+
+    def _remember_dataset_dock_width(self) -> None:
+        try:
+            w = int(self.dataset_dock.width())
+        except Exception:
+            return
+        if w > 120:
+            self._last_dataset_dock_width = w
+
+    def _sync_device_container_floor_from_panel(self) -> None:
+        if self._device_panel is None:
+            return
+        try:
+            panel_min = int(self._device_panel.minimumWidth() or 0)
+        except Exception:
+            panel_min = 0
+        base_floor = 520 if self._active_device_id == "optical_tweezers" else 470
+        self._device_container.setMinimumWidth(max(base_floor, panel_min))
+
+    def _restore_dataset_dock_width(self) -> None:
+        try:
+            target = min(380, max(280, int(self._last_dataset_dock_width)))
+            self.resizeDocks([self.dataset_dock], [target], Qt.Orientation.Horizontal)
+        except Exception:
+            pass
 
     def _set_window_icon_if_available(self) -> None:
         icon_path = Path(__file__).resolve().parents[2] / "assets" / "branding" / "barakuda" / "app_icon.png"
@@ -166,6 +233,36 @@ class ShellMainWindow(QMainWindow):
             icon = QIcon(str(icon_path))
             if not icon.isNull():
                 self.setWindowIcon(icon)
+        except Exception:
+            pass
+
+    def _clamp_window_to_visible_screen(self) -> None:
+        """Keep the top-level window fully inside available desktop geometry."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        try:
+            frame = self.frameGeometry()
+            screen = self.screen()
+            if screen is None:
+                screen = QGuiApplication.screenAt(frame.center())
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+
+            available = screen.availableGeometry()
+            target_w = min(frame.width(), available.width())
+            target_h = min(frame.height(), available.height())
+            if target_w != frame.width() or target_h != frame.height():
+                self.resize(target_w, target_h)
+                frame = self.frameGeometry()
+
+            max_x = available.right() - frame.width() + 1
+            max_y = available.bottom() - frame.height() + 1
+            target_x = max(available.left(), min(frame.x(), max_x))
+            target_y = max(available.top(), min(frame.y(), max_y))
+            if target_x != frame.x() or target_y != frame.y():
+                self.move(target_x, target_y)
         except Exception:
             pass
 
@@ -193,8 +290,14 @@ class ShellMainWindow(QMainWindow):
             try:
                 self.resizeDocks([self.dataset_dock], [200], Qt.Orientation.Horizontal)
                 self.resizeDocks([self.log_dock], [180], Qt.Orientation.Vertical)
+                self._restore_non_acq_splitter_sizes()
             except Exception:
                 pass
+
+            # Clamp first shown geometry after initial layout settles to avoid
+            # opening partially outside the available desktop area.
+            QTimer.singleShot(0, self._clamp_window_to_visible_screen)
+            QTimer.singleShot(80, self._clamp_window_to_visible_screen)
 
             self.log_panel.log("Shell started.")
             self._set_device_by_index(0)
@@ -414,6 +517,11 @@ class ShellMainWindow(QMainWindow):
         self.batch.reset_gate()
 
     def _activate_device(self, spec: DeviceSpec) -> None:
+        previous_device_id = self._active_device_id
+        if self._active_device_id != "acquisition":
+            self._remember_non_acq_splitter_sizes()
+            self._remember_dataset_dock_width()
+
         if self._device_panel is not None:
             self._device_panel.setParent(None)
             self._device_panel.deleteLater()
@@ -423,6 +531,7 @@ class ShellMainWindow(QMainWindow):
         self._active_device_id = str(spec.device_id)
         self._device_panel = spec.create_panel()
         self._device_container_layout.addWidget(self._device_panel)
+        QTimer.singleShot(0, self._sync_device_container_floor_from_panel)
 
         if self._active_device_id == "optical_tweezers":
             try:
@@ -483,11 +592,28 @@ class ShellMainWindow(QMainWindow):
         # Switch the preview stack to the correct panel
         # Acquisition has its own built-in preview — hide the shared one
         if self._active_device_id == "acquisition":
+            # Acquisition owns its own preview+controls layout.
+            # Collapse shared preview pane to avoid a large empty left area.
+            self._preview_stack.setMinimumWidth(0)
+            self._device_container.setMinimumWidth(860)
+            self._device_container.setMaximumWidth(16777215)
             self._preview_stack.hide()
             self.dataset_dock.hide()
+            try:
+                total = max(1, int(self._center_splitter.width()))
+                self._center_splitter.setSizes([0, total])
+            except Exception:
+                pass
         else:
+            self._preview_stack.setMinimumWidth(280)
+            self._device_container.setMinimumWidth(520 if self._active_device_id == "optical_tweezers" else 470)
+            self._device_container.setMaximumWidth(760)
             self._preview_stack.show()
             self.dataset_dock.show()
+            QTimer.singleShot(0, self._sync_device_container_floor_from_panel)
+            if previous_device_id == "acquisition":
+                QTimer.singleShot(0, self._restore_dataset_dock_width)
+                QTimer.singleShot(0, self._restore_non_acq_splitter_sizes)
             if self._active_device_id == "afm":
                 self._preview_stack.setCurrentWidget(self._afm_preview)
             else:

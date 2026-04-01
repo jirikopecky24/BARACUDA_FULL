@@ -20,6 +20,42 @@ from .schema import (
 from .windows import compute_windows, DragWindowError
 
 
+def _median_in_window(t: Sequence[float], y: Sequence[float], t0: float, t1: float) -> float:
+    vals = [y[i] for i in range(len(t)) if t0 <= t[i] <= t1 and math.isfinite(y[i])]
+    if not vals:
+        return float("nan")
+    vals_sorted = sorted(vals)
+    m = len(vals_sorted)
+    mid = m // 2
+    if m % 2 == 1:
+        return float(vals_sorted[mid])
+    return float(0.5 * (vals_sorted[mid - 1] + vals_sorted[mid]))
+
+
+def _classify_onset_ambiguity(
+    candidate_count: int,
+    candidate_durations: Sequence[float],
+    min_hold_s: float,
+    used_relaxed_onset: bool,
+) -> tuple[int, float, str]:
+    durable = sum(1 for d in candidate_durations if float(d) >= float(min_hold_s))
+    competing = max(0, durable - 1)
+    score = 0.0
+    score += min(0.6, competing * 0.2)
+    if candidate_count > 8:
+        score += min(0.25, (candidate_count - 8) * 0.01)
+    if used_relaxed_onset:
+        score += 0.25
+    score = max(0.0, min(1.0, score))
+    if score >= 0.65:
+        cls = "likely_wrong"
+    elif score >= 0.30:
+        cls = "weak_but_acceptable"
+    else:
+        cls = "robust"
+    return competing, score, cls
+
+
 def _interp_time_for_frames(
     frame_indices: Sequence[int],
     frame_times: Sequence[float],
@@ -199,7 +235,15 @@ def analyze_drag_run(
 
     if onset_video_s is None and config.manual_offset_s is None:
         qc.alignment_confident = False
-        run_dir_path = Path(loaded.paths.run_dir)
+        analysis_root = (
+            Path(config.current_drag_output_root).resolve()
+            if config.current_drag_output_root
+            else (Path(loaded.paths.run_dir).resolve() / "analysis")
+        )
+        fail_audit_dir = analysis_root / "audit"
+        fail_results_dir = analysis_root / "results"
+        fail_audit_dir.mkdir(parents=True, exist_ok=True)
+        fail_results_dir.mkdir(parents=True, exist_ok=True)
         basename = loaded.paths.basename
         # Export alignment failure diagnostics for debugging
         try:
@@ -219,10 +263,10 @@ def analyze_drag_run(
                 "failure_reason": alignment_diag.failure_reason,
                 "message": alignment_diag.message,
             }
-            failure_json = run_dir_path / f"{basename}_alignment_failure.json"
+            failure_json = fail_audit_dir / f"{basename}_alignment_failure.json"
             failure_json.write_text(json.dumps(diag_dict, indent=2, ensure_ascii=False), encoding="utf-8")
             from .plotting import plot_alignment_debug
-            debug_png = run_dir_path / f"{basename}_alignment_debug.png"
+            debug_png = fail_results_dir / f"{basename}_alignment_debug.png"
             plot_alignment_debug(
                 t_s=t_video,
                 signal_px=traj_px,
@@ -258,7 +302,13 @@ def analyze_drag_run(
         try:
             from .plotting import plot_alignment_debug
 
-            out_png = Path(loaded.paths.run_dir) / f"{loaded.paths.basename}_alignment_debug.png"
+            analysis_root = (
+                Path(config.current_drag_output_root).resolve()
+                if config.current_drag_output_root
+                else (Path(loaded.paths.run_dir).resolve() / "analysis")
+            )
+            out_png = analysis_root / "results" / f"{loaded.paths.basename}_alignment_debug.png"
+            out_png.parent.mkdir(parents=True, exist_ok=True)
             plot_alignment_debug(
                 t_s=t_video,
                 signal_px=traj_px,
@@ -297,17 +347,6 @@ def analyze_drag_run(
             raise DragWindowError("Steady window too short for strict mode.")
 
     # 5) Compute baseline / steady medians and offsets
-    def _median_in_window(t: Sequence[float], y: Sequence[float], t0: float, t1: float) -> float:
-        vals = [y[i] for i in range(len(t)) if t0 <= t[i] <= t1 and math.isfinite(y[i])]
-        if not vals:
-            return float("nan")
-        vals_sorted = sorted(vals)
-        m = len(vals_sorted)
-        mid = m // 2
-        if m % 2 == 1:
-            return float(vals_sorted[mid])
-        return float(0.5 * (vals_sorted[mid - 1] + vals_sorted[mid]))
-
     baseline_px = _median_in_window(t_video, traj_px, windows.baseline_start_s, windows.baseline_end_s)
     steady_px = _median_in_window(t_video, traj_px, windows.steady_start_s, windows.steady_end_s)
 
@@ -336,6 +375,43 @@ def analyze_drag_run(
     offset_px_stage_signed = offset_px_raw * float(sign)
     offset_um_stage_signed = offset_um_raw * float(sign) if offset_um_raw is not None else None
     abs_offset_um = abs(offset_um_stage_signed) if offset_um_stage_signed is not None else None
+
+    # Baseline robustness audit (without changing the primary output).
+    baseline_reference_start_s = min(t_video) if t_video else float("nan")
+    baseline_reference_end_s = alignment_diag.baseline_end_s
+    baseline_reference_px = _median_in_window(
+        t_video,
+        traj_px,
+        baseline_reference_start_s,
+        baseline_reference_end_s,
+    )
+    baseline_median_delta_px = (
+        baseline_px - baseline_reference_px
+        if math.isfinite(baseline_reference_px)
+        else float("nan")
+    )
+    baseline_median_delta_um = (
+        baseline_median_delta_px * um_per_px
+        if (um_per_px is not None and um_per_px > 0 and math.isfinite(baseline_median_delta_px))
+        else None
+    )
+    offset_alt_baseline_um = None
+    eta_alt_baseline = None
+    baseline_robustness_flag = "robust"
+    if math.isfinite(baseline_reference_px):
+        offset_alt_baseline_um = (
+            abs((steady_px - baseline_reference_px) * um_per_px)
+            if (um_per_px is not None and um_per_px > 0)
+            else None
+        )
+        sigma_px = float(alignment_diag.baseline_sigma) if math.isfinite(alignment_diag.baseline_sigma) else 0.0
+        baseline_delta_threshold_px = max(0.25, 2.0 * sigma_px)
+        if abs(float(baseline_median_delta_px)) > baseline_delta_threshold_px:
+            baseline_robustness_flag = "weak"
+            warnings.append(
+                "PHYSICS_WARNING: baseline reference differs from near-onset baseline "
+                f"by {float(baseline_median_delta_px):.4f} px (> {baseline_delta_threshold_px:.4f} px)."
+            )
 
     # 6) Stage kinematics
     actual_travel_user = loaded.stage_meta.actual_travel_user
@@ -394,6 +470,34 @@ def analyze_drag_run(
         )
         if derived_any:
             motion_kinematics_source = "actual_metric_partial_plus_legacy_conversion"
+
+    stage_speed_from_trace_um_s = None
+    stage_speed_relative_diff = None
+    stage_speed_consistent = None
+    kinematics_robustness_flag = "robust"
+    if (
+        loaded.stage_timing.motion_stop_stage_s is not None
+        and loaded.stage_timing.motion_start_stage_s is not None
+    ):
+        trace_duration = float(loaded.stage_timing.motion_stop_stage_s) - float(loaded.stage_timing.motion_start_stage_s)
+        if trace_duration > 0 and math.isfinite(trace_duration):
+            trace_speed_user_s = float(actual_travel_user) / trace_duration
+            if stage_um_per_unit is not None and stage_um_per_unit > 0:
+                stage_speed_from_trace_um_s = trace_speed_user_s * float(stage_um_per_unit)
+                if actual_speed_um_s is not None and actual_speed_um_s > 0:
+                    stage_speed_relative_diff = abs(stage_speed_from_trace_um_s - actual_speed_um_s) / abs(actual_speed_um_s)
+                    stage_speed_consistent = stage_speed_relative_diff <= 0.05
+    if motion_kinematics_source is not None and "legacy_user_units" in str(motion_kinematics_source):
+        kinematics_robustness_flag = "legacy_units_risky"
+        warnings.append(
+            "PHYSICS_WARNING: kinematics use legacy user-units conversion via stage_um_per_unit."
+        )
+    if stage_speed_consistent is False:
+        kinematics_robustness_flag = "inconsistent_speed"
+        warnings.append(
+            "PHYSICS_WARNING: speed from stage trace and summary speed differ by "
+            f"{(stage_speed_relative_diff or 0.0) * 100:.2f}%."
+        )
 
     # 7) Physics layer (optional)
     drag_force_n = kappa_n_per_m = kappa_pn_per_um = eta_pa_s = None
@@ -462,10 +566,97 @@ def analyze_drag_run(
             warnings.append(f"Physics layer skipped due to invalid inputs: {e}")
             physics_status = "incomplete_inputs"
 
+    eta_current_windows = eta_pa_s
+    offset_current_windows_um = abs_offset_um
+    if (
+        config.kappa_n_per_m is not None
+        and config.kappa_n_per_m > 0
+        and offset_alt_baseline_um is not None
+        and actual_speed_um_s is not None
+        and actual_speed_um_s > 0
+        and radius_m is not None
+    ):
+        try:
+            eta_alt_baseline = compute_eta_from_drag(
+                config.kappa_n_per_m,
+                radius_m,
+                actual_speed_um_s * 1e-6,
+                abs(offset_alt_baseline_um) * 1e-6,
+            )
+        except Exception:  # noqa: BLE001
+            eta_alt_baseline = None
+
+    competing_candidates, onset_ambiguity_score, onset_confidence_class = _classify_onset_ambiguity(
+        candidate_count=len(alignment_diag.candidate_onset_times_s),
+        candidate_durations=alignment_diag.candidate_durations_s,
+        min_hold_s=alignment_diag.onset_min_hold_s,
+        used_relaxed_onset=used_relaxed_onset,
+    )
+    onset_robustness_flag = (
+        "robust"
+        if onset_confidence_class == "robust"
+        else ("weak" if onset_confidence_class == "weak_but_acceptable" else "likely_wrong")
+    )
+    if onset_robustness_flag != "robust":
+        warnings.append(
+            "PHYSICS_WARNING: onset ambiguity classified as "
+            f"{onset_confidence_class} (score={onset_ambiguity_score:.2f})."
+        )
+    alignment_diag = type(alignment_diag)(
+        baseline_end_s=alignment_diag.baseline_end_s,
+        baseline_median=alignment_diag.baseline_median,
+        baseline_mad=alignment_diag.baseline_mad,
+        baseline_sigma=alignment_diag.baseline_sigma,
+        onset_threshold_sigma=alignment_diag.onset_threshold_sigma,
+        onset_threshold_abs=alignment_diag.onset_threshold_abs,
+        onset_min_hold_s=alignment_diag.onset_min_hold_s,
+        n_baseline_samples=alignment_diag.n_baseline_samples,
+        n_total_samples=alignment_diag.n_total_samples,
+        n_frames_outside_baseline=alignment_diag.n_frames_outside_baseline,
+        candidate_onset_times_s=alignment_diag.candidate_onset_times_s,
+        candidate_durations_s=alignment_diag.candidate_durations_s,
+        failure_reason=alignment_diag.failure_reason,
+        message=alignment_diag.message,
+        onset_relaxed_used=used_relaxed_onset,
+        onset_competing_durable_candidates=competing_candidates,
+        onset_ambiguity_score=onset_ambiguity_score,
+        onset_confidence_class=onset_confidence_class,
+    )
+
+    if onset_robustness_flag == "likely_wrong" or kinematics_robustness_flag == "inconsistent_speed":
+        drag_physics_confidence = "low"
+    elif baseline_robustness_flag == "weak" or onset_robustness_flag == "weak":
+        drag_physics_confidence = "medium"
+    else:
+        drag_physics_confidence = "high"
+    warnings_phys = []
+    if baseline_robustness_flag != "robust":
+        warnings_phys.append("baseline sensitivity")
+    if onset_robustness_flag != "robust":
+        warnings_phys.append("onset ambiguity")
+    if kinematics_robustness_flag != "robust":
+        warnings_phys.append("kinematics source/risk")
+    drag_physics_warning = ", ".join(warnings_phys) if warnings_phys else None
+
     # Overall analysis status
     analysis_status = "ok"
     if not qc.alignment_confident or not qc.sufficient_steady_duration or not qc.offset_detected:
         analysis_status = "warning"
+
+    commanded_travel_user_ref = None
+    commanded_speed_user_s_ref = None
+    commanded_metric = loaded.stage_meta.protocol_params.get("commanded_metric")
+    if isinstance(commanded_metric, dict):
+        try:
+            if commanded_metric.get("commanded_travel_user") is not None:
+                commanded_travel_user_ref = float(commanded_metric.get("commanded_travel_user"))
+        except Exception:  # noqa: BLE001
+            commanded_travel_user_ref = None
+        try:
+            if commanded_metric.get("commanded_speed_user_s") is not None:
+                commanded_speed_user_s_ref = float(commanded_metric.get("commanded_speed_user_s"))
+        except Exception:  # noqa: BLE001
+            commanded_speed_user_s_ref = None
 
     return DragAnalysisResult(
         basename=loaded.paths.basename,
@@ -512,12 +703,52 @@ def analyze_drag_run(
         selected_stage_meta_path=str(loaded.paths.stage_meta_path),
         selected_stage_trace_path=str(loaded.paths.stage_trace_path),
         selected_timestamps_path=str(loaded.paths.timestamps_path),
+        selected_trajectory_path=(
+            str(loaded.paths.trajectory_path) if loaded.paths.trajectory_path is not None else None
+        ),
+        current_drag_input_path=config.current_drag_input_path,
+        current_drag_item_root=config.current_drag_item_root,
+        brownian_baseline_folder=config.brownian_baseline_folder,
+        baseline_selection_mode=config.baseline_selection_mode,
+        drag_preflight_status=config.drag_preflight_status,
+        drag_preflight_message=config.drag_preflight_message,
+        current_drag_output_root=config.current_drag_output_root,
+        current_drag_report_path=None,
+        current_drag_summary_json_path=None,
+        current_drag_summary_csv_path=None,
+        current_drag_diagnostic_png_path=None,
+        current_drag_alignment_json_path=None,
         used_fallbacks=dict(loaded.paths.used_fallbacks),
+        artifact_selection=dict(loaded.paths.artifact_selection),
         timing_source=(
             f"timestamps_csv:{loaded.paths.timestamps_path.name}"
             + (" (fallback)" if loaded.paths.used_fallbacks.get("timestamps_path") is not None else "")
             + f";stage_anchor={timing_anchor_used}"
         ),
         motion_kinematics_source=motion_kinematics_source,
+        timestamp_validation_pass=bool(loaded.timestamp_validation_pass),
+        timestamp_validation_message=str(loaded.timestamp_validation_message),
+        report_source_kind="drag_summary",
+        report_source_path=None,
+        alignment_message=alignment_diag.message,
+        commanded_travel_user_ref=commanded_travel_user_ref,
+        commanded_speed_user_s_ref=commanded_speed_user_s_ref,
+        offset_current_windows_um=offset_current_windows_um,
+        offset_alt_baseline_um=offset_alt_baseline_um,
+        eta_current_windows=eta_current_windows,
+        eta_alt_baseline=eta_alt_baseline,
+        baseline_reference_median_px=baseline_reference_px if math.isfinite(baseline_reference_px) else None,
+        baseline_reference_window_start_s=baseline_reference_start_s if math.isfinite(baseline_reference_start_s) else None,
+        baseline_reference_window_end_s=baseline_reference_end_s if math.isfinite(baseline_reference_end_s) else None,
+        baseline_median_delta_px=baseline_median_delta_px if math.isfinite(baseline_median_delta_px) else None,
+        baseline_median_delta_um=baseline_median_delta_um,
+        stage_speed_from_trace_um_s=stage_speed_from_trace_um_s,
+        stage_speed_relative_diff=stage_speed_relative_diff,
+        stage_speed_consistent=stage_speed_consistent,
+        drag_physics_confidence=drag_physics_confidence,
+        drag_physics_warning=drag_physics_warning,
+        baseline_robustness_flag=baseline_robustness_flag,
+        onset_robustness_flag=onset_robustness_flag,
+        kinematics_robustness_flag=kinematics_robustness_flag,
     )
 
