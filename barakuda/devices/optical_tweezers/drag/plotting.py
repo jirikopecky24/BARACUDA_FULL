@@ -189,24 +189,40 @@ def plot_drag_diagnostic(
 
     ax.set_xlabel("time from video start [s]", fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_ylabel("position [px]", fontsize=AXIS_LABEL_FONTSIZE)
-    status_line = (
-        f"analysis={result.analysis_status} | gate={result.drag_validation_gate} | "
-        f"onset={result.alignment_diagnostics.onset_confidence_class if result.alignment_diagnostics else 'n/a'} | "
-        f"baseline={result.baseline_robustness_flag} | kinematics={result.kinematics_robustness_flag}"
+    title = "DRAG Diagnostic (relative video time)"
+    if result.alignment_sanity_flag is False:
+        title = "DRAG Diagnostic - Alignment Sanity Failed"
+    ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold")
+    onset_class = result.alignment_diagnostics.onset_confidence_class if result.alignment_diagnostics else "n/a"
+    status_line_1 = (
+        f"primary={result.physics_primary_gate or 'n/a'} | detection_qc={result.detection_qc_gate or 'n/a'} | "
+        f"final={result.final_drag_verdict or result.drag_validation_gate or 'n/a'}"
+    )
+    status_line_2 = (
+        f"baseline={result.baseline_robustness_flag or 'n/a'} | kinematics={result.kinematics_robustness_flag or 'n/a'} | "
+        f"onset={onset_class}"
     )
     sanity_line = (
-        "Alignment sanity: FAIL - " + str(result.alignment_sanity_message)
+        f"alignment: FAIL ({result.alignment_sanity_message})"
         if result.alignment_sanity_flag is False
-        else "Alignment sanity: pass"
+        else "alignment: pass"
     )
-    ax.set_title(f"DRAG diagnostic\n{status_line}\n{sanity_line}", fontsize=TITLE_FONTSIZE, fontweight="bold")
+    fig.text(
+        0.08,
+        0.905,
+        f"{status_line_1}\n{status_line_2}\n{sanity_line}",
+        fontsize=8,
+        va="top",
+        ha="left",
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.75, "edgecolor": "#C0C0C0"},
+    )
     elapsed = (max(t_rel) - min(t_rel)) if t_rel else 0.0
     ax.set_xlim(0.0, max(0.0, elapsed))
     ax.tick_params(labelsize=TICK_LABEL_FONTSIZE)
     ax.grid(True, linestyle="--", linewidth=0.5, color=GRID_COLOR)
     ax.legend(fontsize=TICK_LABEL_FONTSIZE)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.88))
     fig.savefig(path, dpi=PLOT_DPI)
     plt.close(fig)
     return path

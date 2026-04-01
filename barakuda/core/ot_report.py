@@ -698,6 +698,27 @@ def build_ot_item_summary(
         diagnostics["stage_video_stop_delta_s"] = _parse_float(drag_summary_json.get("stage_video_stop_delta_s"))
         diagnostics["alignment_sanity_flag"] = drag_summary_json.get("alignment_sanity_flag")
         diagnostics["alignment_sanity_message"] = drag_summary_json.get("alignment_sanity_message")
+        diagnostics["drag_anchor_mode"] = drag_summary_json.get("drag_anchor_mode")
+        diagnostics["primary_timing_source_for_windows"] = drag_summary_json.get(
+            "primary_timing_source_for_windows"
+        )
+        diagnostics["detected_onset_consistency_flag"] = drag_summary_json.get(
+            "detected_onset_consistency_flag"
+        )
+        diagnostics["detected_onset_consistency_message"] = drag_summary_json.get(
+            "detected_onset_consistency_message"
+        )
+        diagnostics["stage_anchor_confidence"] = drag_summary_json.get("stage_anchor_confidence")
+        diagnostics["stage_anchor_reason"] = drag_summary_json.get("stage_anchor_reason")
+        diagnostics["physics_primary_gate"] = drag_summary_json.get("physics_primary_gate")
+        diagnostics["detection_qc_gate"] = drag_summary_json.get("detection_qc_gate")
+        diagnostics["final_drag_verdict"] = drag_summary_json.get("final_drag_verdict")
+        diagnostics["final_drag_reason"] = drag_summary_json.get("final_drag_reason")
+        diagnostics["stage_validated_physics_acceptable"] = drag_summary_json.get(
+            "stage_validated_physics_acceptable"
+        )
+        diagnostics["detected_onset_qc_only"] = drag_summary_json.get("detected_onset_qc_only")
+        diagnostics["detected_onset_veto_applied"] = drag_summary_json.get("detected_onset_veto_applied")
         diagnostics["window_clipping_applied"] = drag_summary_json.get("window_clipping_applied")
         diagnostics["window_clipping_message"] = drag_summary_json.get("window_clipping_message")
         diagnostics["baseline_window_original_start_s"] = _parse_float(
@@ -813,6 +834,11 @@ def build_ot_item_summary(
     ):
         if diagnostics.get(key) is None and provenance_cfg.get(key):
             diagnostics[key] = provenance_cfg.get(key)
+    prov_report_val = str(provenance_cfg.get("current_drag_report_path") or "")
+    if prov_report_val.lower().endswith(".pdf"):
+        diagnostics["current_drag_report_path"] = prov_report_val
+    if diagnostics.get("current_drag_report_path") is None and diagnostics.get("current_drag_summary_json_path"):
+        diagnostics["current_drag_report_path"] = diagnostics.get("current_drag_summary_json_path")
     if diagnostics.get("timing_source") is None and provenance_cfg.get("timing_source"):
         diagnostics["timing_source"] = provenance_cfg.get("timing_source")
     if drag_alignment_json:
@@ -963,6 +989,49 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
             ("Drag", "Drag validation reason", diagnostics.get("drag_validation_reason"), "", "drag_validation_reason"),
             ("Drag", "Alignment sanity flag", diagnostics.get("alignment_sanity_flag"), "", "alignment_sanity_flag"),
             ("Drag", "Alignment sanity message", diagnostics.get("alignment_sanity_message"), "", "alignment_sanity_message"),
+            ("Drag", "Drag anchor mode", diagnostics.get("drag_anchor_mode"), "", "drag_anchor_mode"),
+            (
+                "Drag",
+                "Primary timing source for windows",
+                diagnostics.get("primary_timing_source_for_windows"),
+                "",
+                "primary_timing_source_for_windows",
+            ),
+            (
+                "Drag",
+                "Detected onset consistency flag",
+                diagnostics.get("detected_onset_consistency_flag"),
+                "",
+                "detected_onset_consistency_flag",
+            ),
+            (
+                "Drag",
+                "Detected onset consistency message",
+                diagnostics.get("detected_onset_consistency_message"),
+                "",
+                "detected_onset_consistency_message",
+            ),
+            ("Drag", "Stage anchor confidence", diagnostics.get("stage_anchor_confidence"), "", "stage_anchor_confidence"),
+            ("Drag", "Stage anchor reason", diagnostics.get("stage_anchor_reason"), "", "stage_anchor_reason"),
+            ("Drag", "Physics primary gate", diagnostics.get("physics_primary_gate"), "", "physics_primary_gate"),
+            ("Drag", "Detection QC gate", diagnostics.get("detection_qc_gate"), "", "detection_qc_gate"),
+            ("Drag", "Final drag verdict", diagnostics.get("final_drag_verdict"), "", "final_drag_verdict"),
+            ("Drag", "Final drag reason", diagnostics.get("final_drag_reason"), "", "final_drag_reason"),
+            (
+                "Drag",
+                "Stage validated physics acceptable",
+                diagnostics.get("stage_validated_physics_acceptable"),
+                "",
+                "stage_validated_physics_acceptable",
+            ),
+            ("Drag", "Detected onset QC only", diagnostics.get("detected_onset_qc_only"), "", "detected_onset_qc_only"),
+            (
+                "Drag",
+                "Detected onset veto applied",
+                diagnostics.get("detected_onset_veto_applied"),
+                "",
+                "detected_onset_veto_applied",
+            ),
             ("Drag", "Expected stage start in video", diagnostics.get("expected_stage_start_video_s"), "s", "expected_stage_start_video_s"),
             ("Drag", "Expected stage stop in video", diagnostics.get("expected_stage_stop_video_s"), "s", "expected_stage_stop_video_s"),
             ("Drag", "Detected stage start in video", diagnostics.get("detected_stage_start_video_s"), "s", "detected_stage_start_video_s"),
@@ -985,6 +1054,7 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
             ("Drag", "Speed consistency error", diagnostics.get("speed_consistency_error_pct"), "%", "speed_consistency_error_pct"),
             ("Provenance", "Current drag input", diagnostics.get("current_drag_input_path"), "", "current_drag_input_path"),
             ("Provenance", "Current drag output root", diagnostics.get("current_drag_output_root"), "", "current_drag_output_root"),
+            ("Provenance", "Current drag report path", diagnostics.get("current_drag_report_path"), "", "current_drag_report_path"),
             ("Provenance", "Brownian baseline folder", diagnostics.get("brownian_baseline_folder"), "", "brownian_baseline_folder"),
             ("Provenance", "Selected calibration source", diagnostics.get("selected_calibration_path"), "", "selected_calibration_path"),
             ("Provenance", "Selected trajectory source", diagnostics.get("selected_trajectory_path"), "", "selected_trajectory_path"),
@@ -1080,9 +1150,17 @@ def _drag_cover_rows(summary: dict[str, Any]) -> tuple[list[list[str]], list[lis
     diagnostics = summary.get("diagnostics") or {}
     metrics = summary.get("metrics") or {}
     source_name = Path(str(summary.get("source_input_path") or "")).name if summary.get("source_input_path") else "n/a"
+    gate = str(diagnostics.get("drag_validation_gate") or "").strip().lower()
+    final_verdict = str(diagnostics.get("final_drag_verdict") or "").strip().lower()
+    physics_status = str(diagnostics.get("physics_status") or "").strip().lower()
+    status_value = str(summary.get("status") or "")
+    if final_verdict == "fail" or gate == "fail" or "fail" in physics_status:
+        status_value = "fail"
+    elif final_verdict in {"suspect", "pass_with_warnings"} or gate == "suspect" or "suspect" in physics_status:
+        status_value = "suspect"
     rows = [
         ["Item", _wrap(summary.get("item_id"), 56)],
-        ["Status", _fmt_status(summary.get("status"))],
+        ["Status", _fmt_status(status_value)],
         ["Run ID", _wrap(summary.get("run_id"), 56)],
         ["Source file", _wrap(source_name, 56)],
         ["Drag force [N]", _fmt_value(diagnostics.get("drag_force_n"))],
@@ -1092,6 +1170,9 @@ def _drag_cover_rows(summary: dict[str, Any]) -> tuple[list[list[str]], list[lis
         ["Absolute offset [um]", _fmt_value(diagnostics.get("offset_um"))],
         ["Alignment status", _wrap(diagnostics.get("alignment_status"), 56)],
         ["Physics status", _wrap(diagnostics.get("physics_status"), 56)],
+        ["Primary physics gate", _wrap(diagnostics.get("physics_primary_gate"), 56)],
+        ["Detection QC gate", _wrap(diagnostics.get("detection_qc_gate"), 56)],
+        ["Final drag verdict", _wrap(diagnostics.get("final_drag_verdict"), 56)],
     ]
     return rows[:6], rows[6:]
 
@@ -1202,6 +1283,101 @@ def _drag_conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Warnings", _wrap(" | ".join(str(w) for w in warnings) if warnings else "none", 52)],
         ["QC flags", _wrap(qc_text, 52)],
     ]
+
+
+def _drag_provenance_rows(summary: dict[str, Any]) -> list[list[str]]:
+    diagnostics = summary.get("diagnostics") or {}
+    return [
+        ["Analysis mode", "DRAG"],
+        ["Current drag input", _wrap(diagnostics.get("current_drag_input_path"), 52)],
+        ["Current drag output root", _wrap(diagnostics.get("current_drag_output_root"), 52)],
+        ["Current drag report path", _wrap(diagnostics.get("current_drag_report_path"), 52)],
+        ["Brownian baseline folder", _wrap(diagnostics.get("brownian_baseline_folder"), 52)],
+        ["Selected calibration source", _wrap(diagnostics.get("selected_calibration_path"), 52)],
+        ["Selected trajectory source", _wrap(diagnostics.get("selected_trajectory_path"), 52)],
+        ["Selected timestamps source", _wrap(diagnostics.get("selected_timestamps_path"), 52)],
+        ["Selected stage meta path", _wrap(diagnostics.get("selected_stage_meta_path"), 52)],
+        ["Selected stage trace path", _wrap(diagnostics.get("selected_stage_trace_path"), 52)],
+        ["Report source kind", _wrap(diagnostics.get("report_source_kind"), 52)],
+        ["Report source path", _wrap(diagnostics.get("report_source_path"), 52)],
+    ]
+
+
+def _drag_timing_alignment_rows(summary: dict[str, Any]) -> list[list[str]]:
+    diagnostics = summary.get("diagnostics") or {}
+    t_first = diagnostics.get("t_first_s")
+
+    def _rel(ts: Any) -> Any:
+        try:
+            if ts is None or t_first is None:
+                return None
+            return float(ts) - float(t_first)
+        except Exception:
+            return None
+
+    return [
+        ["Timing source", _wrap(diagnostics.get("timing_source"), 52)],
+        ["Drag anchor mode", _wrap(diagnostics.get("drag_anchor_mode"), 52)],
+        ["Primary timing source", _wrap(diagnostics.get("primary_timing_source_for_windows"), 52)],
+        ["Video first timestamp [s]", _fmt_value(diagnostics.get("t_first_s"))],
+        ["Video last timestamp [s]", _fmt_value(diagnostics.get("t_last_s"))],
+        ["Video elapsed [s]", _fmt_value(diagnostics.get("elapsed_time_s"))],
+        ["Expected stage start rel. [s]", _fmt_value(_rel(diagnostics.get("expected_stage_start_video_s")))],
+        ["Expected stage stop rel. [s]", _fmt_value(_rel(diagnostics.get("expected_stage_stop_video_s")))],
+        ["Detected stage start rel. [s]", _fmt_value(_rel(diagnostics.get("detected_stage_start_video_s")))],
+        ["Detected stage stop rel. [s]", _fmt_value(_rel(diagnostics.get("detected_stage_stop_video_s")))],
+        ["Expected stage start abs. [s]", _fmt_value(diagnostics.get("expected_stage_start_video_s"))],
+        ["Expected stage stop abs. [s]", _fmt_value(diagnostics.get("expected_stage_stop_video_s"))],
+        ["Stage-video start delta [s]", _fmt_value(diagnostics.get("stage_video_start_delta_s"))],
+        ["Stage-video stop delta [s]", _fmt_value(diagnostics.get("stage_video_stop_delta_s"))],
+        ["Detected onset consistency", _fmt_value(diagnostics.get("detected_onset_consistency_flag"))],
+        ["Detected onset consistency message", _wrap(diagnostics.get("detected_onset_consistency_message"), 52)],
+        ["Stage anchor confidence", _wrap(diagnostics.get("stage_anchor_confidence"), 52)],
+        ["Stage anchor reason", _wrap(diagnostics.get("stage_anchor_reason"), 52)],
+        ["Detected onset QC only", _fmt_value(diagnostics.get("detected_onset_qc_only"))],
+        ["Alignment sanity flag", _fmt_value(diagnostics.get("alignment_sanity_flag"))],
+        ["Alignment sanity message", _wrap(diagnostics.get("alignment_sanity_message"), 52)],
+        ["Alignment status", _wrap(diagnostics.get("alignment_status"), 52)],
+        ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
+        ["Baseline window [s]", _wrap(f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", 52)],
+        ["Steady window [s]", _wrap(f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", 52)],
+        ["Window clipping applied", _fmt_value(diagnostics.get("window_clipping_applied"))],
+        ["Window clipping message", _wrap(diagnostics.get("window_clipping_message"), 52)],
+    ]
+
+
+def _drag_qc_confidence_rows(summary: dict[str, Any]) -> list[list[str]]:
+    diagnostics = summary.get("diagnostics") or {}
+    qc_flags = diagnostics.get("drag_qc_flags") or {}
+    qc_text = ", ".join(f"{k}={v}" for k, v in qc_flags.items()) if qc_flags else "n/a"
+    return [
+        ["Drag validation gate", _wrap(diagnostics.get("drag_validation_gate"), 52)],
+        ["Drag validation reason", _wrap(diagnostics.get("drag_validation_reason"), 52)],
+        ["Primary physics gate", _wrap(diagnostics.get("physics_primary_gate"), 52)],
+        ["Detection QC gate", _wrap(diagnostics.get("detection_qc_gate"), 52)],
+        ["Final drag verdict", _wrap(diagnostics.get("final_drag_verdict"), 52)],
+        ["Final drag reason", _wrap(diagnostics.get("final_drag_reason"), 52)],
+        ["Stage validated physics acceptable", _fmt_value(diagnostics.get("stage_validated_physics_acceptable"))],
+        ["Detected onset veto applied", _fmt_value(diagnostics.get("detected_onset_veto_applied"))],
+        ["Analysis status", _fmt_value(diagnostics.get("analysis_status"))],
+        ["Physics status", _fmt_value(diagnostics.get("physics_status"))],
+        ["Drag physics confidence", _wrap(diagnostics.get("drag_physics_confidence"), 52)],
+        ["Drag physics warning", _wrap(diagnostics.get("drag_physics_warning"), 52)],
+        ["Baseline robustness flag", _fmt_value(diagnostics.get("baseline_robustness_flag"))],
+        ["Onset robustness flag", _fmt_value(diagnostics.get("onset_robustness_flag"))],
+        ["Kinematics robustness flag", _fmt_value(diagnostics.get("kinematics_robustness_flag"))],
+        ["Onset confidence class", _fmt_value(diagnostics.get("onset_confidence_class"))],
+        ["Speed consistency error [%]", _fmt_value(diagnostics.get("speed_consistency_error_pct"))],
+        ["Baseline strategy difference ratio", _fmt_value(diagnostics.get("baseline_strategy_difference_ratio"))],
+        ["QC flags", _wrap(qc_text, 52)],
+    ]
+
+
+def _drag_warning_rows(summary: dict[str, Any]) -> list[list[str]]:
+    warnings = summary.get("warnings") or []
+    if not warnings:
+        return [["Warnings", "none"]]
+    return [["Warnings", _wrap(" | ".join(str(w) for w in warnings), 52)]]
 
 
 def _drag_alignment_rows(summary: dict[str, Any]) -> list[list[str]]:
@@ -2496,6 +2672,90 @@ def _render_drag_windows_table_page(
     )
 
 
+def _render_drag_trace_page(
+    pdf,
+    trace_csv: Path,
+    summary: dict[str, Any],
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    diagnostics = summary.get("diagnostics") or {}
+    times: list[float] = []
+    signal: list[float] = []
+    try:
+        with trace_csv.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                t_val = row.get("video_time_rel_s") or row.get("video_time_s")
+                x_val = row.get("axis_px")
+                if t_val is None or x_val is None:
+                    continue
+                try:
+                    times.append(float(t_val))
+                    signal.append(float(x_val))
+                except Exception:
+                    continue
+    except Exception:
+        return
+    if not times or not signal:
+        return
+
+    t_first = diagnostics.get("t_first_s")
+
+    def _rel(ts: Any) -> float | None:
+        if ts is None:
+            return None
+        try:
+            val = float(ts)
+        except Exception:
+            return None
+        if t_first is not None and val > max(times) + 5.0:
+            # stage/video absolute timestamps -> convert to relative if needed
+            return val - float(t_first)
+        if t_first is not None and val >= float(t_first) and val > max(times):
+            return val - float(t_first)
+        return val
+
+    fig, ax = plt.subplots(1, 1, figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Drag Windows And Annotated Trace", page_counter=page_counter)
+    fig.subplots_adjust(top=0.81, left=0.10, right=0.92, bottom=0.10)
+    ax.set_facecolor(PANEL_BG)
+    ax.plot(times, signal, linewidth=1.5, color=PLOT_COLOR, label="axis signal (px)")
+
+    b0 = _rel(diagnostics.get("baseline_start_s"))
+    b1 = _rel(diagnostics.get("baseline_end_s"))
+    s0 = _rel(diagnostics.get("steady_start_s"))
+    s1 = _rel(diagnostics.get("steady_end_s"))
+    if b0 is not None and b1 is not None:
+        ax.axvspan(b0, b1, color="#A5D6A7", alpha=0.22, label="primary baseline window")
+    if s0 is not None and s1 is not None:
+        ax.axvspan(s0, s1, color="#EF9A9A", alpha=0.22, label="primary steady window")
+
+    exp_start = _rel(diagnostics.get("expected_stage_start_video_s"))
+    exp_stop = _rel(diagnostics.get("expected_stage_stop_video_s"))
+    det_start = _rel(diagnostics.get("detected_stage_start_video_s"))
+    det_stop = _rel(diagnostics.get("detected_stage_stop_video_s"))
+    if exp_start is not None:
+        ax.axvline(exp_start, color="#1565C0", linestyle="-.", linewidth=1.0, label="expected stage start")
+    if exp_stop is not None:
+        ax.axvline(exp_stop, color="#0D47A1", linestyle="-.", linewidth=1.0, label="expected stage stop")
+    if det_start is not None:
+        ax.axvline(det_start, color="#000000", linestyle="--", linewidth=1.0, label="detected onset (QC)")
+    if det_stop is not None:
+        ax.axvline(det_stop, color="#616161", linestyle=":", linewidth=1.0, label="detected stop (QC)")
+
+    ax.set_title("Primary stage windows with detected onset QC", fontsize=11.0, fontweight="bold")
+    ax.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL)
+    ax.set_ylabel("Axis position [px]", fontsize=FONT_SIZE_SMALL)
+    ax.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR)
+    ax.legend(fontsize=8)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 def _render_image_pages(
     pdf,
     title: str,
@@ -2588,13 +2848,36 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
                 page_counter=page_counter,
             )
             _render_drag_theory_page(pdf, page_counter=page_counter)
-            _render_dual_table_page(
+            _render_paginated_table(
                 pdf,
-                "Drag Conditions, Provenance And QC",
-                "Drag provenance and timing conditions",
-                _drag_conditions_rows(summary),
-                "Alignment and quality-control notes",
-                _qc_rows(summary),
+                "Drag Provenance",
+                ["Field", "Value"],
+                _drag_provenance_rows(summary),
+                rows_per_page=18,
+                page_counter=page_counter,
+            )
+            _render_paginated_table(
+                pdf,
+                "Drag Timing and Alignment",
+                ["Field", "Value"],
+                _drag_timing_alignment_rows(summary),
+                rows_per_page=18,
+                page_counter=page_counter,
+            )
+            _render_paginated_table(
+                pdf,
+                "Drag QC and Confidence",
+                ["Field", "Value"],
+                _drag_qc_confidence_rows(summary),
+                rows_per_page=18,
+                page_counter=page_counter,
+            )
+            _render_paginated_table(
+                pdf,
+                "Drag Warnings",
+                ["Field", "Value"],
+                _drag_warning_rows(summary),
+                rows_per_page=18,
                 page_counter=page_counter,
             )
             drag_diag = _build_image_entry("Drag diagnostic figure", artifacts.get("drag_diagnostic_png"))
@@ -2621,22 +2904,15 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             trace_entry = _build_plot_entry(
                 "Annotated drag trace",
                 artifacts.get("drag_trace_annotated_csv"),
-                ("video_time_s", "stage_time_aligned_s"),
+                ("video_time_rel_s", "video_time_s", "stage_time_aligned_s"),
                 ("axis_px",),
-                "Time [s]",
+                "Time from video start [s]",
                 "Axis position [px]",
                 False,
                 False,
             )
             if trace_entry is not None:
-                _render_plot_pages(
-                    pdf,
-                    "Drag Windows And Annotated Trace",
-                    [trace_entry],
-                    layout="vertical",
-                    items_per_page=1,
-                    page_counter=page_counter,
-                )
+                _render_drag_trace_page(pdf, trace_entry[1], summary, page_counter=page_counter)
             if preview_paths:
                 _render_preview_grid_page(pdf, preview_paths, page_counter=page_counter)
         else:

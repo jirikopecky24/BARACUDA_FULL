@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
 from barakuda.core import ot_report
+from barakuda.core.export_xlsx import export_ot_results_xlsx
 from barakuda.core.ot_report import build_ot_item_summary, build_ot_summary_rows
 from barakuda.core.truth_resolvers import (
     build_collision_safe_export_path,
@@ -224,6 +226,7 @@ def test_drag_summary_rows_are_drag_mode_and_include_paths(tmp_path: Path) -> No
         {
             "provenance": {
                 "current_drag_input_path": "C:/drag/current_input.raw",
+                "current_drag_report_path": "C:/drag/current_report.pdf",
                 "brownian_baseline_folder": "C:/baseline",
                 "report_source_kind": "drag_summary",
                 "report_source_path": "C:/drag/analysis/audit/drag_item_rows_drag_summary.json",
@@ -260,6 +263,7 @@ def test_drag_summary_rows_are_drag_mode_and_include_paths(tmp_path: Path) -> No
     assert values[("Drag", "Actual speed")] == pytest.approx(8.0)
     assert values[("Drag", "Absolute offset")] == pytest.approx(0.4)
     assert values[("Provenance", "Current drag input")] == "C:/drag/current_input.raw"
+    assert values[("Provenance", "Current drag report path")] == "C:/drag/current_report.pdf"
     assert values[("Provenance", "Brownian baseline folder")] == "C:/baseline"
     assert values[("Provenance", "Report source kind")] == "drag_summary"
 
@@ -315,6 +319,244 @@ def test_drag_pdf_uses_drag_pages_not_brownian(tmp_path: Path, monkeypatch) -> N
     assert "brownian_theory" not in calls
     assert "trajectory" not in calls
     assert "hist_msd" not in calls
+
+
+def test_drag_cover_status_reflects_validation_gate_fail() -> None:
+    summary = {
+        "status": "success",
+        "item_id": "drag_item",
+        "run_id": "run_1",
+        "source_input_path": "C:/data/run.raw",
+        "metrics": {"kappa_drag_pn_per_um": 4.0},
+        "diagnostics": {
+            "drag_validation_gate": "fail",
+            "physics_status": "suspect_alignment_sanity",
+            "physics_primary_gate": "pass",
+            "detection_qc_gate": "fail",
+            "final_drag_verdict": "suspect",
+            "drag_force_n": 1.0e-12,
+            "eta_pa_s": 0.001,
+            "actual_speed_um_s": 10.0,
+            "offset_um": 0.25,
+            "alignment_status": "detected",
+        },
+    }
+    left, _right = ot_report._drag_cover_rows(summary)
+    status_row = next((row for row in left if row[0] == "Status"), None)
+    assert status_row is not None
+    assert status_row[1] == "Fail"
+    combined = left + _right
+    assert any(row[0] == "Primary physics gate" for row in combined)
+    assert any(row[0] == "Detection QC gate" for row in combined)
+    assert any(row[0] == "Final drag verdict" for row in combined)
+
+
+def test_drag_report_page3_split_into_readable_blocks(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "analysis"
+    base = "drag_layout"
+    _write(
+        run_dir / "audit" / "run.json",
+        {"config": {"tracking": {}, "postprocess": {}, "calibration": {}}, "provenance": {}},
+    )
+    _write(
+        run_dir / "audit" / f"{base}_drag_summary.json",
+        {
+            "drag_force_n": 1.0e-12,
+            "abs_offset_um": 0.2,
+            "kappa_pn_per_um": 4.2,
+            "actual_speed_um_s": 6.5,
+            "eta_pa_s": 0.0010,
+            "report_source_kind": "drag_summary",
+            "drag_validation_gate": "suspect",
+            "drag_validation_reason": "alignment_sanity_fail",
+            "current_drag_report_path": "C:/drag/analysis/reports/item.pdf",
+        },
+    )
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name=base,
+        item_id="drag_layout_item",
+        source_input_path="drag.raw",
+        status="success",
+    )
+    class _DummyPdf:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    page_titles: list[str] = []
+    monkeypatch.setattr("matplotlib.backends.backend_pdf.PdfPages", lambda _p: _DummyPdf())
+    monkeypatch.setattr(ot_report, "_render_cover_page", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ot_report, "_render_drag_theory_page", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ot_report,
+        "_render_paginated_table",
+        lambda _pdf, title, *_args, **_kwargs: page_titles.append(title),
+    )
+    monkeypatch.setattr(ot_report, "_render_plot_pages", lambda *args, **kwargs: None)
+
+    ot_report.export_ot_item_pdf(tmp_path / "drag_layout.pdf", summary)
+    assert "Drag Provenance" in page_titles
+    assert "Drag Timing and Alignment" in page_titles
+    assert "Drag QC and Confidence" in page_titles
+    assert "Drag Warnings" in page_titles
+
+
+def test_drag_report_trace_page_prefers_relative_time_axis(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.csv"
+    trace.write_text("video_time_rel_s,video_time_s,axis_px\n0.0,10.0,1.0\n", encoding="utf-8")
+    entry = ot_report._build_plot_entry(
+        "Annotated drag trace",
+        str(trace),
+        ("video_time_rel_s", "video_time_s", "stage_time_aligned_s"),
+        ("axis_px",),
+        "Time from video start [s]",
+        "Axis position [px]",
+        False,
+        False,
+    )
+    assert entry is not None
+    assert entry[2][0] == "video_time_rel_s"
+    assert entry[4] == "Time from video start [s]"
+
+
+def test_current_drag_report_path_prefers_pdf_over_summary_json(tmp_path: Path) -> None:
+    run_dir = tmp_path / "analysis"
+    base = "drag_pdf_path"
+    _write(
+        run_dir / "audit" / "run_protocol.json",
+        {
+            "provenance": {
+                "current_drag_report_path": "C:/drag/reports/final_report.pdf",
+                "current_drag_summary_json_path": "C:/drag/audit/drag_pdf_path_drag_summary.json",
+            }
+        },
+    )
+    _write(
+        run_dir / "audit" / "run.json",
+        {"config": {"tracking": {}, "postprocess": {}, "calibration": {}}, "provenance": {}},
+    )
+    _write(
+        run_dir / "audit" / f"{base}_drag_summary.json",
+        {
+            "drag_force_n": 1.0e-12,
+            "abs_offset_um": 0.2,
+            "kappa_pn_per_um": 4.2,
+            "actual_speed_um_s": 6.5,
+            "eta_pa_s": 0.0010,
+            "report_source_kind": "drag_summary",
+        },
+    )
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name=base,
+        item_id="drag_pdf_item",
+        source_input_path="drag.raw",
+        status="success",
+    )
+    assert summary["diagnostics"].get("current_drag_report_path") == "C:/drag/reports/final_report.pdf"
+
+
+def test_trace_page_renders_primary_and_qc_markers(tmp_path: Path, monkeypatch) -> None:
+    trace = tmp_path / "trace.csv"
+    trace.write_text(
+        "video_time_rel_s,video_time_s,axis_px\n0.0,10.0,1.0\n1.0,11.0,1.1\n2.0,12.0,1.2\n",
+        encoding="utf-8",
+    )
+    summary = {
+        "diagnostics": {
+            "baseline_start_s": 0.0,
+            "baseline_end_s": 0.5,
+            "steady_start_s": 1.2,
+            "steady_end_s": 1.8,
+            "expected_stage_start_video_s": 11.0,
+            "expected_stage_stop_video_s": 12.0,
+            "detected_stage_start_video_s": 11.4,
+            "detected_stage_stop_video_s": 12.4,
+            "t_first_s": 10.0,
+        }
+    }
+    labels: list[str] = []
+    import matplotlib.axes
+
+    original_axvline = matplotlib.axes.Axes.axvline
+
+    def _capture_axvline(self, x=0, *args, **kwargs):
+        label = kwargs.get("label")
+        if isinstance(label, str):
+            labels.append(label)
+        return original_axvline(self, x, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "axvline", _capture_axvline)
+
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    ot_report._render_drag_trace_page(_DummyPdf(), trace, summary)
+    assert "expected stage start" in labels
+    assert "expected stage stop" in labels
+    assert "detected onset (QC)" in labels
+    assert "detected stop (QC)" in labels
+
+
+def test_xlsx_drag_sheet_exposes_gate_and_verdict_fields(tmp_path: Path) -> None:
+    base = "drag_xlsx"
+    run_dir = tmp_path / "analysis"
+    output_dir = run_dir / "results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_dir = run_dir / "csv"
+    audit_dir = run_dir / "audit"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    audit_dir.mkdir(parents=True, exist_ok=True)
+
+    traj = csv_dir / f"{base}_trajectory.csv"
+    traj.write_text("frame,t_s,x_px,y_px\n0,0.0,1.0,1.0\n1,0.1,1.1,1.1\n", encoding="utf-8")
+    _write(
+        audit_dir / f"{base}_drag_summary.json",
+        {
+            "drag_force_n": 1.0e-12,
+            "eta_pa_s": 0.0012,
+            "physics_primary_gate": "suspect",
+            "detection_qc_gate": "fail",
+            "final_drag_verdict": "suspect",
+            "stage_anchor_confidence": "high",
+            "detected_onset_consistency_flag": False,
+            "baseline_strategy_difference_ratio": 1.01,
+            "speed_consistency_error_pct": 0.74,
+            "measured_offset_um": 0.028,
+            "expected_offset_if_eta_1mPas_um": 0.023,
+        },
+    )
+    _write(
+        audit_dir / "run_protocol.json",
+        {"provenance": {"current_drag_report_path": "C:/drag/reports/drag_xlsx.pdf"}},
+    )
+
+    xlsx_path = export_ot_results_xlsx(
+        output_dir=output_dir,
+        base_name=base,
+        trajectory_csv_path=traj,
+    )
+    wb = load_workbook(xlsx_path)
+    ws = wb["DRAG"]
+    pairs = {}
+    for row in ws.iter_rows(min_row=2, max_col=2, values_only=True):
+        key, value = row
+        if key is None:
+            continue
+        pairs[str(key)] = value
+    assert pairs.get("drag.physics_primary_gate") == "suspect"
+    assert pairs.get("drag.detection_qc_gate") == "fail"
+    assert pairs.get("drag.final_drag_verdict") == "suspect"
+    assert pairs.get("drag.stage_anchor_confidence") == "high"
+    assert pairs.get("drag.detected_onset_consistency_flag") in {"False", False}
+    assert pairs.get("drag.baseline_strategy_difference_ratio") is not None
+    assert pairs.get("drag.speed_consistency_error_pct") is not None
+    assert pairs.get("drag.measured_offset_um") is not None
+    assert pairs.get("drag.expected_offset_if_eta_1mPas_um") is not None
+    assert pairs.get("provenance.current_drag_report_path") == "C:/drag/reports/drag_xlsx.pdf"
 
 
 def test_drag_summary_parses_physics_confidence_fields(tmp_path: Path) -> None:

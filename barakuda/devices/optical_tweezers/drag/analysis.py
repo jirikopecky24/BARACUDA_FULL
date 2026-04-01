@@ -188,6 +188,31 @@ def analyze_drag_run(
         if loaded.stage_timing.motion_stop_stage_s is not None
         else None
     )
+    t_first_s = min(t_video) if t_video else float("nan")
+    t_last_s = max(t_video) if t_video else float("nan")
+    elapsed_time_s = (t_last_s - t_first_s) if (math.isfinite(t_first_s) and math.isfinite(t_last_s)) else float("nan")
+    expected_stage_start_video_s = (
+        t_first_s + motion_start_stage_s if math.isfinite(t_first_s) else float("nan")
+    )
+    expected_stage_stop_video_s = (
+        t_first_s + motion_stop_stage_s
+        if (math.isfinite(t_first_s) and motion_stop_stage_s is not None)
+        else None
+    )
+    stage_anchor_available = (
+        bool(loaded.timestamp_validation_pass)
+        and math.isfinite(expected_stage_start_video_s)
+        and expected_stage_stop_video_s is not None
+        and math.isfinite(expected_stage_stop_video_s)
+    )
+    requested_anchor_mode = str(config.drag_anchor_mode or "auto")
+    if requested_anchor_mode == "stage_validated":
+        use_stage_validated_anchor = stage_anchor_available
+    elif requested_anchor_mode == "detected_onset":
+        use_stage_validated_anchor = False
+    else:
+        use_stage_validated_anchor = stage_anchor_available
+    drag_anchor_mode = "stage_validated" if use_stage_validated_anchor else "detected_onset"
 
     # Baseline for onset detection: first N seconds of video (video time), not stage time.
     # This avoids n_baseline=0 when video and stage clocks are not aligned yet.
@@ -247,7 +272,7 @@ def analyze_drag_run(
             f"({loaded.paths.used_fallbacks['stage_meta_path']}); sign/protocol context may differ."
         )
 
-    if onset_video_s is None and config.manual_offset_s is None:
+    if onset_video_s is None and config.manual_offset_s is None and not use_stage_validated_anchor:
         qc.alignment_confident = False
         analysis_root = (
             Path(config.current_drag_output_root).resolve()
@@ -296,18 +321,24 @@ def analyze_drag_run(
             diagnostics=alignment_diag,
         )
 
-    if onset_video_s is None and config.manual_offset_s is not None:
+    if onset_video_s is None and use_stage_validated_anchor:
+        alignment_status = "stage_validated_no_detected_onset"
+    elif onset_video_s is None and config.manual_offset_s is not None:
         # Use stage timing with manual offset; synthetic onset at aligned stage time.
         onset_video_s = config.manual_offset_s + motion_start_stage_s
         qc.alignment_confident = False
         alignment_status = "manual_offset"
     else:
         alignment_status = "detected"
-
+    detected_onset_for_alignment = (
+        float(onset_video_s)
+        if onset_video_s is not None and math.isfinite(float(onset_video_s))
+        else float(expected_stage_start_video_s)
+    )
     alignment = build_alignment_result(
         motion_start_stage_s=motion_start_stage_s,
         motion_stop_stage_s=motion_stop_stage_s,
-        onset_video_s=float(onset_video_s),
+        onset_video_s=detected_onset_for_alignment,
         manual_offset_s=config.manual_offset_s,
     )
 
@@ -334,17 +365,6 @@ def analyze_drag_run(
         except Exception as e:  # noqa: BLE001
             warnings.append(f"alignment_debug_plot failed: {e!r}")
 
-    t_first_s = min(t_video) if t_video else float("nan")
-    t_last_s = max(t_video) if t_video else float("nan")
-    elapsed_time_s = (t_last_s - t_first_s) if (math.isfinite(t_first_s) and math.isfinite(t_last_s)) else float("nan")
-    expected_stage_start_video_s = (
-        t_first_s + motion_start_stage_s if math.isfinite(t_first_s) else float("nan")
-    )
-    expected_stage_stop_video_s = (
-        t_first_s + motion_stop_stage_s
-        if (math.isfinite(t_first_s) and motion_stop_stage_s is not None)
-        else None
-    )
     detected_stage_start_video_s = alignment.motion_start_video_s_detected
     detected_stage_stop_video_s = alignment.motion_stop_video_s_stage_aligned
     stage_video_start_delta_s = (
@@ -363,27 +383,74 @@ def analyze_drag_run(
         else None
     )
 
-    alignment_sanity_reasons: list[str] = []
+    stage_anchor_breaking_reasons: list[str] = []
+    detected_qc_reasons: list[str] = []
     if math.isfinite(t_first_s) and detected_stage_start_video_s < t_first_s:
-        alignment_sanity_reasons.append("detected_start_before_video_start")
+        detected_qc_reasons.append("detected_start_before_video_start")
     if (
         math.isfinite(t_last_s)
         and detected_stage_stop_video_s is not None
         and detected_stage_stop_video_s > t_last_s
     ):
-        alignment_sanity_reasons.append("detected_stop_after_video_end")
+        detected_qc_reasons.append("detected_stop_after_video_end")
     if (
         detected_stage_stop_video_s is not None
         and math.isfinite(elapsed_time_s)
         and (detected_stage_stop_video_s - detected_stage_start_video_s) > (elapsed_time_s + 1e-6)
     ):
-        alignment_sanity_reasons.append("aligned_motion_longer_than_video")
+        detected_qc_reasons.append("aligned_motion_longer_than_video")
+    if (
+        stage_anchor_available
+        and detected_stage_start_video_s is not None
+        and math.isfinite(expected_stage_start_video_s)
+    ):
+        start_delta_abs = abs(detected_stage_start_video_s - expected_stage_start_video_s)
+    else:
+        start_delta_abs = None
+    if (
+        stage_anchor_available
+        and detected_stage_stop_video_s is not None
+        and expected_stage_stop_video_s is not None
+    ):
+        stop_delta_abs = abs(detected_stage_stop_video_s - expected_stage_stop_video_s)
+    else:
+        stop_delta_abs = None
+    if start_delta_abs is not None and start_delta_abs > 1.0:
+        detected_qc_reasons.append("detected_start_far_from_expected_stage_start")
+    if stop_delta_abs is not None and stop_delta_abs > 1.0:
+        detected_qc_reasons.append("detected_stop_far_from_expected_stage_stop")
+    if math.isfinite(t_first_s) and math.isfinite(expected_stage_start_video_s):
+        if expected_stage_start_video_s < t_first_s:
+            stage_anchor_breaking_reasons.append("expected_stage_start_before_video_start")
+        if expected_stage_start_video_s > t_last_s:
+            stage_anchor_breaking_reasons.append("expected_stage_start_after_video_end")
+    if expected_stage_stop_video_s is not None and math.isfinite(t_last_s):
+        if expected_stage_stop_video_s > t_last_s:
+            stage_anchor_breaking_reasons.append("expected_stage_stop_after_video_end")
+        if expected_stage_stop_video_s < t_first_s:
+            stage_anchor_breaking_reasons.append("expected_stage_stop_before_video_start")
+    if (
+        expected_stage_stop_video_s is not None
+        and math.isfinite(expected_stage_start_video_s)
+        and expected_stage_stop_video_s <= expected_stage_start_video_s
+    ):
+        stage_anchor_breaking_reasons.append("expected_stage_window_invalid")
 
     # 4) Windows
     try:
+        primary_motion_start_video_s = (
+            float(expected_stage_start_video_s)
+            if use_stage_validated_anchor and math.isfinite(expected_stage_start_video_s)
+            else alignment.motion_start_video_s_detected
+        )
+        primary_motion_stop_video_s = (
+            float(expected_stage_stop_video_s)
+            if use_stage_validated_anchor and expected_stage_stop_video_s is not None
+            else alignment.motion_stop_video_s_stage_aligned
+        )
         windows_original = compute_windows(
-            motion_start_video_s=alignment.motion_start_video_s_detected,
-            motion_stop_video_s_stage_aligned=alignment.motion_stop_video_s_stage_aligned,
+            motion_start_video_s=primary_motion_start_video_s,
+            motion_stop_video_s_stage_aligned=primary_motion_stop_video_s,
             params=config.window_params,
         )
         qc.baseline_window_ok = True
@@ -398,11 +465,13 @@ def analyze_drag_run(
     baseline_window_original_end_s = windows_original.baseline_end_s
     steady_window_original_start_s = windows_original.steady_start_s
     steady_window_original_end_s = windows_original.steady_end_s
+    baseline_window_outside_video = False
+    steady_window_outside_video = False
     if math.isfinite(t_first_s) and math.isfinite(t_last_s):
         if baseline_window_original_start_s < t_first_s or baseline_window_original_end_s > t_last_s:
-            alignment_sanity_reasons.append("baseline_window_outside_video_range")
+            baseline_window_outside_video = True
         if steady_window_original_start_s < t_first_s or steady_window_original_end_s > t_last_s:
-            alignment_sanity_reasons.append("steady_window_outside_video_range")
+            steady_window_outside_video = True
 
     baseline_window_clipped_start_s = baseline_window_original_start_s
     baseline_window_clipped_end_s = baseline_window_original_end_s
@@ -429,11 +498,27 @@ def analyze_drag_run(
         if s_clipped:
             window_clip_reasons.append("steady_window_clipped_to_video_range")
     if baseline_window_clipped_end_s <= baseline_window_clipped_start_s:
-        alignment_sanity_reasons.append("baseline_window_invalid_after_clipping")
+        stage_anchor_breaking_reasons.append("baseline_window_invalid_after_clipping")
         qc.baseline_window_ok = False
     if steady_window_clipped_end_s <= steady_window_clipped_start_s:
-        alignment_sanity_reasons.append("steady_window_invalid_after_clipping")
+        stage_anchor_breaking_reasons.append("steady_window_invalid_after_clipping")
         qc.steady_window_ok = False
+    baseline_clip_fraction = 0.0
+    steady_clip_fraction = 0.0
+    baseline_original_duration = baseline_window_original_end_s - baseline_window_original_start_s
+    baseline_clipped_duration = baseline_window_clipped_end_s - baseline_window_clipped_start_s
+    if baseline_original_duration > 0:
+        baseline_clip_fraction = max(
+            0.0,
+            1.0 - (baseline_clipped_duration / baseline_original_duration),
+        )
+    steady_original_duration = steady_window_original_end_s - steady_window_original_start_s
+    steady_clipped_duration = steady_window_clipped_end_s - steady_window_clipped_start_s
+    if steady_original_duration > 0:
+        steady_clip_fraction = max(
+            0.0,
+            1.0 - (steady_clipped_duration / steady_original_duration),
+        )
 
     windows = DragWindows(
         baseline_start_s=baseline_window_clipped_start_s,
@@ -755,24 +840,60 @@ def analyze_drag_run(
         onset_candidate_density=onset_candidate_density,
     )
 
-    alignment_sanity_flag = len(alignment_sanity_reasons) == 0
+    detected_onset_consistency_flag = True
+    detected_onset_consistency_message = "detected timing agrees with stage expectation."
+    if start_delta_abs is not None and stop_delta_abs is not None:
+        worst_delta = max(start_delta_abs, stop_delta_abs)
+    elif start_delta_abs is not None:
+        worst_delta = start_delta_abs
+    else:
+        worst_delta = stop_delta_abs
+    if onset_video_s is None:
+        detected_onset_consistency_flag = False
+        detected_onset_consistency_message = (
+            "detected onset unavailable; stage timing used as primary anchor."
+        )
+    elif worst_delta is not None:
+        if worst_delta > 2.0:
+            detected_onset_consistency_flag = False
+            detected_onset_consistency_message = (
+                f"detected timing strongly differs from expected stage timing (max_delta={worst_delta:.3f}s)."
+            )
+        elif worst_delta > 0.5:
+            detected_onset_consistency_message = (
+                f"detected timing moderately differs from expected stage timing (max_delta={worst_delta:.3f}s)."
+            )
+
+    if stage_anchor_available:
+        if worst_delta is None:
+            stage_anchor_confidence = "medium"
+            stage_anchor_reason = "stage timing available; detected onset missing."
+        elif worst_delta <= 0.5:
+            stage_anchor_confidence = "high"
+            stage_anchor_reason = "stage and detected timing are consistent."
+        elif worst_delta <= 2.0:
+            stage_anchor_confidence = "medium"
+            stage_anchor_reason = "stage truth retained as primary; detected timing only partially consistent."
+        else:
+            stage_anchor_confidence = "high"
+            stage_anchor_reason = (
+                "stage truth retained as primary because detected timing is strongly inconsistent."
+            )
+    else:
+        stage_anchor_confidence = "low"
+        stage_anchor_reason = "validated stage anchors are unavailable."
+
+    alignment_sanity_flag = len(stage_anchor_breaking_reasons) == 0
     alignment_sanity_message = (
         "alignment_sanity_ok"
         if alignment_sanity_flag
-        else ", ".join(alignment_sanity_reasons)
+        else ", ".join(stage_anchor_breaking_reasons)
     )
     if not alignment_sanity_flag:
         warnings.append(f"PHYSICS_WARNING: alignment sanity failed: {alignment_sanity_message}.")
         qc.physics_ready = False
         if physics_status == "ready":
             physics_status = "suspect_alignment_sanity"
-
-    if onset_robustness_flag == "fail" or kinematics_robustness_flag == "fail" or not alignment_sanity_flag:
-        drag_physics_confidence = "low"
-    elif baseline_robustness_flag == "suspect" or onset_robustness_flag == "suspect" or kinematics_robustness_flag == "suspect":
-        drag_physics_confidence = "medium"
-    else:
-        drag_physics_confidence = "high"
     warnings_phys = []
     if baseline_robustness_flag != "pass":
         warnings_phys.append("baseline sensitivity")
@@ -782,7 +903,11 @@ def analyze_drag_run(
         warnings_phys.append("kinematics source/risk")
     drag_physics_warning = ", ".join(warnings_phys) if warnings_phys else None
 
-    baseline_strategy_primary = "near_onset_baseline"
+    baseline_strategy_primary = (
+        "near_onset_baseline"
+        if drag_anchor_mode == "detected_onset"
+        else "stage_validated_baseline"
+    )
     baseline_strategy_alt = "long_premotion_baseline_reference"
     baseline_position_primary_px = baseline_px
     baseline_position_primary_um = baseline_um
@@ -838,30 +963,127 @@ def analyze_drag_run(
             if measured_offset_um is not None and expected_offset_if_eta_from_baseline_um > 0:
                 offset_underestimation_ratio_vs_baseline = measured_offset_um / expected_offset_if_eta_from_baseline_um
 
-    gate_reasons: list[str] = []
+    plausibility_flag = "unknown"
+    if offset_underestimation_ratio_vs_water is not None:
+        ratio = float(offset_underestimation_ratio_vs_water)
+        if 0.4 <= ratio <= 2.5:
+            plausibility_flag = "pass"
+        elif 0.25 <= ratio <= 4.0:
+            plausibility_flag = "suspect"
+        else:
+            plausibility_flag = "fail"
+
+    clipping_flag = "pass"
+    if baseline_clip_fraction > 0.35 or steady_clip_fraction > 0.35:
+        clipping_flag = "fail"
+    elif baseline_clip_fraction > 0.1 or steady_clip_fraction > 0.1 or baseline_window_outside_video or steady_window_outside_video:
+        clipping_flag = "suspect"
+
+    physics_primary_reasons: list[str] = []
     if not alignment_sanity_flag:
-        gate_reasons.append("alignment_sanity_fail")
+        physics_primary_reasons.extend(stage_anchor_breaking_reasons)
     if baseline_robustness_flag == "fail":
-        gate_reasons.append("baseline_fail")
+        physics_primary_reasons.append("baseline_fail")
     elif baseline_robustness_flag == "suspect":
-        gate_reasons.append("baseline_suspect")
-    if onset_robustness_flag == "fail":
-        gate_reasons.append("onset_fail")
-    elif onset_robustness_flag == "suspect":
-        gate_reasons.append("onset_suspect")
+        physics_primary_reasons.append("baseline_suspect")
     if kinematics_robustness_flag == "fail":
-        gate_reasons.append("kinematics_fail")
+        physics_primary_reasons.append("kinematics_fail")
     elif kinematics_robustness_flag == "suspect":
-        gate_reasons.append("kinematics_suspect")
+        physics_primary_reasons.append("kinematics_suspect")
+    if clipping_flag == "fail":
+        physics_primary_reasons.append("window_clipping_severe")
+    elif clipping_flag == "suspect":
+        physics_primary_reasons.append("window_clipping_minor")
     if physics_status != "ready":
-        gate_reasons.append("physics_not_ready")
-    if any(reason.endswith("fail") for reason in gate_reasons):
-        drag_validation_gate = "fail"
-    elif gate_reasons:
-        drag_validation_gate = "suspect"
+        physics_primary_reasons.append("physics_not_ready")
+    if plausibility_flag == "fail":
+        physics_primary_reasons.append("plausibility_fail")
+    elif plausibility_flag == "suspect":
+        physics_primary_reasons.append("plausibility_suspect")
+
+    if any(
+        reason in physics_primary_reasons
+        for reason in (
+            "physics_not_ready",
+            "baseline_fail",
+            "kinematics_fail",
+            "window_clipping_severe",
+            "plausibility_fail",
+        )
+    ) or not alignment_sanity_flag:
+        physics_primary_gate = "fail"
+    elif physics_primary_reasons:
+        physics_primary_gate = "suspect"
     else:
-        drag_validation_gate = "pass"
-    drag_validation_reason = ", ".join(gate_reasons) if gate_reasons else "all_checks_passed"
+        physics_primary_gate = "pass"
+
+    detection_qc_reasons_final: list[str] = []
+    if not detected_onset_consistency_flag:
+        detection_qc_reasons_final.append("detected_onset_inconsistent_with_stage")
+    detection_qc_reasons_final.extend(detected_qc_reasons)
+    if onset_robustness_flag == "fail":
+        detection_qc_reasons_final.append("onset_fail")
+    elif onset_robustness_flag == "suspect":
+        detection_qc_reasons_final.append("onset_suspect")
+    if used_relaxed_onset:
+        detection_qc_reasons_final.append("relaxed_onset_used")
+    if any(
+        reason in detection_qc_reasons_final
+        for reason in ("detected_onset_inconsistent_with_stage", "onset_fail")
+    ):
+        detection_qc_gate = "fail"
+    elif detection_qc_reasons_final:
+        detection_qc_gate = "suspect"
+    else:
+        detection_qc_gate = "pass"
+
+    if physics_primary_gate == "fail":
+        final_drag_verdict = "fail"
+    elif detection_qc_gate == "fail":
+        final_drag_verdict = "suspect"
+    elif physics_primary_gate == "pass" and detection_qc_gate == "pass":
+        final_drag_verdict = "pass"
+    else:
+        final_drag_verdict = "suspect"
+    final_reasons = [f"physics_primary={physics_primary_gate}", f"detection_qc={detection_qc_gate}"]
+    final_reasons.extend(physics_primary_reasons)
+    final_reasons.extend(detection_qc_reasons_final)
+    final_drag_reason = ", ".join(dict.fromkeys(final_reasons))
+
+    detected_onset_qc_only = (
+        drag_anchor_mode == "stage_validated"
+        and physics_primary_gate in {"pass", "suspect"}
+        and detection_qc_gate == "fail"
+    )
+    detected_onset_veto_applied = (
+        drag_anchor_mode == "stage_validated"
+        and detection_qc_gate == "fail"
+        and final_drag_verdict == "fail"
+    )
+    stage_validated_physics_acceptable = (
+        drag_anchor_mode == "stage_validated"
+        and physics_primary_gate in {"pass", "suspect"}
+        and physics_status == "ready"
+        and baseline_robustness_flag == "pass"
+        and kinematics_robustness_flag in {"pass", "suspect"}
+        and clipping_flag != "fail"
+        and plausibility_flag in {"pass", "suspect", "unknown"}
+    )
+
+    if physics_primary_gate == "fail":
+        drag_physics_confidence = "low"
+    elif physics_primary_gate == "suspect" or detection_qc_gate == "fail":
+        drag_physics_confidence = "medium"
+    else:
+        drag_physics_confidence = "high"
+
+    drag_validation_gate = final_drag_verdict
+    drag_validation_reason = final_drag_reason
+    primary_timing_source_for_windows = (
+        "expected_stage_start_stop"
+        if drag_anchor_mode == "stage_validated"
+        else "trajectory_detected_onset"
+    )
 
     # Overall analysis status
     analysis_status = "ok"
@@ -1029,5 +1251,18 @@ def analyze_drag_run(
         steady_window_clipped_end_s=steady_window_clipped_end_s,
         window_clipping_applied=window_clipping_applied,
         window_clipping_message=window_clipping_message,
+        drag_anchor_mode=drag_anchor_mode,
+        primary_timing_source_for_windows=primary_timing_source_for_windows,
+        detected_onset_consistency_flag=detected_onset_consistency_flag,
+        detected_onset_consistency_message=detected_onset_consistency_message,
+        stage_anchor_confidence=stage_anchor_confidence,
+        stage_anchor_reason=stage_anchor_reason,
+        physics_primary_gate=physics_primary_gate,
+        detection_qc_gate=detection_qc_gate,
+        final_drag_verdict=final_drag_verdict,
+        final_drag_reason=final_drag_reason,
+        stage_validated_physics_acceptable=stage_validated_physics_acceptable,
+        detected_onset_qc_only=detected_onset_qc_only,
+        detected_onset_veto_applied=detected_onset_veto_applied,
     )
 

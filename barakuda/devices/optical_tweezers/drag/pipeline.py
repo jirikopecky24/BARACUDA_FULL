@@ -240,6 +240,7 @@ def run_drag_from_raw(
             [
                 "frame",
                 "video_time_s",
+                "video_time_rel_s",
                 "axis_px",
                 "is_baseline_window",
                 "is_steady_window",
@@ -247,18 +248,30 @@ def run_drag_from_raw(
                 "stage_time_aligned_s",
             ]
         )
+        primary_motion_start = (
+            result.expected_stage_start_video_s
+            if (result.drag_anchor_mode == "stage_validated" and result.expected_stage_start_video_s is not None)
+            else result.motion_start_video_s_detected
+        )
+        primary_motion_stop = (
+            result.expected_stage_stop_video_s
+            if (result.drag_anchor_mode == "stage_validated" and result.expected_stage_stop_video_s is not None)
+            else result.motion_stop_video_s_stage_aligned
+        )
+        t0 = float(result.t_first_s) if result.t_first_s is not None else float(t_video[0] if t_video else 0.0)
         for fi, t_s, px in zip(frames, t_video, sig_px):
             is_baseline = result.windows.baseline_start_s <= t_s <= result.windows.baseline_end_s
             is_steady = result.windows.steady_start_s <= t_s <= result.windows.steady_end_s
-            if result.motion_stop_video_s_stage_aligned is not None:
-                is_motion = result.motion_start_video_s_detected <= t_s <= result.motion_stop_video_s_stage_aligned
+            if primary_motion_stop is not None:
+                is_motion = primary_motion_start <= t_s <= primary_motion_stop
             else:
-                is_motion = t_s >= result.motion_start_video_s_detected
+                is_motion = t_s >= primary_motion_start
             stage_aligned_s = t_s - float(result.alignment_offset_s)
             w.writerow(
                 [
                     int(fi),
                     f"{float(t_s):.9f}",
+                    f"{float(t_s - t0):.9f}",
                     f"{float(px):.9f}",
                     int(bool(is_baseline)),
                     int(bool(is_steady)),
@@ -355,6 +368,19 @@ def _update_run_protocol_with_drag_analysis(
         "detected_stage_stop_video_s": result.detected_stage_stop_video_s,
         "stage_video_start_delta_s": result.stage_video_start_delta_s,
         "stage_video_stop_delta_s": result.stage_video_stop_delta_s,
+        "drag_anchor_mode": result.drag_anchor_mode,
+        "primary_timing_source_for_windows": result.primary_timing_source_for_windows,
+        "detected_onset_consistency_flag": result.detected_onset_consistency_flag,
+        "detected_onset_consistency_message": result.detected_onset_consistency_message,
+        "stage_anchor_confidence": result.stage_anchor_confidence,
+        "stage_anchor_reason": result.stage_anchor_reason,
+        "physics_primary_gate": result.physics_primary_gate,
+        "detection_qc_gate": result.detection_qc_gate,
+        "final_drag_verdict": result.final_drag_verdict,
+        "final_drag_reason": result.final_drag_reason,
+        "stage_validated_physics_acceptable": result.stage_validated_physics_acceptable,
+        "detected_onset_qc_only": result.detected_onset_qc_only,
+        "detected_onset_veto_applied": result.detected_onset_veto_applied,
         "baseline_strategy_primary": result.baseline_strategy_primary,
         "baseline_strategy_alt": result.baseline_strategy_alt,
         "onset_ambiguity_score": (
@@ -438,6 +464,19 @@ def _update_run_protocol_with_drag_analysis(
         "baseline_median_delta_um": result.baseline_median_delta_um,
         "window_clipping_applied": result.window_clipping_applied,
         "window_clipping_message": result.window_clipping_message,
+        "drag_anchor_mode": result.drag_anchor_mode,
+        "primary_timing_source_for_windows": result.primary_timing_source_for_windows,
+        "detected_onset_consistency_flag": result.detected_onset_consistency_flag,
+        "detected_onset_consistency_message": result.detected_onset_consistency_message,
+        "stage_anchor_confidence": result.stage_anchor_confidence,
+        "stage_anchor_reason": result.stage_anchor_reason,
+        "physics_primary_gate": result.physics_primary_gate,
+        "detection_qc_gate": result.detection_qc_gate,
+        "final_drag_verdict": result.final_drag_verdict,
+        "final_drag_reason": result.final_drag_reason,
+        "stage_validated_physics_acceptable": result.stage_validated_physics_acceptable,
+        "detected_onset_qc_only": result.detected_onset_qc_only,
+        "detected_onset_veto_applied": result.detected_onset_veto_applied,
         "baseline_window_original_start_s": result.baseline_window_original_start_s,
         "baseline_window_original_end_s": result.baseline_window_original_end_s,
         "steady_window_original_start_s": result.steady_window_original_start_s,

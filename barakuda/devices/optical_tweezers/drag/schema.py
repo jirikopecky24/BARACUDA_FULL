@@ -6,6 +6,7 @@ from typing import Any, Iterable, Literal
 
 
 Axis = Literal["x", "y"]
+DragAnchorMode = Literal["auto", "stage_validated", "detected_onset"]
 
 
 @dataclass(frozen=True)
@@ -200,6 +201,7 @@ class DragAnalysisConfig:
     drag_preflight_status: str | None = None
     drag_preflight_message: str | None = None
     current_drag_output_root: str | None = None
+    drag_anchor_mode: DragAnchorMode = "auto"
 
 
 @dataclass
@@ -372,6 +374,19 @@ class DragAnalysisResult:
     steady_window_clipped_end_s: float | None = None
     window_clipping_applied: bool | None = None
     window_clipping_message: str | None = None
+    drag_anchor_mode: str | None = None
+    primary_timing_source_for_windows: str | None = None
+    detected_onset_consistency_flag: bool | None = None
+    detected_onset_consistency_message: str | None = None
+    stage_anchor_confidence: str | None = None
+    stage_anchor_reason: str | None = None
+    physics_primary_gate: str | None = None
+    detection_qc_gate: str | None = None
+    final_drag_verdict: str | None = None
+    final_drag_reason: str | None = None
+    stage_validated_physics_acceptable: bool | None = None
+    detected_onset_qc_only: bool | None = None
+    detected_onset_veto_applied: bool | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:

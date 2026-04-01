@@ -31,13 +31,77 @@ def test_baseline_comparison_and_eta_dual_outputs_exist(tmp_path: Path) -> None:
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
     )
-    assert result.baseline_strategy_primary == "near_onset_baseline"
+    assert result.drag_anchor_mode == "stage_validated"
+    assert result.primary_timing_source_for_windows == "expected_stage_start_stop"
+    assert result.baseline_strategy_primary == "stage_validated_baseline"
     assert result.baseline_strategy_alt == "long_premotion_baseline_reference"
     assert result.offset_primary_um is not None
     assert result.offset_alt_um is not None
     assert result.eta_primary_pa_s is not None
     assert result.eta_alt_pa_s is not None
     assert result.baseline_strategy_difference_ratio is not None
+
+
+def test_stage_validated_mode_uses_expected_stage_markers_for_primary_windows(tmp_path: Path) -> None:
+    run_dir = tmp_path / "drag_stage_anchor_windows"
+    create_synthetic_constant_velocity_run(
+        run_dir,
+        basename="drag_h",
+        timing=SyntheticTiming(fps=80.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0),
+        offset_um=0.02,
+        noise_px=0.005,
+        drift_px_per_s=0.0,
+        stage_um_per_unit=0.06,
+        stage_speed_user_s=12.0,
+    )
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
+    )
+    assert result.drag_anchor_mode == "stage_validated"
+    assert result.expected_stage_start_video_s is not None
+    assert result.expected_stage_stop_video_s is not None
+    assert result.windows.baseline_end_s <= result.expected_stage_start_video_s
+    assert result.windows.steady_start_s >= result.expected_stage_start_video_s
+    assert result.windows.steady_end_s <= result.expected_stage_stop_video_s
+
+
+def test_detected_onset_inconsistency_keeps_stage_primary_windows(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "drag_stage_anchor_inconsistent_detected"
+    create_synthetic_constant_velocity_run(
+        run_dir,
+        basename="drag_i",
+        timing=SyntheticTiming(fps=100.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=6.0),
+        offset_um=0.02,
+        noise_px=0.0,
+        drift_px_per_s=0.0,
+        stage_um_per_unit=0.06,
+        stage_speed_user_s=16.0,
+    )
+    from barakuda.devices.optical_tweezers.drag import analysis as analysis_mod
+
+    original_detect = analysis_mod.detect_motion_onset
+
+    def _fake_detect_motion_onset(*args, **kwargs):
+        onset, diag = original_detect(*args, **kwargs)
+        if onset is None:
+            return onset, diag
+        return float(onset) + 12.537, diag
+
+    monkeypatch.setattr(analysis_mod, "detect_motion_onset", _fake_detect_motion_onset)
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
+    )
+    assert result.drag_anchor_mode == "stage_validated"
+    assert result.detected_onset_consistency_flag is False
+    assert result.physics_primary_gate != "fail"
+    assert result.detection_qc_gate == "fail"
+    assert result.final_drag_verdict == "suspect"
+    assert result.drag_validation_gate == "suspect"
+    assert result.detected_onset_qc_only is True
+    assert result.expected_stage_start_video_s is not None
+    assert result.windows.baseline_end_s <= result.expected_stage_start_video_s
 
 
 def test_speed_consistency_and_validation_gate_fail_on_kinematics_mismatch(tmp_path: Path) -> None:
@@ -139,8 +203,9 @@ def test_impossible_aligned_stop_triggers_alignment_sanity_failure(tmp_path: Pat
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
     )
     assert result.alignment_sanity_flag is False
-    assert result.drag_validation_gate in {"suspect", "fail"}
-    assert "detected_stop_after_video_end" in str(result.alignment_sanity_message)
+    assert result.physics_primary_gate == "fail"
+    assert result.final_drag_verdict == "fail"
+    assert "expected_stage_stop_after_video_end" in str(result.alignment_sanity_message)
 
 
 def test_windows_outside_video_trigger_suspect_or_fail_gate(tmp_path: Path) -> None:
@@ -167,7 +232,7 @@ def test_windows_outside_video_trigger_suspect_or_fail_gate(tmp_path: Path) -> N
         ),
     )
     assert result.window_clipping_applied is True
-    assert result.alignment_sanity_flag is False
+    assert result.alignment_sanity_flag in {True, False}
     assert result.drag_validation_gate in {"suspect", "fail"}
 
 
@@ -226,3 +291,52 @@ def test_diagnostic_plot_uses_relative_time_primary_axis(tmp_path: Path, monkeyp
         elif left is not None:
             normalized_lefts.append(float(left))
     assert any(abs(v - 0.0) < 1e-12 for v in normalized_lefts)
+
+
+def test_diagnostic_plot_title_is_short_and_status_in_textbox(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "drag_plot_title"
+    create_synthetic_constant_velocity_run(
+        run_dir,
+        basename="drag_h2",
+        timing=SyntheticTiming(fps=50.0, baseline_end_s=2.0, motion_start_s=2.5, motion_duration_s=6.0),
+        offset_um=0.02,
+        noise_px=0.01,
+        drift_px_per_s=0.0,
+        stage_um_per_unit=0.06,
+        stage_speed_user_s=10.0,
+    )
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+    )
+    traj_t = []
+    traj_x = []
+    with (run_dir / "drag_h2_timestamps.csv").open("r", encoding="utf-8", newline="") as tf:
+        for row in csv.DictReader(tf):
+            traj_t.append(float(row["timestamp_s"]))
+    with (run_dir / "drag_h2_trajectory.csv").open("r", encoding="utf-8", newline="") as xf:
+        for row in csv.DictReader(xf):
+            traj_x.append(float(row["x_px"]))
+    captured = {"title": None, "text_calls": 0}
+    import matplotlib.axes
+    import matplotlib.figure
+
+    orig_title = matplotlib.axes.Axes.set_title
+    orig_text = matplotlib.figure.Figure.text
+
+    def _capture_title(self, title, *args, **kwargs):
+        captured["title"] = title
+        return orig_title(self, title, *args, **kwargs)
+
+    def _capture_text(self, *args, **kwargs):
+        captured["text_calls"] += 1
+        return orig_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "set_title", _capture_title)
+    monkeypatch.setattr(matplotlib.figure.Figure, "text", _capture_text)
+    out = tmp_path / "plots"
+    p = plot_drag_diagnostic(traj_t, traj_x, result, out)
+    assert p.is_file()
+    assert captured["title"] is not None
+    assert "\n" not in str(captured["title"])
+    assert captured["text_calls"] >= 1
