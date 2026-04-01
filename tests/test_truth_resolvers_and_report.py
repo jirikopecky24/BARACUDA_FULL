@@ -345,6 +345,20 @@ def test_drag_summary_parses_physics_confidence_fields(tmp_path: Path) -> None:
             "stage_speed_from_trace_um_s": 80.1,
             "stage_speed_relative_diff": 0.02,
             "stage_speed_consistent": True,
+            "baseline_strategy_primary": "near_onset_baseline",
+            "baseline_strategy_alt": "long_premotion_baseline_reference",
+            "offset_primary_um": 0.2,
+            "offset_alt_um": 0.31,
+            "eta_primary_pa_s": 0.001,
+            "eta_alt_pa_s": 0.0016,
+            "baseline_strategy_difference_ratio": 1.6,
+            "onset_confidence_class": "medium",
+            "speed_stage_json": 82.0,
+            "speed_trace_derived": 80.1,
+            "speed_used_for_physics": 82.0,
+            "speed_consistency_error_pct": 2.3,
+            "drag_validation_gate": "suspect",
+            "drag_validation_reason": "baseline_suspect,kinematics_suspect",
         },
     )
     summary = build_ot_item_summary(
@@ -359,6 +373,10 @@ def test_drag_summary_parses_physics_confidence_fields(tmp_path: Path) -> None:
     assert diagnostics["baseline_robustness_flag"] == "weak"
     assert diagnostics["eta_alt_baseline"] == pytest.approx(0.0016)
     assert diagnostics["stage_speed_consistent"] is True
+    rows = build_ot_summary_rows(summary)
+    row_map = {(g, m): v for g, m, v, _u, _n in rows}
+    assert row_map[("Drag", "Drag validation gate")] == "suspect"
+    assert row_map[("Drag", "Baseline strategy difference ratio")] == pytest.approx(1.6)
 
 
 def test_dropped_frames_semantics_kept_separate(tmp_path: Path) -> None:
