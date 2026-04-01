@@ -16,6 +16,7 @@ from .schema import (
     DragQCFlags,
     DragRunLoaded,
     DragWindowParams,
+    DragWindows,
 )
 from .windows import compute_windows, DragWindowError
 
@@ -55,6 +56,18 @@ def _classify_onset_ambiguity(
     else:
         cls = "high"
     return competing, density, score, cls
+
+
+def _clip_window_to_video(
+    start_s: float,
+    end_s: float,
+    t_first_s: float,
+    t_last_s: float,
+) -> tuple[float, float, bool]:
+    cs = max(float(start_s), float(t_first_s))
+    ce = min(float(end_s), float(t_last_s))
+    clipped = (abs(cs - float(start_s)) > 1e-12) or (abs(ce - float(end_s)) > 1e-12)
+    return cs, ce, clipped
 
 
 def _interp_time_for_frames(
@@ -321,9 +334,54 @@ def analyze_drag_run(
         except Exception as e:  # noqa: BLE001
             warnings.append(f"alignment_debug_plot failed: {e!r}")
 
+    t_first_s = min(t_video) if t_video else float("nan")
+    t_last_s = max(t_video) if t_video else float("nan")
+    elapsed_time_s = (t_last_s - t_first_s) if (math.isfinite(t_first_s) and math.isfinite(t_last_s)) else float("nan")
+    expected_stage_start_video_s = (
+        t_first_s + motion_start_stage_s if math.isfinite(t_first_s) else float("nan")
+    )
+    expected_stage_stop_video_s = (
+        t_first_s + motion_stop_stage_s
+        if (math.isfinite(t_first_s) and motion_stop_stage_s is not None)
+        else None
+    )
+    detected_stage_start_video_s = alignment.motion_start_video_s_detected
+    detected_stage_stop_video_s = alignment.motion_stop_video_s_stage_aligned
+    stage_video_start_delta_s = (
+        detected_stage_start_video_s - expected_stage_start_video_s
+        if (math.isfinite(detected_stage_start_video_s) and math.isfinite(expected_stage_start_video_s))
+        else None
+    )
+    stage_video_stop_delta_s = (
+        detected_stage_stop_video_s - expected_stage_stop_video_s
+        if (
+            detected_stage_stop_video_s is not None
+            and expected_stage_stop_video_s is not None
+            and math.isfinite(detected_stage_stop_video_s)
+            and math.isfinite(expected_stage_stop_video_s)
+        )
+        else None
+    )
+
+    alignment_sanity_reasons: list[str] = []
+    if math.isfinite(t_first_s) and detected_stage_start_video_s < t_first_s:
+        alignment_sanity_reasons.append("detected_start_before_video_start")
+    if (
+        math.isfinite(t_last_s)
+        and detected_stage_stop_video_s is not None
+        and detected_stage_stop_video_s > t_last_s
+    ):
+        alignment_sanity_reasons.append("detected_stop_after_video_end")
+    if (
+        detected_stage_stop_video_s is not None
+        and math.isfinite(elapsed_time_s)
+        and (detected_stage_stop_video_s - detected_stage_start_video_s) > (elapsed_time_s + 1e-6)
+    ):
+        alignment_sanity_reasons.append("aligned_motion_longer_than_video")
+
     # 4) Windows
     try:
-        windows = compute_windows(
+        windows_original = compute_windows(
             motion_start_video_s=alignment.motion_start_video_s_detected,
             motion_stop_video_s_stage_aligned=alignment.motion_stop_video_s_stage_aligned,
             params=config.window_params,
@@ -335,6 +393,61 @@ def analyze_drag_run(
         qc.steady_window_ok = False
         warnings.append(str(e))
         raise
+
+    baseline_window_original_start_s = windows_original.baseline_start_s
+    baseline_window_original_end_s = windows_original.baseline_end_s
+    steady_window_original_start_s = windows_original.steady_start_s
+    steady_window_original_end_s = windows_original.steady_end_s
+    if math.isfinite(t_first_s) and math.isfinite(t_last_s):
+        if baseline_window_original_start_s < t_first_s or baseline_window_original_end_s > t_last_s:
+            alignment_sanity_reasons.append("baseline_window_outside_video_range")
+        if steady_window_original_start_s < t_first_s or steady_window_original_end_s > t_last_s:
+            alignment_sanity_reasons.append("steady_window_outside_video_range")
+
+    baseline_window_clipped_start_s = baseline_window_original_start_s
+    baseline_window_clipped_end_s = baseline_window_original_end_s
+    steady_window_clipped_start_s = steady_window_original_start_s
+    steady_window_clipped_end_s = steady_window_original_end_s
+    window_clipping_applied = False
+    window_clip_reasons: list[str] = []
+    if math.isfinite(t_first_s) and math.isfinite(t_last_s):
+        baseline_window_clipped_start_s, baseline_window_clipped_end_s, b_clipped = _clip_window_to_video(
+            baseline_window_original_start_s,
+            baseline_window_original_end_s,
+            t_first_s,
+            t_last_s,
+        )
+        steady_window_clipped_start_s, steady_window_clipped_end_s, s_clipped = _clip_window_to_video(
+            steady_window_original_start_s,
+            steady_window_original_end_s,
+            t_first_s,
+            t_last_s,
+        )
+        window_clipping_applied = b_clipped or s_clipped
+        if b_clipped:
+            window_clip_reasons.append("baseline_window_clipped_to_video_range")
+        if s_clipped:
+            window_clip_reasons.append("steady_window_clipped_to_video_range")
+    if baseline_window_clipped_end_s <= baseline_window_clipped_start_s:
+        alignment_sanity_reasons.append("baseline_window_invalid_after_clipping")
+        qc.baseline_window_ok = False
+    if steady_window_clipped_end_s <= steady_window_clipped_start_s:
+        alignment_sanity_reasons.append("steady_window_invalid_after_clipping")
+        qc.steady_window_ok = False
+
+    windows = DragWindows(
+        baseline_start_s=baseline_window_clipped_start_s,
+        baseline_end_s=baseline_window_clipped_end_s,
+        steady_start_s=steady_window_clipped_start_s,
+        steady_end_s=steady_window_clipped_end_s,
+    )
+
+    window_clipping_message = ", ".join(window_clip_reasons) if window_clip_reasons else None
+    if window_clipping_applied:
+        warnings.append(
+            "PHYSICS_WARNING: window clipping applied to video bounds: "
+            f"{window_clipping_message}."
+        )
 
     # Check steady duration
     steady_duration = windows.steady_end_s - windows.steady_start_s
@@ -642,7 +755,19 @@ def analyze_drag_run(
         onset_candidate_density=onset_candidate_density,
     )
 
-    if onset_robustness_flag == "fail" or kinematics_robustness_flag == "fail":
+    alignment_sanity_flag = len(alignment_sanity_reasons) == 0
+    alignment_sanity_message = (
+        "alignment_sanity_ok"
+        if alignment_sanity_flag
+        else ", ".join(alignment_sanity_reasons)
+    )
+    if not alignment_sanity_flag:
+        warnings.append(f"PHYSICS_WARNING: alignment sanity failed: {alignment_sanity_message}.")
+        qc.physics_ready = False
+        if physics_status == "ready":
+            physics_status = "suspect_alignment_sanity"
+
+    if onset_robustness_flag == "fail" or kinematics_robustness_flag == "fail" or not alignment_sanity_flag:
         drag_physics_confidence = "low"
     elif baseline_robustness_flag == "suspect" or onset_robustness_flag == "suspect" or kinematics_robustness_flag == "suspect":
         drag_physics_confidence = "medium"
@@ -714,6 +839,8 @@ def analyze_drag_run(
                 offset_underestimation_ratio_vs_baseline = measured_offset_um / expected_offset_if_eta_from_baseline_um
 
     gate_reasons: list[str] = []
+    if not alignment_sanity_flag:
+        gate_reasons.append("alignment_sanity_fail")
     if baseline_robustness_flag == "fail":
         gate_reasons.append("baseline_fail")
     elif baseline_robustness_flag == "suspect":
@@ -738,7 +865,12 @@ def analyze_drag_run(
 
     # Overall analysis status
     analysis_status = "ok"
-    if not qc.alignment_confident or not qc.sufficient_steady_duration or not qc.offset_detected:
+    if (
+        not qc.alignment_confident
+        or not qc.sufficient_steady_duration
+        or not qc.offset_detected
+        or not alignment_sanity_flag
+    ):
         analysis_status = "warning"
 
     commanded_travel_user_ref = None
@@ -876,5 +1008,26 @@ def analyze_drag_run(
         offset_underestimation_ratio_vs_baseline=offset_underestimation_ratio_vs_baseline,
         drag_validation_gate=drag_validation_gate,
         drag_validation_reason=drag_validation_reason,
+        t_first_s=t_first_s if math.isfinite(t_first_s) else None,
+        t_last_s=t_last_s if math.isfinite(t_last_s) else None,
+        elapsed_time_s=elapsed_time_s if math.isfinite(elapsed_time_s) else None,
+        expected_stage_start_video_s=expected_stage_start_video_s if math.isfinite(expected_stage_start_video_s) else None,
+        expected_stage_stop_video_s=expected_stage_stop_video_s,
+        detected_stage_start_video_s=detected_stage_start_video_s,
+        detected_stage_stop_video_s=detected_stage_stop_video_s,
+        stage_video_start_delta_s=stage_video_start_delta_s,
+        stage_video_stop_delta_s=stage_video_stop_delta_s,
+        alignment_sanity_flag=alignment_sanity_flag,
+        alignment_sanity_message=alignment_sanity_message,
+        baseline_window_original_start_s=baseline_window_original_start_s,
+        baseline_window_original_end_s=baseline_window_original_end_s,
+        steady_window_original_start_s=steady_window_original_start_s,
+        steady_window_original_end_s=steady_window_original_end_s,
+        baseline_window_clipped_start_s=baseline_window_clipped_start_s,
+        baseline_window_clipped_end_s=baseline_window_clipped_end_s,
+        steady_window_clipped_start_s=steady_window_clipped_start_s,
+        steady_window_clipped_end_s=steady_window_clipped_end_s,
+        window_clipping_applied=window_clipping_applied,
+        window_clipping_message=window_clipping_message,
     )
 

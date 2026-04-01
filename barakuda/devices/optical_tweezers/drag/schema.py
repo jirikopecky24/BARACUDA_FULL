@@ -350,6 +350,28 @@ class DragAnalysisResult:
     offset_underestimation_ratio_vs_baseline: float | None = None
     drag_validation_gate: str | None = None
     drag_validation_reason: str | None = None
+    # Timing/alignment sanity layer
+    t_first_s: float | None = None
+    t_last_s: float | None = None
+    elapsed_time_s: float | None = None
+    expected_stage_start_video_s: float | None = None
+    expected_stage_stop_video_s: float | None = None
+    detected_stage_start_video_s: float | None = None
+    detected_stage_stop_video_s: float | None = None
+    stage_video_start_delta_s: float | None = None
+    stage_video_stop_delta_s: float | None = None
+    alignment_sanity_flag: bool | None = None
+    alignment_sanity_message: str | None = None
+    baseline_window_original_start_s: float | None = None
+    baseline_window_original_end_s: float | None = None
+    steady_window_original_start_s: float | None = None
+    steady_window_original_end_s: float | None = None
+    baseline_window_clipped_start_s: float | None = None
+    baseline_window_clipped_end_s: float | None = None
+    steady_window_clipped_start_s: float | None = None
+    steady_window_clipped_end_s: float | None = None
+    window_clipping_applied: bool | None = None
+    window_clipping_message: str | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:

@@ -687,6 +687,43 @@ def build_ot_item_summary(
         diagnostics["kinematics_robustness_message"] = drag_summary_json.get("kinematics_robustness_message")
         diagnostics["drag_validation_gate"] = drag_summary_json.get("drag_validation_gate")
         diagnostics["drag_validation_reason"] = drag_summary_json.get("drag_validation_reason")
+        diagnostics["t_first_s"] = _parse_float(drag_summary_json.get("t_first_s"))
+        diagnostics["t_last_s"] = _parse_float(drag_summary_json.get("t_last_s"))
+        diagnostics["elapsed_time_s"] = _parse_float(drag_summary_json.get("elapsed_time_s"))
+        diagnostics["expected_stage_start_video_s"] = _parse_float(drag_summary_json.get("expected_stage_start_video_s"))
+        diagnostics["expected_stage_stop_video_s"] = _parse_float(drag_summary_json.get("expected_stage_stop_video_s"))
+        diagnostics["detected_stage_start_video_s"] = _parse_float(drag_summary_json.get("detected_stage_start_video_s"))
+        diagnostics["detected_stage_stop_video_s"] = _parse_float(drag_summary_json.get("detected_stage_stop_video_s"))
+        diagnostics["stage_video_start_delta_s"] = _parse_float(drag_summary_json.get("stage_video_start_delta_s"))
+        diagnostics["stage_video_stop_delta_s"] = _parse_float(drag_summary_json.get("stage_video_stop_delta_s"))
+        diagnostics["alignment_sanity_flag"] = drag_summary_json.get("alignment_sanity_flag")
+        diagnostics["alignment_sanity_message"] = drag_summary_json.get("alignment_sanity_message")
+        diagnostics["window_clipping_applied"] = drag_summary_json.get("window_clipping_applied")
+        diagnostics["window_clipping_message"] = drag_summary_json.get("window_clipping_message")
+        diagnostics["baseline_window_original_start_s"] = _parse_float(
+            drag_summary_json.get("baseline_window_original_start_s")
+        )
+        diagnostics["baseline_window_original_end_s"] = _parse_float(
+            drag_summary_json.get("baseline_window_original_end_s")
+        )
+        diagnostics["steady_window_original_start_s"] = _parse_float(
+            drag_summary_json.get("steady_window_original_start_s")
+        )
+        diagnostics["steady_window_original_end_s"] = _parse_float(
+            drag_summary_json.get("steady_window_original_end_s")
+        )
+        diagnostics["baseline_window_clipped_start_s"] = _parse_float(
+            drag_summary_json.get("baseline_window_clipped_start_s")
+        )
+        diagnostics["baseline_window_clipped_end_s"] = _parse_float(
+            drag_summary_json.get("baseline_window_clipped_end_s")
+        )
+        diagnostics["steady_window_clipped_start_s"] = _parse_float(
+            drag_summary_json.get("steady_window_clipped_start_s")
+        )
+        diagnostics["steady_window_clipped_end_s"] = _parse_float(
+            drag_summary_json.get("steady_window_clipped_end_s")
+        )
         diagnostics["baseline_strategy_primary"] = drag_summary_json.get("baseline_strategy_primary")
         diagnostics["baseline_strategy_alt"] = drag_summary_json.get("baseline_strategy_alt")
         diagnostics["baseline_position_primary_px"] = _parse_float(drag_summary_json.get("baseline_position_primary_px"))
@@ -924,6 +961,14 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
             ("Drag", "Drag physics confidence", diagnostics.get("drag_physics_confidence"), "", "drag_physics_confidence"),
             ("Drag", "Drag validation gate", diagnostics.get("drag_validation_gate"), "", "drag_validation_gate"),
             ("Drag", "Drag validation reason", diagnostics.get("drag_validation_reason"), "", "drag_validation_reason"),
+            ("Drag", "Alignment sanity flag", diagnostics.get("alignment_sanity_flag"), "", "alignment_sanity_flag"),
+            ("Drag", "Alignment sanity message", diagnostics.get("alignment_sanity_message"), "", "alignment_sanity_message"),
+            ("Drag", "Expected stage start in video", diagnostics.get("expected_stage_start_video_s"), "s", "expected_stage_start_video_s"),
+            ("Drag", "Expected stage stop in video", diagnostics.get("expected_stage_stop_video_s"), "s", "expected_stage_stop_video_s"),
+            ("Drag", "Detected stage start in video", diagnostics.get("detected_stage_start_video_s"), "s", "detected_stage_start_video_s"),
+            ("Drag", "Detected stage stop in video", diagnostics.get("detected_stage_stop_video_s"), "s", "detected_stage_stop_video_s"),
+            ("Drag", "Stage-video start delta", diagnostics.get("stage_video_start_delta_s"), "s", "stage_video_start_delta_s"),
+            ("Drag", "Stage-video stop delta", diagnostics.get("stage_video_stop_delta_s"), "s", "stage_video_stop_delta_s"),
             ("Drag", "Baseline strategy primary", diagnostics.get("baseline_strategy_primary"), "", "baseline_strategy_primary"),
             ("Drag", "Baseline strategy alt", diagnostics.get("baseline_strategy_alt"), "", "baseline_strategy_alt"),
             ("Drag", "Offset primary", diagnostics.get("offset_primary_um"), "um", "offset_primary_um"),
@@ -1136,6 +1181,17 @@ def _drag_conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Drag physics warning", _wrap(diagnostics.get("drag_physics_warning"), 52)],
         ["Drag validation gate", _wrap(diagnostics.get("drag_validation_gate"), 52)],
         ["Drag validation reason", _wrap(diagnostics.get("drag_validation_reason"), 52)],
+        ["Video first timestamp [s]", _fmt_value(diagnostics.get("t_first_s"))],
+        ["Video last timestamp [s]", _fmt_value(diagnostics.get("t_last_s"))],
+        ["Video elapsed [s]", _fmt_value(diagnostics.get("elapsed_time_s"))],
+        ["Expected stage start in video [s]", _fmt_value(diagnostics.get("expected_stage_start_video_s"))],
+        ["Expected stage stop in video [s]", _fmt_value(diagnostics.get("expected_stage_stop_video_s"))],
+        ["Detected stage start in video [s]", _fmt_value(diagnostics.get("detected_stage_start_video_s"))],
+        ["Detected stage stop in video [s]", _fmt_value(diagnostics.get("detected_stage_stop_video_s"))],
+        ["Stage-video start delta [s]", _fmt_value(diagnostics.get("stage_video_start_delta_s"))],
+        ["Stage-video stop delta [s]", _fmt_value(diagnostics.get("stage_video_stop_delta_s"))],
+        ["Alignment sanity flag", _fmt_value(diagnostics.get("alignment_sanity_flag"))],
+        ["Alignment sanity message", _wrap(diagnostics.get("alignment_sanity_message"), 52)],
         ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
         ["Baseline window [s]", _wrap(f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", 52)],
         ["Steady window [s]", _wrap(f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", 52)],
@@ -1207,6 +1263,8 @@ def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Onset candidate density", _fmt_value(diagnostics.get("onset_candidate_density"))],
         ["Competing durable candidates", _fmt_value(diagnostics.get("competing_durable_candidates_count"))],
         ["Baseline strategy difference ratio", _fmt_value(diagnostics.get("baseline_strategy_difference_ratio"))],
+        ["Window clipping applied", _fmt_value(diagnostics.get("window_clipping_applied"))],
+        ["Window clipping message", _wrap(diagnostics.get("window_clipping_message"), 52)],
         ["Analysis status", _fmt_value(diagnostics.get("analysis_status"))],
         ["Physics status", _fmt_value(diagnostics.get("physics_status"))],
     ]
