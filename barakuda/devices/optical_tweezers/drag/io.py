@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import csv
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
+from barakuda.core.truth_resolvers import load_and_validate_timestamps_csv
 from .schema import (
     DragRunPaths,
     DragStageMeta,
@@ -20,6 +22,179 @@ class DragIoError(RuntimeError):
     """User-facing error for problems loading a DRAG run folder."""
 
 
+_LOG = logging.getLogger(__name__)
+
+
+def _find_item_root_context(input_dir: Path) -> Path | None:
+    current = input_dir.resolve()
+    for _ in range(4):
+        if (current / "item.json").is_file():
+            return current
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def _build_scoped_dirs(
+    *,
+    input_dir: Path,
+    item_root: Path | None,
+    relative_candidates: tuple[str, ...],
+) -> list[Path]:
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        rp = p.resolve()
+        key = str(rp).lower()
+        if key in seen:
+            return
+        if not rp.is_dir():
+            return
+        if item_root is not None:
+            try:
+                rp.relative_to(item_root)
+            except Exception:
+                return
+        seen.add(key)
+        dirs.append(rp)
+
+    _add(input_dir.resolve())
+    if item_root is not None:
+        _add(item_root)
+        for rel in relative_candidates:
+            _add(item_root / rel)
+    return dirs
+
+
+def _unique_files(paths: list[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in paths:
+        rp = p.resolve()
+        key = str(rp).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(rp)
+    return sorted(out)
+
+
+def _select_item_scoped_artifact(
+    *,
+    artifact_key: str,
+    expected_kind: str,
+    basename: str,
+    item_stem: str | None,
+    search_dirs: list[Path],
+    exact_suffix: str,
+    pattern: str,
+    allow_single_candidate_fallback: bool = True,
+) -> tuple[Path, str, str | None, list[Path]]:
+    exact_basename_name = f"{basename}{exact_suffix}"
+    exact_item_name = f"{item_stem}{exact_suffix}" if item_stem else None
+
+    exact_basename_hits: list[Path] = []
+    exact_item_hits: list[Path] = []
+    pattern_hits: list[Path] = []
+    for d in search_dirs:
+        p_base = d / exact_basename_name
+        if p_base.is_file():
+            exact_basename_hits.append(p_base.resolve())
+        if exact_item_name:
+            p_item = d / exact_item_name
+            if p_item.is_file():
+                exact_item_hits.append(p_item.resolve())
+        pattern_hits.extend([p.resolve() for p in d.glob(pattern) if p.is_file()])
+
+    exact_basename_hits = _unique_files(exact_basename_hits)
+    exact_item_hits = _unique_files(exact_item_hits)
+    pattern_hits = _unique_files(pattern_hits)
+
+    if len(exact_basename_hits) == 1:
+        return exact_basename_hits[0], "exact_basename_match", None, pattern_hits
+    if len(exact_basename_hits) > 1:
+        names = ", ".join(str(p) for p in exact_basename_hits)
+        raise DragIoError(
+            f"Ambiguous {expected_kind}: multiple exact basename matches found "
+            f"for {exact_basename_name!r} in current item scope: {names}"
+        )
+
+    if len(exact_item_hits) == 1:
+        return (
+            exact_item_hits[0],
+            "exact_item_stem_match",
+            f"Using item-stem fallback {exact_item_name!r} instead of {exact_basename_name!r}.",
+            pattern_hits,
+        )
+    if len(exact_item_hits) > 1:
+        names = ", ".join(str(p) for p in exact_item_hits)
+        raise DragIoError(
+            f"Ambiguous {expected_kind}: multiple exact item-stem matches found "
+            f"for {exact_item_name!r} in current item scope: {names}"
+        )
+
+    if not allow_single_candidate_fallback:
+        raise DragIoError(
+            f"Missing {expected_kind}: no exact basename/item-stem match found "
+            f"for {exact_basename_name!r} in current item scope."
+        )
+
+    if len(pattern_hits) == 1:
+        return (
+            pattern_hits[0],
+            "item_scoped_single_candidate",
+            (
+                f"Fallback selection for {expected_kind}: exact names "
+                f"{exact_basename_name!r}"
+                + (f" or {exact_item_name!r}" if exact_item_name else "")
+                + " not found, selected the only item-scoped candidate."
+            ),
+            pattern_hits,
+        )
+
+    if len(pattern_hits) > 1:
+        names = ", ".join(str(p) for p in pattern_hits)
+        raise DragIoError(
+            f"Ambiguous {expected_kind}: exact names not found and multiple item-scoped "
+            f"candidates match pattern {pattern!r}: {names}"
+        )
+
+    raise DragIoError(
+        f"Missing {expected_kind}: no candidate found in item-scoped directories for "
+        f"exact names {exact_basename_name!r}"
+        + (f" or {exact_item_name!r}" if exact_item_name else "")
+        + f" and pattern {pattern!r}."
+    )
+
+
+def _log_artifact_discovery(
+    *,
+    input_path: Path,
+    item_root: Path | None,
+    artifact_key: str,
+    expected_kind: str,
+    search_dirs: list[Path],
+    candidates: list[Path],
+    selected: Path | None,
+    mode: str,
+    warning: str | None,
+) -> None:
+    _LOG.info(
+        "[DRAG discovery] input=%s item_root=%s artifact=%s kind=%s searched=%s candidates=%s selected=%s mode=%s warning=%s",
+        str(input_path),
+        str(item_root) if item_root is not None else None,
+        artifact_key,
+        expected_kind,
+        [str(p) for p in search_dirs],
+        [str(p) for p in candidates],
+        str(selected) if selected is not None else None,
+        mode,
+        warning,
+    )
+
+
 def _require_single_raw(run_dir: Path) -> tuple[str, Path]:
     raw_files = sorted(p for p in run_dir.glob("*.raw") if p.is_file())
     if not raw_files:
@@ -31,7 +206,12 @@ def _require_single_raw(run_dir: Path) -> tuple[str, Path]:
     return raw_path.stem, raw_path
 
 
-def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) -> DragRunPaths:
+def discover_drag_run_paths(
+    run_dir: Path,
+    trajectory_path: Path | None = None,
+    *,
+    require_trajectory: bool = True,
+) -> DragRunPaths:
     """Discover all required DRAG files in a run directory.
 
     Preferred convention:
@@ -51,119 +231,215 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
     run_dir = Path(run_dir).resolve()
     if not run_dir.is_dir():
         raise DragIoError(f"Run folder does not exist or is not a directory: {run_dir}")
+    item_root = _find_item_root_context(run_dir)
+    if item_root is None:
+        _LOG.warning(
+            "[DRAG discovery] unresolved item context for input=%s; discovery limited to provided directory",
+            str(run_dir),
+        )
 
-    basename, raw_path = _require_single_raw(run_dir)
+    run_scoped_dirs = _build_scoped_dirs(
+        input_dir=run_dir,
+        item_root=item_root,
+        relative_candidates=("acquisition", "raw"),
+    )
+    analysis_scoped_dirs = _build_scoped_dirs(
+        input_dir=run_dir,
+        item_root=item_root,
+        relative_candidates=("analysis/csv", "analysis/results", "analysis", "acquisition", "raw"),
+    )
+
+    # Discover raw in item/run scope first.
+    raw_candidates: list[Path] = []
+    for d in run_scoped_dirs:
+        raw_candidates.extend([p.resolve() for p in d.glob("*.raw") if p.is_file()])
+    raw_candidates = _unique_files(raw_candidates)
+    if not raw_candidates:
+        raise DragIoError(
+            "Missing required file for DRAG run: no .raw candidate found in current item/run context. "
+            f"input={run_dir}, item_root={item_root}, searched={[str(p) for p in run_scoped_dirs]}"
+        )
+    if len(raw_candidates) > 1:
+        raise DragIoError(
+            "Ambiguous DRAG run raw input: multiple .raw files found in current item/run context: "
+            + ", ".join(str(p) for p in raw_candidates)
+        )
+    raw_path = raw_candidates[0]
+    basename = raw_path.stem
+    item_stem = item_root.name if item_root is not None else None
     used_fallbacks: dict[str, str] = {}
+    artifact_selection: dict[str, dict[str, Any]] = {}
 
-    # --- video meta / timestamps ---
-    meta_path = run_dir / f"{basename}_meta.json"
-    if not meta_path.is_file():
-        # Fallback: video_meta.json
-        fallback = run_dir / "video_meta.json"
-        if fallback.is_file():
-            meta_path = fallback
-            used_fallbacks["meta_path"] = "video_meta.json"
-        else:
-            raise DragIoError("Missing required file for DRAG run: video_meta.json")
+    def _record(
+        key: str,
+        expected_kind: str,
+        selected: Path,
+        mode: str,
+        warning: str | None,
+        candidates: list[Path],
+        searched_dirs: list[Path],
+    ) -> None:
+        artifact_selection[key] = {
+            "selected_artifact_path": str(selected),
+            "artifact_selection_mode": mode,
+            "artifact_selection_warning": warning,
+            "candidate_files": [str(p) for p in candidates],
+            "searched_directories": [str(p) for p in searched_dirs],
+        }
+        _log_artifact_discovery(
+            input_path=run_dir,
+            item_root=item_root,
+            artifact_key=key,
+            expected_kind=expected_kind,
+            search_dirs=searched_dirs,
+            candidates=candidates,
+            selected=selected,
+            mode=mode,
+            warning=warning,
+        )
+        if mode != "exact_basename_match":
+            used_fallbacks[key] = mode
 
-    timestamps_path = run_dir / f"{basename}_timestamps.csv"
-    if not timestamps_path.is_file():
-        # Fallback: video_timestamps.csv
-        fallback = run_dir / "video_timestamps.csv"
-        if fallback.is_file():
-            timestamps_path = fallback
-            used_fallbacks["timestamps_path"] = "video_timestamps.csv"
-        else:
-            raise DragIoError("Missing required file for DRAG run: video_timestamps.csv")
+    # meta
+    meta_path, meta_mode, meta_warn, meta_candidates = _select_item_scoped_artifact(
+        artifact_key="meta_path",
+        expected_kind="video metadata JSON",
+        basename=basename,
+        item_stem=item_stem,
+        search_dirs=run_scoped_dirs,
+        exact_suffix="_meta.json",
+        pattern="*_meta.json",
+        allow_single_candidate_fallback=True,
+    )
+    _record("meta_path", "video metadata JSON", meta_path, meta_mode, meta_warn, meta_candidates, run_scoped_dirs)
 
-    # --- stage meta / trace ---
-    preferred_stage_meta = run_dir / f"{basename}_stage.json"
-    if preferred_stage_meta.is_file():
-        stage_meta_path = preferred_stage_meta
-    else:
-        # Fallback: any ot_drag*.json or *stage*.json (but require uniqueness)
-        candidates_a = sorted(run_dir.glob("ot_drag*.json"))
-        candidates_b = sorted(run_dir.glob("*stage*.json"))
-        candidates = sorted({*candidates_a, *candidates_b})
-        if not candidates:
-            raise DragIoError(
-                "Missing required file for DRAG run: stage metadata JSON (e.g. ot_drag*.json)"
-            )
-        if len(candidates) != 1:
-            names = ", ".join(p.name for p in candidates)
-            raise DragIoError(
-                "Ambiguous DRAG run stage metadata: canonical "
-                f"{preferred_stage_meta.name!r} is missing but multiple fallback candidates exist: {names}"
-            )
-        stage_meta_path = candidates[0]
-        if stage_meta_path in candidates_a:
-            used_fallbacks["stage_meta_path"] = "ot_drag*.json fallback"
-        else:
-            used_fallbacks["stage_meta_path"] = "*stage*.json fallback"
+    # timestamps
+    timestamps_path, ts_mode, ts_warn, ts_candidates = _select_item_scoped_artifact(
+        artifact_key="timestamps_path",
+        expected_kind="video timestamps CSV",
+        basename=basename,
+        item_stem=item_stem,
+        search_dirs=run_scoped_dirs,
+        exact_suffix="_timestamps.csv",
+        pattern="*_timestamps.csv",
+        allow_single_candidate_fallback=True,
+    )
+    _record("timestamps_path", "video timestamps CSV", timestamps_path, ts_mode, ts_warn, ts_candidates, run_scoped_dirs)
 
-    preferred_stage_trace = run_dir / f"{basename}_stage_trace.csv"
-    stage_trace_path = preferred_stage_trace if preferred_stage_trace.is_file() else None
-    if stage_trace_path is None:
-        # Try to find a trace file matching the stage meta stem with csv/txt
-        stem = stage_meta_path.stem
-        stem_candidates: list[Path] = []
-        for ext in (".csv", ".txt"):
-            cand = run_dir / f"{stem}{ext}"
-            if cand.is_file():
-                stem_candidates.append(cand)
+    # stage meta
+    stage_meta_path, sm_mode, sm_warn, sm_candidates = _select_item_scoped_artifact(
+        artifact_key="stage_meta_path",
+        expected_kind="stage metadata JSON",
+        basename=basename,
+        item_stem=item_stem,
+        search_dirs=run_scoped_dirs,
+        exact_suffix="_stage.json",
+        pattern="*stage*.json",
+        allow_single_candidate_fallback=True,
+    )
+    _record("stage_meta_path", "stage metadata JSON", stage_meta_path, sm_mode, sm_warn, sm_candidates, run_scoped_dirs)
 
-        if len(stem_candidates) == 1:
-            stage_trace_path = stem_candidates[0]
-            used_fallbacks["stage_trace_path"] = "stage_meta stem csv/txt fallback"
-        elif len(stem_candidates) > 1:
-            names = ", ".join(p.name for p in stem_candidates)
-            raise DragIoError(
-                "Ambiguous DRAG run stage trace: canonical "
-                f"{preferred_stage_trace.name!r} is missing and multiple trace files match "
-                f"stage meta stem {stem!r}: {names}"
-            )
-
-    if stage_trace_path is None:
-        # Last resort: any ot_drag*.csv/txt (but require uniqueness)
-        candidates_csv = sorted(run_dir.glob("ot_drag*.csv"))
-        candidates_txt = sorted(run_dir.glob("ot_drag*.txt"))
-        candidates = sorted({*candidates_csv, *candidates_txt})
-        if not candidates:
-            raise DragIoError(
-                "Missing required file for DRAG run: stage trace CSV/TXT (e.g. ot_drag*.txt)"
-            )
-        if len(candidates) != 1:
-            names = ", ".join(p.name for p in candidates)
-            raise DragIoError(
-                "Ambiguous DRAG run stage trace: canonical "
-                f"{preferred_stage_trace.name!r} is missing but multiple fallback candidates exist: {names}"
-            )
-        stage_trace_path = candidates[0]
-        used_fallbacks["stage_trace_path"] = "ot_drag*.csv/txt fallback"
+    # stage trace
+    stage_trace_path, st_mode, st_warn, st_candidates = _select_item_scoped_artifact(
+        artifact_key="stage_trace_path",
+        expected_kind="stage trace CSV/TXT",
+        basename=basename,
+        item_stem=item_stem,
+        search_dirs=run_scoped_dirs,
+        exact_suffix="_stage_trace.csv",
+        pattern="*stage_trace.*",
+        allow_single_candidate_fallback=True,
+    )
+    _record("stage_trace_path", "stage trace CSV/TXT", stage_trace_path, st_mode, st_warn, st_candidates, run_scoped_dirs)
 
     resolved_traj: Path | None = None
     if trajectory_path is not None:
         resolved_traj = Path(trajectory_path).resolve()
         if not resolved_traj.is_file():
             raise DragIoError(f"Provided trajectory CSV does not exist: {resolved_traj}")
-        used_fallbacks["trajectory_path"] = "provided"
-    else:
-        candidate = run_dir / f"{basename}_trajectory.csv"
-        if candidate.is_file():
-            resolved_traj = candidate
-        else:
-            candidates = sorted(run_dir.glob("*_trajectory.csv"))
-            if len(candidates) == 1:
-                resolved_traj = candidates[0]
-                used_fallbacks["trajectory_path"] = "non-canonical *_trajectory.csv fallback"
-            else:
-                if not candidates:
-                    raise DragIoError("Missing required file for DRAG run: trajectory CSV (_trajectory.csv)")
-                names = ", ".join(p.name for p in candidates)
+        if item_root is not None:
+            try:
+                resolved_traj.relative_to(item_root)
+            except Exception as exc:
                 raise DragIoError(
-                    "Ambiguous DRAG run trajectory CSV: canonical "
-                    f"{candidate.name!r} is missing but multiple fallback candidates exist: {names}"
-                )
+                    "Provided trajectory CSV is outside current item context and cannot be used: "
+                    f"{resolved_traj} (item_root={item_root})"
+                ) from exc
+        artifact_selection["trajectory_path"] = {
+            "selected_artifact_path": str(resolved_traj),
+            "artifact_selection_mode": "provided_path_in_item_scope",
+            "artifact_selection_warning": None,
+            "candidate_files": [str(resolved_traj)],
+            "searched_directories": [str(p) for p in analysis_scoped_dirs],
+        }
+        _log_artifact_discovery(
+            input_path=run_dir,
+            item_root=item_root,
+            artifact_key="trajectory_path",
+            expected_kind="trajectory CSV",
+            search_dirs=analysis_scoped_dirs,
+            candidates=[resolved_traj],
+            selected=resolved_traj,
+            mode="provided_path_in_item_scope",
+            warning=None,
+        )
+    else:
+        try:
+            resolved_traj, tr_mode, tr_warn, tr_candidates = _select_item_scoped_artifact(
+                artifact_key="trajectory_path",
+                expected_kind="trajectory CSV",
+                basename=basename,
+                item_stem=item_stem,
+                search_dirs=analysis_scoped_dirs,
+                exact_suffix="_trajectory.csv",
+                pattern="*_trajectory.csv",
+                allow_single_candidate_fallback=True,
+            )
+            artifact_selection["trajectory_path"] = {
+                "selected_artifact_path": str(resolved_traj),
+                "artifact_selection_mode": tr_mode,
+                "artifact_selection_warning": tr_warn,
+                "candidate_files": [str(p) for p in tr_candidates],
+                "searched_directories": [str(p) for p in analysis_scoped_dirs],
+            }
+            _log_artifact_discovery(
+                input_path=run_dir,
+                item_root=item_root,
+                artifact_key="trajectory_path",
+                expected_kind="trajectory CSV",
+                search_dirs=analysis_scoped_dirs,
+                candidates=tr_candidates,
+                selected=resolved_traj,
+                mode=tr_mode,
+                warning=tr_warn,
+            )
+            if tr_mode != "exact_basename_match":
+                used_fallbacks["trajectory_path"] = tr_mode
+        except DragIoError as exc:
+            if require_trajectory:
+                raise DragIoError(
+                    f"{exc} input={run_dir}, item_root={item_root}, "
+                    f"searched={[str(p) for p in analysis_scoped_dirs]}"
+                ) from exc
+            # Keep trajectory as optional at discovery layer (run_raw can generate it).
+            artifact_selection["trajectory_path"] = {
+                "selected_artifact_path": None,
+                "artifact_selection_mode": "missing_or_ambiguous",
+                "artifact_selection_warning": str(exc),
+                "candidate_files": [],
+                "searched_directories": [str(p) for p in analysis_scoped_dirs],
+            }
+            _log_artifact_discovery(
+                input_path=run_dir,
+                item_root=item_root,
+                artifact_key="trajectory_path",
+                expected_kind="trajectory CSV",
+                search_dirs=analysis_scoped_dirs,
+                candidates=[],
+                selected=None,
+                mode="missing_or_ambiguous",
+                warning=str(exc),
+            )
 
     return DragRunPaths(
         run_dir=run_dir,
@@ -175,7 +451,74 @@ def discover_drag_run_paths(run_dir: Path, trajectory_path: Path | None = None) 
         stage_trace_path=stage_trace_path,
         trajectory_path=resolved_traj,
         used_fallbacks=used_fallbacks,
+        artifact_selection=artifact_selection,
     )
+
+
+def evaluate_drag_preflight(
+    *,
+    current_drag_input_path: Path,
+    run_dir: Path,
+    brownian_baseline_folder: Path | None,
+) -> dict[str, Any]:
+    run_dir = Path(run_dir).resolve()
+    current_drag_input_path = Path(current_drag_input_path).resolve()
+    item_root = _find_item_root_context(run_dir)
+    baseline_folder = Path(brownian_baseline_folder).resolve() if brownian_baseline_folder else None
+    baseline_selection_mode = "explicit_ui_folder" if baseline_folder else "missing"
+
+    try:
+        paths = discover_drag_run_paths(run_dir, trajectory_path=None, require_trajectory=False)
+    except Exception as exc:
+        return {
+            "current_drag_input_path": str(current_drag_input_path),
+            "current_drag_item_root": str(item_root) if item_root is not None else None,
+            "current_drag_trajectory_path": None,
+            "brownian_baseline_folder": str(baseline_folder) if baseline_folder is not None else None,
+            "baseline_selection_mode": baseline_selection_mode,
+            "drag_preflight_status": "failed_invalid_run_context",
+            "drag_preflight_message": f"Current drag input context is invalid: {exc}",
+            "artifact_selection": {},
+        }
+
+    traj_info = paths.artifact_selection.get("trajectory_path") or {}
+    traj_selected = paths.trajectory_path
+
+    if traj_selected is not None:
+        status = "ready_existing_trajectory"
+        msg = "Current drag trajectory CSV is available in current drag context."
+    else:
+        if item_root is None:
+            status = "ready_tracking_required_standalone"
+            if baseline_folder is not None:
+                msg = (
+                    "Current drag run has no trajectory CSV. Brownian baseline folder is loaded correctly "
+                    "but is unrelated to the current drag trajectory. Tracking will generate trajectory first."
+                )
+            else:
+                msg = (
+                    "Current drag run has no trajectory CSV and no Brownian baseline folder is configured. "
+                    "Tracking can generate trajectory, but Drag calibration still requires Brownian baseline."
+                )
+        else:
+            status = "ready_tracking_required_item"
+            msg = (
+                "Current drag item has no trajectory CSV yet. Tracking will generate trajectory before Drag analysis."
+            )
+        warn = traj_info.get("artifact_selection_warning")
+        if warn:
+            msg = f"{msg} Discovery detail: {warn}"
+
+    return {
+        "current_drag_input_path": str(current_drag_input_path),
+        "current_drag_item_root": str(item_root) if item_root is not None else None,
+        "current_drag_trajectory_path": str(traj_selected) if traj_selected is not None else None,
+        "brownian_baseline_folder": str(baseline_folder) if baseline_folder is not None else None,
+        "baseline_selection_mode": baseline_selection_mode,
+        "drag_preflight_status": status,
+        "drag_preflight_message": msg,
+        "artifact_selection": dict(paths.artifact_selection),
+    }
 
 
 def _load_stage_meta(stage_meta_path: Path) -> DragStageMeta:
@@ -318,35 +661,14 @@ def _load_stage_trace(stage_trace_path: Path) -> tuple[list[DragStageTraceEvent]
     return events, timing
 
 
-def _load_video_timestamps(timestamps_path: Path) -> tuple[list[int], list[float]]:
-    frames: list[int] = []
-    times: list[float] = []
-    with timestamps_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        if "frame" not in (reader.fieldnames or []) or "timestamp_s" not in (
-            reader.fieldnames or []
-        ):
-            raise DragIoError(
-                f"Timestamps CSV {timestamps_path.name} must contain 'frame' and 'timestamp_s' columns"
-            )
-        for row in reader:
-            if not row:
-                continue
-            try:
-                fi = int(row.get("frame", "0"))
-                ts = float(row.get("timestamp_s", "nan"))
-            except Exception:  # noqa: BLE001
-                continue
-            frames.append(fi)
-            times.append(ts)
-
-    if len(frames) < 2:
+def _load_video_timestamps(timestamps_path: Path) -> tuple[list[int], list[float], bool, str]:
+    try:
+        frames, times, _ = load_and_validate_timestamps_csv(timestamps_path)
+        return frames, times, True, "timestamps validated"
+    except Exception as exc:
         raise DragIoError(
-            f"Timestamps CSV {timestamps_path.name} has too few rows for analysis "
-            "(need at least 2 frames)"
-        )
-
-    return frames, times
+            f"Timestamps CSV validation failed for {timestamps_path.name}: {exc}"
+        ) from exc
 
 
 def load_drag_run(run_dir: Path, trajectory_path: Path | None = None) -> DragRunLoaded:
@@ -365,7 +687,12 @@ def load_drag_run(run_dir: Path, trajectory_path: Path | None = None) -> DragRun
 
     stage_meta = _load_stage_meta(paths.stage_meta_path)
     stage_events, stage_timing = _load_stage_trace(paths.stage_trace_path)
-    frame_indices, frame_timestamps_s = _load_video_timestamps(paths.timestamps_path)
+    (
+        frame_indices,
+        frame_timestamps_s,
+        ts_validation_pass,
+        ts_validation_msg,
+    ) = _load_video_timestamps(paths.timestamps_path)
 
     return DragRunLoaded(
         paths=paths,
@@ -374,5 +701,7 @@ def load_drag_run(run_dir: Path, trajectory_path: Path | None = None) -> DragRun
         stage_timing=stage_timing,
         frame_indices=frame_indices,
         frame_timestamps_s=frame_timestamps_s,
+        timestamp_validation_pass=ts_validation_pass,
+        timestamp_validation_message=ts_validation_msg,
     )
 

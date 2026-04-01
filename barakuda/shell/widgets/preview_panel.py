@@ -205,7 +205,12 @@ class PreviewPanel(QWidget):
                 self._update_video_labels(0)
 
                 dur = meta.duration_s
-                dur_txt = f"{dur:.2f} s" if dur is not None else "n/a"
+                if dur is not None:
+                    dur_txt = f"{dur:.2f} s"
+                    if meta.timing_source != "timestamps":
+                        dur_txt += " (estimated)"
+                else:
+                    dur_txt = "n/a"
 
                 self._info_meta = {
                     "path": str(path),
@@ -214,6 +219,8 @@ class PreviewPanel(QWidget):
                     "fps": f"{meta.fps:.3f}",
                     "frames": f"{meta.frame_count}",
                     "duration": dur_txt,
+                    "timing_source": str(meta.timing_source or "estimated"),
+                    "timing_source_detail": str(meta.timing_source_detail or ""),
                     "current": "frame0",
                 }
                 self._refresh_info_block()
@@ -474,6 +481,9 @@ class PreviewPanel(QWidget):
             lines.append(f"fps={meta.get('fps', 'n/a')}")
             lines.append(f"frames={meta.get('frames', 'n/a')}")
             lines.append(f"duration={meta.get('duration', 'n/a')}")
+            lines.append(f"timing_source={meta.get('timing_source', 'n/a')}")
+            if meta.get("timing_source_detail"):
+                lines.append(f"timing_detail={meta.get('timing_source_detail')}")
             lines.append(f"current={meta.get('current', 'n/a')}")
         elif meta.get("type") == "spm":
             lines.append(f"shape={meta.get('shape', 'n/a')}")
@@ -499,9 +509,14 @@ class PreviewPanel(QWidget):
             return
         meta = self._reader.meta
         total = max(1, int(meta.frame_count))
-        fps = float(meta.fps) if meta.fps and meta.fps > 0 else 1.0
-        t = float(i) / fps
-        self._frame_label.setText(f"frame: {i}/{total-1}   t: {t:.3f} s")
+        t: float | None = None
+        if meta.frame_to_time_s and int(i) in meta.frame_to_time_s and meta.t_first_s is not None:
+            t = float(meta.frame_to_time_s[int(i)] - float(meta.t_first_s))
+        else:
+            fps = float(meta.fps) if meta.fps and meta.fps > 0 else 1.0
+            t = float(i) / fps
+        source_tag = "ts" if meta.timing_source == "timestamps" else "est"
+        self._frame_label.setText(f"frame: {i}/{total-1}   t: {t:.3f} s [{source_tag}]")
 
     def _set_before_and_after(self, arr: np.ndarray, is_initial_load: bool = True) -> None:
         arr = np.asarray(arr)
