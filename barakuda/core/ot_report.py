@@ -680,8 +680,48 @@ def build_ot_item_summary(
         diagnostics["drag_physics_confidence"] = drag_summary_json.get("drag_physics_confidence")
         diagnostics["drag_physics_warning"] = drag_summary_json.get("drag_physics_warning")
         diagnostics["baseline_robustness_flag"] = drag_summary_json.get("baseline_robustness_flag")
+        diagnostics["baseline_robustness_message"] = drag_summary_json.get("baseline_robustness_message")
         diagnostics["onset_robustness_flag"] = drag_summary_json.get("onset_robustness_flag")
+        diagnostics["onset_robustness_message"] = drag_summary_json.get("onset_robustness_message")
         diagnostics["kinematics_robustness_flag"] = drag_summary_json.get("kinematics_robustness_flag")
+        diagnostics["kinematics_robustness_message"] = drag_summary_json.get("kinematics_robustness_message")
+        diagnostics["drag_validation_gate"] = drag_summary_json.get("drag_validation_gate")
+        diagnostics["drag_validation_reason"] = drag_summary_json.get("drag_validation_reason")
+        diagnostics["baseline_strategy_primary"] = drag_summary_json.get("baseline_strategy_primary")
+        diagnostics["baseline_strategy_alt"] = drag_summary_json.get("baseline_strategy_alt")
+        diagnostics["baseline_position_primary_px"] = _parse_float(drag_summary_json.get("baseline_position_primary_px"))
+        diagnostics["baseline_position_primary_um"] = _parse_float(drag_summary_json.get("baseline_position_primary_um"))
+        diagnostics["baseline_position_alt_px"] = _parse_float(drag_summary_json.get("baseline_position_alt_px"))
+        diagnostics["baseline_position_alt_um"] = _parse_float(drag_summary_json.get("baseline_position_alt_um"))
+        diagnostics["offset_primary_um"] = _parse_float(drag_summary_json.get("offset_primary_um"))
+        diagnostics["offset_alt_um"] = _parse_float(drag_summary_json.get("offset_alt_um"))
+        diagnostics["eta_primary_pa_s"] = _parse_float(drag_summary_json.get("eta_primary_pa_s"))
+        diagnostics["eta_alt_pa_s"] = _parse_float(drag_summary_json.get("eta_alt_pa_s"))
+        diagnostics["baseline_strategy_difference_ratio"] = _parse_float(
+            drag_summary_json.get("baseline_strategy_difference_ratio")
+        )
+        diagnostics["relaxed_onset_used"] = drag_summary_json.get("relaxed_onset_used")
+        diagnostics["competing_durable_candidates_count"] = _parse_float(
+            drag_summary_json.get("competing_durable_candidates_count")
+        )
+        diagnostics["onset_candidate_density"] = _parse_float(drag_summary_json.get("onset_candidate_density"))
+        diagnostics["speed_stage_json"] = _parse_float(drag_summary_json.get("speed_stage_json"))
+        diagnostics["speed_trace_derived"] = _parse_float(drag_summary_json.get("speed_trace_derived"))
+        diagnostics["speed_used_for_physics"] = _parse_float(drag_summary_json.get("speed_used_for_physics"))
+        diagnostics["speed_consistency_error_pct"] = _parse_float(drag_summary_json.get("speed_consistency_error_pct"))
+        diagnostics["expected_offset_if_eta_1mPas_um"] = _parse_float(
+            drag_summary_json.get("expected_offset_if_eta_1mPas_um")
+        )
+        diagnostics["expected_offset_if_eta_from_baseline_um"] = _parse_float(
+            drag_summary_json.get("expected_offset_if_eta_from_baseline_um")
+        )
+        diagnostics["measured_offset_um"] = _parse_float(drag_summary_json.get("measured_offset_um"))
+        diagnostics["offset_underestimation_ratio_vs_water"] = _parse_float(
+            drag_summary_json.get("offset_underestimation_ratio_vs_water")
+        )
+        diagnostics["offset_underestimation_ratio_vs_baseline"] = _parse_float(
+            drag_summary_json.get("offset_underestimation_ratio_vs_baseline")
+        )
         diagnostics["offset_current_windows_um"] = _parse_float(drag_summary_json.get("offset_current_windows_um"))
         diagnostics["offset_alt_baseline_um"] = _parse_float(drag_summary_json.get("offset_alt_baseline_um"))
         diagnostics["eta_current_windows"] = _parse_float(drag_summary_json.get("eta_current_windows"))
@@ -767,6 +807,7 @@ def build_ot_item_summary(
         )
         diagnostics["onset_ambiguity_score"] = _parse_float(drag_alignment_json.get("onset_ambiguity_score"))
         diagnostics["onset_confidence_class"] = drag_alignment_json.get("onset_confidence_class")
+        diagnostics["onset_candidate_density"] = _parse_float(drag_alignment_json.get("onset_candidate_density"))
     if compare_json and metrics.get("kappa_drag_pn_per_um") is None:
         delta = compare_json.get("delta") or {}
         dragging = compare_json.get("dragging") or {}
@@ -880,6 +921,23 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
             ("Drag", "Absolute offset", diagnostics.get("offset_um"), "um", "offset_um"),
             ("Drag", "Alignment status", diagnostics.get("alignment_status"), "", "alignment_status"),
             ("Drag", "Physics status", diagnostics.get("physics_status"), "", "physics_status"),
+            ("Drag", "Drag physics confidence", diagnostics.get("drag_physics_confidence"), "", "drag_physics_confidence"),
+            ("Drag", "Drag validation gate", diagnostics.get("drag_validation_gate"), "", "drag_validation_gate"),
+            ("Drag", "Drag validation reason", diagnostics.get("drag_validation_reason"), "", "drag_validation_reason"),
+            ("Drag", "Baseline strategy primary", diagnostics.get("baseline_strategy_primary"), "", "baseline_strategy_primary"),
+            ("Drag", "Baseline strategy alt", diagnostics.get("baseline_strategy_alt"), "", "baseline_strategy_alt"),
+            ("Drag", "Offset primary", diagnostics.get("offset_primary_um"), "um", "offset_primary_um"),
+            ("Drag", "Offset alt", diagnostics.get("offset_alt_um"), "um", "offset_alt_um"),
+            ("Drag", "Eta primary", diagnostics.get("eta_primary_pa_s"), "Pa*s", "eta_primary_pa_s"),
+            ("Drag", "Eta alt", diagnostics.get("eta_alt_pa_s"), "Pa*s", "eta_alt_pa_s"),
+            ("Drag", "Baseline strategy difference ratio", diagnostics.get("baseline_strategy_difference_ratio"), "", "baseline_strategy_difference_ratio"),
+            ("Drag", "Onset confidence class", diagnostics.get("onset_confidence_class"), "", "onset_confidence_class"),
+            ("Drag", "Competing durable candidates", diagnostics.get("competing_durable_candidates_count"), "", "competing_durable_candidates_count"),
+            ("Drag", "Onset candidate density", diagnostics.get("onset_candidate_density"), "", "onset_candidate_density"),
+            ("Drag", "Speed stage json", diagnostics.get("speed_stage_json"), "um/s", "speed_stage_json"),
+            ("Drag", "Speed trace derived", diagnostics.get("speed_trace_derived"), "um/s", "speed_trace_derived"),
+            ("Drag", "Speed used for physics", diagnostics.get("speed_used_for_physics"), "um/s", "speed_used_for_physics"),
+            ("Drag", "Speed consistency error", diagnostics.get("speed_consistency_error_pct"), "%", "speed_consistency_error_pct"),
             ("Provenance", "Current drag input", diagnostics.get("current_drag_input_path"), "", "current_drag_input_path"),
             ("Provenance", "Current drag output root", diagnostics.get("current_drag_output_root"), "", "current_drag_output_root"),
             ("Provenance", "Brownian baseline folder", diagnostics.get("brownian_baseline_folder"), "", "brownian_baseline_folder"),
@@ -1076,6 +1134,8 @@ def _drag_conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Timing source", _wrap(diagnostics.get("timing_source"), 52)],
         ["Drag physics confidence", _wrap(diagnostics.get("drag_physics_confidence"), 52)],
         ["Drag physics warning", _wrap(diagnostics.get("drag_physics_warning"), 52)],
+        ["Drag validation gate", _wrap(diagnostics.get("drag_validation_gate"), 52)],
+        ["Drag validation reason", _wrap(diagnostics.get("drag_validation_reason"), 52)],
         ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
         ["Baseline window [s]", _wrap(f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", 52)],
         ["Steady window [s]", _wrap(f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", 52)],
@@ -1129,6 +1189,10 @@ def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Drag stiffness [pN/um]", _fmt_value((summary.get("metrics") or {}).get("kappa_drag_pn_per_um"))],
         ["Viscosity [Pa*s]", _fmt_value(diagnostics.get("eta_pa_s"))],
         ["Actual speed [um/s]", _fmt_value(diagnostics.get("actual_speed_um_s"))],
+        ["Speed stage json [um/s]", _fmt_value(diagnostics.get("speed_stage_json"))],
+        ["Speed trace derived [um/s]", _fmt_value(diagnostics.get("speed_trace_derived"))],
+        ["Speed used for physics [um/s]", _fmt_value(diagnostics.get("speed_used_for_physics"))],
+        ["Speed consistency error [%]", _fmt_value(diagnostics.get("speed_consistency_error_pct"))],
         ["Stage speed from trace [um/s]", _fmt_value(diagnostics.get("stage_speed_from_trace_um_s"))],
         ["Stage speed relative diff", _fmt_value(diagnostics.get("stage_speed_relative_diff"))],
         ["Stage speed consistent", _fmt_value(diagnostics.get("stage_speed_consistent"))],
@@ -1139,6 +1203,10 @@ def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Baseline robustness flag", _fmt_value(diagnostics.get("baseline_robustness_flag"))],
         ["Onset robustness flag", _fmt_value(diagnostics.get("onset_robustness_flag"))],
         ["Kinematics robustness flag", _fmt_value(diagnostics.get("kinematics_robustness_flag"))],
+        ["Onset confidence class", _fmt_value(diagnostics.get("onset_confidence_class"))],
+        ["Onset candidate density", _fmt_value(diagnostics.get("onset_candidate_density"))],
+        ["Competing durable candidates", _fmt_value(diagnostics.get("competing_durable_candidates_count"))],
+        ["Baseline strategy difference ratio", _fmt_value(diagnostics.get("baseline_strategy_difference_ratio"))],
         ["Analysis status", _fmt_value(diagnostics.get("analysis_status"))],
         ["Physics status", _fmt_value(diagnostics.get("physics_status"))],
     ]

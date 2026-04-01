@@ -165,7 +165,8 @@ class AlignmentDiagnostics:
     onset_relaxed_used: bool = False
     onset_competing_durable_candidates: int = 0
     onset_ambiguity_score: float = 0.0
-    onset_confidence_class: str = "robust"
+    onset_confidence_class: str = "high"
+    onset_candidate_density: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -321,6 +322,34 @@ class DragAnalysisResult:
     baseline_robustness_flag: str | None = None
     onset_robustness_flag: str | None = None
     kinematics_robustness_flag: str | None = None
+    baseline_robustness_message: str | None = None
+    onset_robustness_message: str | None = None
+    kinematics_robustness_message: str | None = None
+    baseline_strategy_primary: str | None = None
+    baseline_strategy_alt: str | None = None
+    baseline_position_primary_px: float | None = None
+    baseline_position_primary_um: float | None = None
+    baseline_position_alt_px: float | None = None
+    baseline_position_alt_um: float | None = None
+    offset_primary_um: float | None = None
+    offset_alt_um: float | None = None
+    eta_primary_pa_s: float | None = None
+    eta_alt_pa_s: float | None = None
+    baseline_strategy_difference_ratio: float | None = None
+    relaxed_onset_used: bool | None = None
+    competing_durable_candidates_count: int | None = None
+    onset_candidate_density: float | None = None
+    speed_stage_json: float | None = None
+    speed_trace_derived: float | None = None
+    speed_used_for_physics: float | None = None
+    speed_consistency_error_pct: float | None = None
+    expected_offset_if_eta_1mPas_um: float | None = None
+    expected_offset_if_eta_from_baseline_um: float | None = None
+    measured_offset_um: float | None = None
+    offset_underestimation_ratio_vs_water: float | None = None
+    offset_underestimation_ratio_vs_baseline: float | None = None
+    drag_validation_gate: str | None = None
+    drag_validation_reason: str | None = None
 
 
 def iter_qc_flags(flags: DragQCFlags) -> Iterable[tuple[str, bool]]:

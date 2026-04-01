@@ -37,9 +37,10 @@ def _classify_onset_ambiguity(
     candidate_durations: Sequence[float],
     min_hold_s: float,
     used_relaxed_onset: bool,
-) -> tuple[int, float, str]:
+) -> tuple[int, float, float, str]:
     durable = sum(1 for d in candidate_durations if float(d) >= float(min_hold_s))
     competing = max(0, durable - 1)
+    density = (float(candidate_count) / max(1.0, float(min_hold_s)))
     score = 0.0
     score += min(0.6, competing * 0.2)
     if candidate_count > 8:
@@ -48,12 +49,12 @@ def _classify_onset_ambiguity(
         score += 0.25
     score = max(0.0, min(1.0, score))
     if score >= 0.65:
-        cls = "likely_wrong"
+        cls = "low"
     elif score >= 0.30:
-        cls = "weak_but_acceptable"
+        cls = "medium"
     else:
-        cls = "robust"
-    return competing, score, cls
+        cls = "high"
+    return competing, density, score, cls
 
 
 def _interp_time_for_frames(
@@ -397,7 +398,8 @@ def analyze_drag_run(
     )
     offset_alt_baseline_um = None
     eta_alt_baseline = None
-    baseline_robustness_flag = "robust"
+    baseline_robustness_flag = "pass"
+    baseline_robustness_message = "Baseline strategies agree within tolerance."
     if math.isfinite(baseline_reference_px):
         offset_alt_baseline_um = (
             abs((steady_px - baseline_reference_px) * um_per_px)
@@ -407,7 +409,11 @@ def analyze_drag_run(
         sigma_px = float(alignment_diag.baseline_sigma) if math.isfinite(alignment_diag.baseline_sigma) else 0.0
         baseline_delta_threshold_px = max(0.25, 2.0 * sigma_px)
         if abs(float(baseline_median_delta_px)) > baseline_delta_threshold_px:
-            baseline_robustness_flag = "weak"
+            baseline_robustness_flag = "suspect"
+            baseline_robustness_message = (
+                "Near-onset and long pre-motion baseline differ beyond tolerance "
+                f"({float(baseline_median_delta_px):.4f}px > {baseline_delta_threshold_px:.4f}px)."
+            )
             warnings.append(
                 "PHYSICS_WARNING: baseline reference differs from near-onset baseline "
                 f"by {float(baseline_median_delta_px):.4f} px (> {baseline_delta_threshold_px:.4f} px)."
@@ -474,7 +480,8 @@ def analyze_drag_run(
     stage_speed_from_trace_um_s = None
     stage_speed_relative_diff = None
     stage_speed_consistent = None
-    kinematics_robustness_flag = "robust"
+    kinematics_robustness_flag = "pass"
+    kinematics_robustness_message = "Stage speed checks are within tolerance."
     if (
         loaded.stage_timing.motion_stop_stage_s is not None
         and loaded.stage_timing.motion_start_stage_s is not None
@@ -488,12 +495,18 @@ def analyze_drag_run(
                     stage_speed_relative_diff = abs(stage_speed_from_trace_um_s - actual_speed_um_s) / abs(actual_speed_um_s)
                     stage_speed_consistent = stage_speed_relative_diff <= 0.05
     if motion_kinematics_source is not None and "legacy_user_units" in str(motion_kinematics_source):
-        kinematics_robustness_flag = "legacy_units_risky"
+        kinematics_robustness_flag = "suspect"
+        kinematics_robustness_message = (
+            "Kinematics are derived via legacy_user_units_via_stage_um_per_unit mapping."
+        )
         warnings.append(
             "PHYSICS_WARNING: kinematics use legacy user-units conversion via stage_um_per_unit."
         )
     if stage_speed_consistent is False:
-        kinematics_robustness_flag = "inconsistent_speed"
+        kinematics_robustness_flag = "fail"
+        kinematics_robustness_message = (
+            "Stage speed mismatch between stage.json and trace-derived estimate exceeds tolerance."
+        )
         warnings.append(
             "PHYSICS_WARNING: speed from stage trace and summary speed differ by "
             f"{(stage_speed_relative_diff or 0.0) * 100:.2f}%."
@@ -586,18 +599,23 @@ def analyze_drag_run(
         except Exception:  # noqa: BLE001
             eta_alt_baseline = None
 
-    competing_candidates, onset_ambiguity_score, onset_confidence_class = _classify_onset_ambiguity(
+    competing_candidates, onset_candidate_density, onset_ambiguity_score, onset_confidence_class = _classify_onset_ambiguity(
         candidate_count=len(alignment_diag.candidate_onset_times_s),
         candidate_durations=alignment_diag.candidate_durations_s,
         min_hold_s=alignment_diag.onset_min_hold_s,
         used_relaxed_onset=used_relaxed_onset,
     )
-    onset_robustness_flag = (
-        "robust"
-        if onset_confidence_class == "robust"
-        else ("weak" if onset_confidence_class == "weak_but_acceptable" else "likely_wrong")
+    onset_robustness_flag = "pass" if onset_confidence_class == "high" else ("suspect" if onset_confidence_class == "medium" else "fail")
+    onset_robustness_message = (
+        "Onset candidate set is clean and stable."
+        if onset_robustness_flag == "pass"
+        else (
+            "Onset has ambiguity but remains usable."
+            if onset_robustness_flag == "suspect"
+            else "Onset ambiguity is high; motion partition may be unreliable."
+        )
     )
-    if onset_robustness_flag != "robust":
+    if onset_robustness_flag != "pass":
         warnings.append(
             "PHYSICS_WARNING: onset ambiguity classified as "
             f"{onset_confidence_class} (score={onset_ambiguity_score:.2f})."
@@ -621,22 +639,102 @@ def analyze_drag_run(
         onset_competing_durable_candidates=competing_candidates,
         onset_ambiguity_score=onset_ambiguity_score,
         onset_confidence_class=onset_confidence_class,
+        onset_candidate_density=onset_candidate_density,
     )
 
-    if onset_robustness_flag == "likely_wrong" or kinematics_robustness_flag == "inconsistent_speed":
+    if onset_robustness_flag == "fail" or kinematics_robustness_flag == "fail":
         drag_physics_confidence = "low"
-    elif baseline_robustness_flag == "weak" or onset_robustness_flag == "weak":
+    elif baseline_robustness_flag == "suspect" or onset_robustness_flag == "suspect" or kinematics_robustness_flag == "suspect":
         drag_physics_confidence = "medium"
     else:
         drag_physics_confidence = "high"
     warnings_phys = []
-    if baseline_robustness_flag != "robust":
+    if baseline_robustness_flag != "pass":
         warnings_phys.append("baseline sensitivity")
-    if onset_robustness_flag != "robust":
+    if onset_robustness_flag != "pass":
         warnings_phys.append("onset ambiguity")
-    if kinematics_robustness_flag != "robust":
+    if kinematics_robustness_flag != "pass":
         warnings_phys.append("kinematics source/risk")
     drag_physics_warning = ", ".join(warnings_phys) if warnings_phys else None
+
+    baseline_strategy_primary = "near_onset_baseline"
+    baseline_strategy_alt = "long_premotion_baseline_reference"
+    baseline_position_primary_px = baseline_px
+    baseline_position_primary_um = baseline_um
+    baseline_position_alt_px = baseline_reference_px if math.isfinite(baseline_reference_px) else None
+    baseline_position_alt_um = (
+        baseline_position_alt_px * um_per_px
+        if (baseline_position_alt_px is not None and um_per_px is not None and um_per_px > 0)
+        else None
+    )
+    offset_primary_um = abs_offset_um
+    offset_alt_um = offset_alt_baseline_um
+    eta_primary_pa_s = eta_current_windows
+    eta_alt_pa_s = eta_alt_baseline
+    baseline_strategy_difference_ratio = None
+    if eta_primary_pa_s is not None and eta_primary_pa_s > 0 and eta_alt_pa_s is not None and eta_alt_pa_s > 0:
+        baseline_strategy_difference_ratio = max(eta_primary_pa_s, eta_alt_pa_s) / min(eta_primary_pa_s, eta_alt_pa_s)
+        if baseline_strategy_difference_ratio > 1.5 and baseline_robustness_flag == "pass":
+            baseline_robustness_flag = "suspect"
+            baseline_robustness_message = (
+                "Eta differs strongly between baseline strategies "
+                f"(ratio={baseline_strategy_difference_ratio:.3f})."
+            )
+
+    speed_stage_json = actual_speed_um_s
+    speed_trace_derived = stage_speed_from_trace_um_s
+    speed_used_for_physics = actual_speed_um_s
+    speed_consistency_error_pct = (
+        (stage_speed_relative_diff * 100.0)
+        if stage_speed_relative_diff is not None
+        else None
+    )
+
+    expected_offset_if_eta_1mPas_um = None
+    expected_offset_if_eta_from_baseline_um = None
+    measured_offset_um = abs_offset_um
+    offset_underestimation_ratio_vs_water = None
+    offset_underestimation_ratio_vs_baseline = None
+    if (
+        config.kappa_n_per_m is not None
+        and config.kappa_n_per_m > 0
+        and actual_speed_um_s is not None
+        and actual_speed_um_s > 0
+        and radius_m is not None
+    ):
+        speed_m_s = actual_speed_um_s * 1e-6
+        force_water = compute_drag_force(0.001, radius_m, speed_m_s)
+        expected_offset_if_eta_1mPas_um = (force_water / config.kappa_n_per_m) * 1e6
+        if measured_offset_um is not None and expected_offset_if_eta_1mPas_um > 0:
+            offset_underestimation_ratio_vs_water = measured_offset_um / expected_offset_if_eta_1mPas_um
+        if eta_alt_pa_s is not None and eta_alt_pa_s > 0:
+            force_alt = compute_drag_force(eta_alt_pa_s, radius_m, speed_m_s)
+            expected_offset_if_eta_from_baseline_um = (force_alt / config.kappa_n_per_m) * 1e6
+            if measured_offset_um is not None and expected_offset_if_eta_from_baseline_um > 0:
+                offset_underestimation_ratio_vs_baseline = measured_offset_um / expected_offset_if_eta_from_baseline_um
+
+    gate_reasons: list[str] = []
+    if baseline_robustness_flag == "fail":
+        gate_reasons.append("baseline_fail")
+    elif baseline_robustness_flag == "suspect":
+        gate_reasons.append("baseline_suspect")
+    if onset_robustness_flag == "fail":
+        gate_reasons.append("onset_fail")
+    elif onset_robustness_flag == "suspect":
+        gate_reasons.append("onset_suspect")
+    if kinematics_robustness_flag == "fail":
+        gate_reasons.append("kinematics_fail")
+    elif kinematics_robustness_flag == "suspect":
+        gate_reasons.append("kinematics_suspect")
+    if physics_status != "ready":
+        gate_reasons.append("physics_not_ready")
+    if any(reason.endswith("fail") for reason in gate_reasons):
+        drag_validation_gate = "fail"
+    elif gate_reasons:
+        drag_validation_gate = "suspect"
+    else:
+        drag_validation_gate = "pass"
+    drag_validation_reason = ", ".join(gate_reasons) if gate_reasons else "all_checks_passed"
 
     # Overall analysis status
     analysis_status = "ok"
@@ -750,5 +848,33 @@ def analyze_drag_run(
         baseline_robustness_flag=baseline_robustness_flag,
         onset_robustness_flag=onset_robustness_flag,
         kinematics_robustness_flag=kinematics_robustness_flag,
+        baseline_robustness_message=baseline_robustness_message,
+        onset_robustness_message=onset_robustness_message,
+        kinematics_robustness_message=kinematics_robustness_message,
+        baseline_strategy_primary=baseline_strategy_primary,
+        baseline_strategy_alt=baseline_strategy_alt,
+        baseline_position_primary_px=baseline_position_primary_px,
+        baseline_position_primary_um=baseline_position_primary_um,
+        baseline_position_alt_px=baseline_position_alt_px,
+        baseline_position_alt_um=baseline_position_alt_um,
+        offset_primary_um=offset_primary_um,
+        offset_alt_um=offset_alt_um,
+        eta_primary_pa_s=eta_primary_pa_s,
+        eta_alt_pa_s=eta_alt_pa_s,
+        baseline_strategy_difference_ratio=baseline_strategy_difference_ratio,
+        relaxed_onset_used=used_relaxed_onset,
+        competing_durable_candidates_count=competing_candidates,
+        onset_candidate_density=onset_candidate_density,
+        speed_stage_json=speed_stage_json,
+        speed_trace_derived=speed_trace_derived,
+        speed_used_for_physics=speed_used_for_physics,
+        speed_consistency_error_pct=speed_consistency_error_pct,
+        expected_offset_if_eta_1mPas_um=expected_offset_if_eta_1mPas_um,
+        expected_offset_if_eta_from_baseline_um=expected_offset_if_eta_from_baseline_um,
+        measured_offset_um=measured_offset_um,
+        offset_underestimation_ratio_vs_water=offset_underestimation_ratio_vs_water,
+        offset_underestimation_ratio_vs_baseline=offset_underestimation_ratio_vs_baseline,
+        drag_validation_gate=drag_validation_gate,
+        drag_validation_reason=drag_validation_reason,
     )
 
