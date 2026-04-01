@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Any
 
+from barakuda.core.truth_resolvers import resolve_bead_parameters_for_run
 from barakuda.devices.optical_tweezers.strategies.base import CalibrationStrategy
 
 
@@ -36,7 +37,13 @@ class DragConstantVelocityStrategy(CalibrationStrategy):
             axis = str(params.get("drag_axis", "x")).lower()
             stage_speed_um_s = float(params["stage_speed_um_s"])
             viscosity_pa_s = float(params.get("viscosity_pa_s", 1e-3))
-            bead_radius_um = float(params.get("bead_diameter_um", 1.0)) / 2.0
+            bead_res = resolve_bead_parameters_for_run(
+                bead_diameter_um=params.get("bead_diameter_um"),
+                bead_radius_um=params.get("bead_radius_um"),
+                bead_source=str(params.get("bead_source") or "strategy_params"),
+                allow_fallback=False,
+            )
+            bead_radius_um = float(bead_res.bead_radius_um)
         except KeyError as e:
             raise KeyError(f"Drag strategy missing required parameter: {e}")
 

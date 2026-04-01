@@ -10,6 +10,7 @@ from barakuda.core.ot_physics import (
     CalibrationParams,
     compute_calibration_from_equipartition_and_fc,
 )
+from barakuda.core.truth_resolvers import resolve_bead_parameters_for_run
 from barakuda.devices.optical_tweezers.pipeline.derived_newtonian import (
     compute_newtonian_derived,
     compute_mean_derived
@@ -70,7 +71,13 @@ class PsdWelchStrategy(CalibrationStrategy):
 
         # 4. Calibration (equipartition + fc)
         temp_c = float(params.get("temperature_c", 25.0))
-        bead_d = float(params.get("bead_diameter_um", 1.0))
+        bead_res = resolve_bead_parameters_for_run(
+            bead_diameter_um=params.get("bead_diameter_um"),
+            bead_radius_um=params.get("bead_radius_um"),
+            bead_source=str(params.get("bead_source") or "strategy_params"),
+            allow_fallback=False,
+        )
+        bead_d = float(bead_res.bead_diameter_um)
         visc = float(params.get("viscosity_pa_s", 0.001))
 
         cal_p = CalibrationParams(
