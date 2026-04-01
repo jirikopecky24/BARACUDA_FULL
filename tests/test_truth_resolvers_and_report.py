@@ -359,6 +359,12 @@ def test_drag_summary_parses_physics_confidence_fields(tmp_path: Path) -> None:
             "speed_consistency_error_pct": 2.3,
             "drag_validation_gate": "suspect",
             "drag_validation_reason": "baseline_suspect,kinematics_suspect",
+            "alignment_sanity_flag": False,
+            "alignment_sanity_message": "detected_stop_after_video_end",
+            "expected_stage_start_video_s": 1.2,
+            "expected_stage_stop_video_s": 9.8,
+            "detected_stage_start_video_s": 1.25,
+            "detected_stage_stop_video_s": 10.3,
         },
     )
     summary = build_ot_item_summary(
@@ -377,6 +383,7 @@ def test_drag_summary_parses_physics_confidence_fields(tmp_path: Path) -> None:
     row_map = {(g, m): v for g, m, v, _u, _n in rows}
     assert row_map[("Drag", "Drag validation gate")] == "suspect"
     assert row_map[("Drag", "Baseline strategy difference ratio")] == pytest.approx(1.6)
+    assert row_map[("Drag", "Alignment sanity flag")] is False
 
 
 def test_dropped_frames_semantics_kept_separate(tmp_path: Path) -> None:
