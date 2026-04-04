@@ -232,6 +232,12 @@ class XimcStage(AbstractStage):
         # Read initial position (integer steps + microsteps / 256)
         pos_before = self.get_position()
         _dbg("get_position done", "H1", {"pos_before": pos_before})
+        speed_reg_commanded_raw: int | None = None
+        speed_reg_readback_raw: int | None = None
+        pre_motion_flags: int | None = None
+        pre_motion_gpio_flags: int | None = None
+        pre_motion_mv_cmd_sts: int | None = None
+        pre_motion_alarm_nonfatal_allowed: bool | None = None
 
         # Set speed profile
         if _BACKEND == "libximc":
@@ -260,6 +266,7 @@ class XimcStage(AbstractStage):
             # Speed=1 matches XILab's SPEED_UNITS_S=1 "default slow drag mode" script.
             # Type safety: ctypes.c_ulong (uint32, max ~4.3e9); Speed=1 is safe.
             _speed_reg = max(1, int(round(abs(speed))))
+            speed_reg_commanded_raw = int(_speed_reg)
             mvst.Speed = _speed_reg
             mvst.Accel = max(1, int(round(abs(accel))))
             mvst.Decel = max(1, int(round(abs(decel))))
@@ -269,6 +276,7 @@ class XimcStage(AbstractStage):
             # read back to verify the controller accepted the values
             mvst_rb = _ll.move_settings_t()
             _ll.lib.get_move_settings(self._device_id, byref(mvst_rb))
+            speed_reg_readback_raw = int(mvst_rb.Speed)
             # #region agent log H-A — read-back after set
             _dbg("move_settings AFTER set (readback)", "H-A", {
                 "speed_reg_commanded": _speed_reg,
@@ -294,11 +302,13 @@ class XimcStage(AbstractStage):
             if r != pyximc.Result.Ok:
                 raise RuntimeError(f"XIMC get_move_settings failed: {r}")
             mvst.Speed = max(1, int(round(abs(speed))))
+            speed_reg_commanded_raw = int(mvst.Speed)
             mvst.Accel = max(1, int(round(abs(accel))))
             mvst.Decel = max(1, int(round(abs(decel))))
             r = _lib.set_move_settings(self._device_id, mvst)
             if r != pyximc.Result.Ok:
                 raise RuntimeError(f"XIMC set_move_settings failed: {r}")
+            speed_reg_readback_raw = int(mvst.Speed)
 
         # ------------------------------------------------------------------
         # Pre-flight: check XIMC status for alarm / limit flags.
@@ -311,6 +321,9 @@ class XimcStage(AbstractStage):
             # GPIOFlags: bit 0/1 = left/right limit switches (controller-dependent)
             _flags = int(getattr(_pre_status, "Flags", 0))
             _gpio = int(getattr(_pre_status, "GPIOFlags", 0))
+            pre_motion_flags = _flags
+            pre_motion_gpio_flags = _gpio
+            pre_motion_mv_cmd_sts = int(getattr(_pre_status, "MvCmdSts", 0))
             _dbg("pre_motion status check", "H1", {
                 "get_status_result": int(_ps_r),
                 "Flags": _flags,
@@ -323,6 +336,7 @@ class XimcStage(AbstractStage):
             # - allow known nonfatal ErrV(+HOMD) combinations seen in XILab-valid motion
             if _flags & 0x20:
                 if _is_nonfatal_alarm_combo(_flags):
+                    pre_motion_alarm_nonfatal_allowed = True
                     _dbg(
                         "pre_motion nonfatal alarm combo allowed",
                         "H1",
@@ -332,10 +346,13 @@ class XimcStage(AbstractStage):
                         },
                     )
                 else:
+                    pre_motion_alarm_nonfatal_allowed = False
                     raise RuntimeError(
                         f"XIMC controller is in ALARM state (Flags=0x{_flags:02X}). "
                         "Home the stage in XILab and reset the controller before moving."
                     )
+            else:
+                pre_motion_alarm_nonfatal_allowed = False
             # If controller already reports RUNNING from a previous command, stop it first.
             if int(getattr(_pre_status, "MvCmdSts", 0)) & 0x01:
                 _ll.lib.command_stop(self._device_id)
@@ -466,6 +483,12 @@ class XimcStage(AbstractStage):
             controller=self.CONTROLLER_NAME,
             stage_um_per_unit=self.stage_um_per_unit,
             running_confirmed_delay_s=running_confirmed_delay_s,
+            commanded_speed_raw=float(speed_reg_commanded_raw) if speed_reg_commanded_raw is not None else None,
+            speed_reg_readback_raw=float(speed_reg_readback_raw) if speed_reg_readback_raw is not None else None,
+            pre_motion_flags=pre_motion_flags,
+            pre_motion_gpio_flags=pre_motion_gpio_flags,
+            pre_motion_mv_cmd_sts=pre_motion_mv_cmd_sts,
+            pre_motion_alarm_nonfatal_allowed=pre_motion_alarm_nonfatal_allowed,
         )
 
     def stop(self) -> None:

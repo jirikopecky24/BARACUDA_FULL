@@ -44,6 +44,8 @@ from barakuda.devices.acquisition.motion.motion_run import (
     run_record_and_motion,
     MotionRunResult,
     MotionRunError,
+    format_record_motion_start_log,
+    resolve_unique_run_target,
 )
 from barakuda.devices.acquisition.motion.metric_conversion import MetricMotionCommand
 from barakuda.devices.acquisition.motion.metric_conversion import XimcMetricCalibration
@@ -227,6 +229,7 @@ class _RecordMotionWorker(QObject):
     motion_finished = pyqtSignal(object, object)
     error = pyqtSignal(str)
     progress = pyqtSignal(int, float)
+    log_msg = pyqtSignal(str)
 
     def __init__(
         self,
@@ -243,7 +246,6 @@ class _RecordMotionWorker(QObject):
         gain,
         fps_hint: float,
         pixel_format: str,
-        log_fn=None,
     ) -> None:
         super().__init__()
         self._cam = camera
@@ -259,7 +261,12 @@ class _RecordMotionWorker(QObject):
         self._gain = gain
         self._fps_hint = fps_hint
         self._pixel_format = pixel_format
-        self._log_fn = log_fn
+
+    def _emit_log(self, msg: str) -> None:
+        try:
+            self.log_msg.emit(str(msg))
+        except Exception:
+            pass
 
     def run(self) -> None:
         try:
@@ -278,7 +285,7 @@ class _RecordMotionWorker(QObject):
                 fps_hint=self._fps_hint,
                 pixel_format=self._pixel_format,
                 progress_callback=lambda f, t: self.progress.emit(f, t),
-                log_fn=self._log_fn,
+                log_fn=self._emit_log,
             )
             self.motion_finished.emit(result.record_result, result)
         except MotionRunError as exc:
@@ -305,6 +312,7 @@ class AcquisitionPanel(QWidget):
     # Thread-safe signals from background fps/benchmark threads
     _fps_done_signal = pyqtSignal()
     _fps_result_signal = pyqtSignal(str)   # carries result text for label + status
+    _motion_log_signal = pyqtSignal(str)
     # Thread-safe signal for slow stage enumeration (XIMC + COM descriptions)
     _stage_list_ready_signal = pyqtSignal(object, object)  # (devices, com_desc)
 
@@ -340,6 +348,7 @@ class AcquisitionPanel(QWidget):
         # Connect thread-safe fps signals to UI slots (always run in main thread)
         self._fps_done_signal.connect(self._on_fps_done)
         self._fps_result_signal.connect(self._on_fps_result)
+        self._motion_log_signal.connect(self._on_motion_worker_log)
         _STAGE_SCAN_BRIDGE.ready.connect(self._on_stage_scan_ready)
 
         # Sensor limits (updated on connect)
@@ -1474,6 +1483,16 @@ class AcquisitionPanel(QWidget):
         requested_roi = self._get_roi_tuple()
         roi = self._sync_roi_to_camera(requested_roi)
         gain = self._spin_gain.value() if self._spin_gain.isEnabled() else None
+        requested_basename = self._edit_basename.text().strip()
+        resolved_basename, resolved_output_dir = resolve_unique_run_target(
+            self._edit_output_dir.text(),
+            requested_basename,
+        )
+        if resolved_basename != (requested_basename or "acquisition_run"):
+            self._log(
+                f"[OUTPUT-ISOLATION] basename collision resolved: "
+                f"{requested_basename!r} -> {resolved_basename!r}"
+            )
 
         self._btn_record_motion.setEnabled(False)
         self._btn_record.setEnabled(False)
@@ -1492,9 +1511,12 @@ class AcquisitionPanel(QWidget):
         self._motion_elapsed_timer.start(1000)
 
         self._log(
-            f"Record+Motion starting — axis={recipe.axis}  dir={recipe.direction:+d}  "
-            f"travel={recipe.travel}  speed={recipe.speed}  "
-            f"pre={recipe.pre_delay_s}s  post={recipe.post_delay_s}s"
+            format_record_motion_start_log(
+                recipe=recipe,
+                metric_command=metric_command,
+                metric_mapping_profile=metric_mapping_profile,
+                stage_um_per_unit=stage_um_per_unit,
+            )
         )
 
         self._motion_thread = QThread()
@@ -1504,21 +1526,24 @@ class AcquisitionPanel(QWidget):
             recipe=recipe,
             metric_command=metric_command,
             metric_mapping_profile=metric_mapping_profile,
-            output_dir=str(self._get_run_output_dir()),
-            basename=self._edit_basename.text(),
+            output_dir=str(resolved_output_dir),
+            basename=resolved_basename,
             duration_s=self._spin_duration.value(),
             roi=roi,
             exposure_us=self._spin_exposure.value(),
             gain=gain,
             fps_hint=self._spin_fps_hint.value(),
             pixel_format="Mono8",
-            log_fn=self._log,
         )
         self._motion_worker.moveToThread(self._motion_thread)
         self._motion_thread.started.connect(self._motion_worker.run)
         self._motion_worker.motion_finished.connect(self._on_record_motion_done)
         self._motion_worker.error.connect(self._on_record_motion_error)
         self._motion_worker.progress.connect(self._on_record_progress)
+        self._motion_worker.log_msg.connect(
+            self._motion_log_signal.emit,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
         self._motion_worker.motion_finished.connect(self._motion_thread.quit)
         self._motion_worker.error.connect(self._motion_thread.quit)
@@ -1531,8 +1556,14 @@ class AcquisitionPanel(QWidget):
     def _on_record_motion_done(
         self, record_result: RecordResult, motion_result: MotionRunResult
     ) -> None:
+        if self._panel_closing:
+            self._stage_svc.set_run_active(False)
+            self._stage_svc.release_lease("acquisition")
+            self._stop_motion_elapsed_timer()
+            return
         self._stage_svc.set_run_active(False)
         self._stage_svc.release_lease("acquisition")
+        self._log("[MOTION-LIFECYCLE] done_slot_enter")
         timing_meta = dict(record_result.meta or {})
         timing_source = str(timing_meta.get("timing_source") or "estimated")
         fps_str = (
@@ -1575,10 +1606,9 @@ class AcquisitionPanel(QWidget):
                 "motion_start_s": motion_result.motion_start_s,
                 "motion_stop_s": motion_result.motion_stop_s,
             }
-            qc_path = os.path.join(
-                str(self._get_run_output_dir()),
-                self._edit_basename.text() + "_qc.json",
-            )
+            run_dir = Path(record_result.video_path).resolve().parent
+            run_basename = Path(record_result.video_path).stem
+            qc_path = os.path.join(str(run_dir), run_basename + "_qc.json")
             with open(qc_path, "w", encoding="utf-8") as f:
                 json.dump(qc, f, indent=2)
         except Exception:
@@ -1622,9 +1652,15 @@ class AcquisitionPanel(QWidget):
         self._btn_record_motion.setEnabled(True)
         self._btn_record.setEnabled(True)
         self._btn_start_preview.setEnabled(True)
-        QTimer.singleShot(200, self._on_start_preview)
+        if not self._panel_closing:
+            QTimer.singleShot(200, self._on_start_preview)
 
     def _on_record_motion_error(self, err: str) -> None:
+        if self._panel_closing:
+            self._stage_svc.set_run_active(False)
+            self._stage_svc.release_lease("acquisition")
+            self._stop_motion_elapsed_timer()
+            return
         self._stage_svc.set_run_active(False)
         self._stage_svc.release_lease("acquisition")
         self._stop_motion_elapsed_timer()
@@ -1636,8 +1672,15 @@ class AcquisitionPanel(QWidget):
         self._btn_start_preview.setEnabled(True)
 
     def _on_motion_elapsed_tick(self) -> None:
+        if self._panel_closing:
+            return
         elapsed = int(time.perf_counter() - self._motion_run_t0)
         self._lbl_motion_run_status.setText(f"Record+Motion running… {elapsed} s")
+
+    def _on_motion_worker_log(self, msg: str) -> None:
+        if self._panel_closing:
+            return
+        self._log(msg)
 
     def _stop_motion_elapsed_timer(self) -> None:
         if self._motion_elapsed_timer is not None:
@@ -2632,6 +2675,12 @@ class AcquisitionPanel(QWidget):
                 "protocol_type": stage_meta.get("mode"),
                 "axis": stage_meta.get("axis"),
                 "direction": stage_meta.get("direction"),
+                # Raw XIMC register command values (primary semantics for speed/accel/decel).
+                "speed_raw_reg": stage_meta.get("speed_reg_commanded_raw", stage_meta.get("speed_user_s_commanded")),
+                "accel_raw_reg": stage_meta.get("accel_reg_commanded_raw", stage_meta.get("accel_user_s2_commanded")),
+                "decel_raw_reg": stage_meta.get("decel_reg_commanded_raw", stage_meta.get("decel_user_s2_commanded")),
+                "speed_reg_readback_raw": stage_meta.get("speed_reg_readback_raw"),
+                # Legacy compatibility aliases.
                 "speed": stage_meta.get("speed_user_s_commanded"),
                 "accel": stage_meta.get("accel_user_s2_commanded"),
                 "decel": stage_meta.get("decel_user_s2_commanded"),
@@ -2643,6 +2692,12 @@ class AcquisitionPanel(QWidget):
                 "commanded_travel_user": stage_meta.get("travel_user_commanded"),
                 "actual_speed_user_s": stage_meta.get("actual_speed_user_s"),
                 "actual_speed_um_s": actual_metric.get("actual_speed_um_s"),
+                "pre_motion_status_flags": stage_meta.get("pre_motion_status_flags"),
+                "pre_motion_gpio_flags": stage_meta.get("pre_motion_gpio_flags"),
+                "pre_motion_alarm_nonfatal_allowed": stage_meta.get("pre_motion_alarm_nonfatal_allowed"),
+                "speed_effect_suspect": stage_meta.get("speed_effect_suspect"),
+                "speed_control_validation_status": stage_meta.get("speed_control_validation_status"),
+                "speed_control_validation_reasons": stage_meta.get("speed_control_validation_reasons"),
             }
             updates["provenance"] = {
                 **dict(updates.get("provenance") or {}),

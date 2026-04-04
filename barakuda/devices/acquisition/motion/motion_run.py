@@ -59,6 +59,131 @@ class MotionRunResult:
     run_t0: float                  # absolute perf_counter reference
 
 
+def format_record_motion_start_log(
+    *,
+    recipe: ConstantVelocityDragRecipe,
+    metric_command: "MetricMotionCommand | None" = None,
+    metric_mapping_profile: "XimcMetricCalibration | None" = None,
+    stage_um_per_unit: float | None = None,
+) -> str:
+    """Return an explicit start log line with metric travel + raw register kinematics."""
+    from .metric_conversion import (
+        BackendMotionCommand,
+        convert_metric_intent_to_backend_command,
+    )
+
+    if metric_command is not None:
+        backend_cmd = convert_metric_intent_to_backend_command(
+            legacy_travel_user=float(recipe.travel),
+            legacy_direction=int(recipe.direction),
+            legacy_speed_reg=float(recipe.speed),
+            legacy_accel_reg=float(recipe.accel),
+            legacy_decel_reg=float(recipe.decel),
+            metric_command=metric_command,
+            stage_um_per_unit=stage_um_per_unit,
+            ximc_metric_calibration=metric_mapping_profile,
+        )
+    else:
+        backend_cmd = BackendMotionCommand(
+            travel_user=float(recipe.travel),
+            speed_reg=float(recipe.speed),
+            accel_reg=float(recipe.accel),
+            decel_reg=float(recipe.decel),
+            direction=int(recipe.direction),
+            travel_source="legacy_travel_user",
+            speed_source="legacy_speed_reg",
+            accel_source="legacy_accel_reg",
+            decel_source="legacy_decel_reg",
+            warnings=(),
+        )
+
+    travel_um = (
+        float(metric_command.travel_um)
+        if metric_command is not None and metric_command.travel_um is not None
+        else (
+            float(backend_cmd.travel_user) * float(stage_um_per_unit)
+            if stage_um_per_unit is not None and stage_um_per_unit > 0
+            else None
+        )
+    )
+    travel_metric_text = (
+        f"{travel_um:.3f} µm"
+        if travel_um is not None
+        else "n/a µm"
+    )
+    return (
+        f"Record+Motion starting — axis={recipe.axis}  dir={int(backend_cmd.direction):+d}  "
+        f"travel_metric={travel_metric_text}  travel_user={float(backend_cmd.travel_user):.3f}  "
+        f"speed_reg={int(round(float(backend_cmd.speed_reg)))}  "
+        f"accel_reg={int(round(float(backend_cmd.accel_reg)))}  "
+        f"decel_reg={int(round(float(backend_cmd.decel_reg)))}  "
+        f"pre={float(recipe.pre_delay_s):.3f}s  post={float(recipe.post_delay_s):.3f}s"
+    )
+
+
+def resolve_unique_run_target(output_root: str | Path, requested_basename: str) -> tuple[str, Path]:
+    """Return unique (basename, run_dir) to avoid silent overwrite."""
+    root = Path(output_root)
+    base = (requested_basename or "").strip() or time.strftime("Basler_%Y%m%d_%H%M%S")
+    candidate = base
+    idx = 1
+    while (root / candidate).exists():
+        candidate = f"{base}_r{idx:03d}"
+        idx += 1
+    run_dir = root / candidate
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return candidate, run_dir
+
+
+def _detect_speed_effect_invariant_against_recent_runs(
+    *,
+    output_path: Path,
+    commanded_speed_raw: float | None,
+    actual_speed_user_s: float | None,
+) -> str | None:
+    """Detect suspiciously invariant effective speed across different commanded speeds."""
+    if commanded_speed_raw is None or actual_speed_user_s is None or actual_speed_user_s <= 0:
+        return None
+    parent = output_path.parent
+    if not parent.exists():
+        return None
+
+    current_speed = float(commanded_speed_raw)
+    current_actual = float(actual_speed_user_s)
+    json_paths = sorted(parent.glob("*/*_stage.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    checked = 0
+    for p in json_paths:
+        if checked >= 10:
+            break
+        if p.parent == output_path:
+            continue
+        checked += 1
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        prev_cmd = payload.get("speed_reg_commanded_raw")
+        prev_actual = payload.get("actual_speed_user_s")
+        if prev_cmd is None or prev_actual is None:
+            continue
+        try:
+            prev_cmd_f = float(prev_cmd)
+            prev_actual_f = float(prev_actual)
+        except Exception:
+            continue
+        # If commanded speed changed materially but measured speed barely moved, flag it.
+        if abs(prev_cmd_f - current_speed) >= 5.0:
+            denom = max(abs(current_actual), abs(prev_actual_f), 1e-9)
+            rel_diff = abs(current_actual - prev_actual_f) / denom
+            if rel_diff <= 0.05:
+                return (
+                    "speed_effect_invariant_vs_recent_run:"
+                    f" prev_cmd={prev_cmd_f:g}, cur_cmd={current_speed:g}, "
+                    f"prev_actual={prev_actual_f:.3f}, cur_actual={current_actual:.3f}"
+                )
+    return None
+
+
 def run_record_and_motion(
     *,
     camera: BaslerCamera,
@@ -264,8 +389,11 @@ def run_record_and_motion(
             state="moving",
         )
         _log(
-            f"motion_start: direction={recipe.direction:+d}  travel={recipe.travel}  "
-            f"XIMC Speed_reg={int(backend_cmd.speed_reg)}  Accel={int(backend_cmd.accel_reg)}"
+            f"motion_start: direction={int(backend_cmd.direction):+d}  "
+            f"travel_user={float(backend_cmd.travel_user):.3f}  "
+            f"speed_reg={int(round(float(backend_cmd.speed_reg)))}  "
+            f"accel_reg={int(round(float(backend_cmd.accel_reg)))}  "
+            f"decel_reg={int(round(float(backend_cmd.decel_reg)))}"
         )
         _tr("move_constant_velocity CALL")  # #region agent log  #endregion
         motion_result = stage.move_constant_velocity(
@@ -320,9 +448,13 @@ def run_record_and_motion(
     # ------------------------------------------------------------------
     # Steps 11-12: stop recording + log recording_stop
     # ------------------------------------------------------------------
+    _log("[MOTION-LIFECYCLE] finalize_recording: stop_record begin")
     camera.stop_record()
+    _log("[MOTION-LIFECYCLE] finalize_recording: stop_record done")
     _tr("stop_record called")  # #region agent log  #endregion
+    _log("[MOTION-LIFECYCLE] finalize_recording: join begin")
     rec_thread.join(timeout=max(10.0, duration_s + 5.0))
+    _log("[MOTION-LIFECYCLE] finalize_recording: join done")
     _tr("rec_thread joined")  # #region agent log  #endregion
     trace.log("recording_stop")
     _log("recording_stop logged")
@@ -347,7 +479,9 @@ def run_record_and_motion(
 
     _tr("writing trace CSV")  # #region agent log  #endregion
     try:
+        _log("[MOTION-LIFECYCLE] artifact_write: stage_trace begin")
         trace.write_csv(stage_trace_path)
+        _log("[MOTION-LIFECYCLE] artifact_write: stage_trace done")
         _log(f"Stage trace written: {stage_trace_path}")
     except Exception as exc:
         raise MotionRunError(f"Failed to write stage trace CSV: {exc}") from exc
@@ -435,19 +569,84 @@ def run_record_and_motion(
             else None
         )
     )
+    speed_reg_commanded_raw = (
+        float(backend_cmd.speed_reg) if backend_cmd is not None else float(recipe.speed)
+    )
+    speed_reg_readback_raw = (
+        float(motion_result.speed_reg_readback_raw)
+        if motion_result is not None and motion_result.speed_reg_readback_raw is not None
+        else None
+    )
+    pre_motion_flags = (
+        int(motion_result.pre_motion_flags)
+        if motion_result is not None and motion_result.pre_motion_flags is not None
+        else None
+    )
+    pre_motion_gpio_flags = (
+        int(motion_result.pre_motion_gpio_flags)
+        if motion_result is not None and motion_result.pre_motion_gpio_flags is not None
+        else None
+    )
+    pre_motion_mv_cmd_sts = (
+        int(motion_result.pre_motion_mv_cmd_sts)
+        if motion_result is not None and motion_result.pre_motion_mv_cmd_sts is not None
+        else None
+    )
+    pre_motion_alarm_nonfatal_allowed = (
+        bool(motion_result.pre_motion_alarm_nonfatal_allowed)
+        if motion_result is not None and motion_result.pre_motion_alarm_nonfatal_allowed is not None
+        else None
+    )
+
+    speed_control_reasons: list[str] = []
+    if pre_motion_flags is not None and (pre_motion_flags & 0x20):
+        speed_control_reasons.append(f"pre_motion_alarm_flag_set:0x{pre_motion_flags:02X}")
+    if (
+        speed_reg_readback_raw is not None
+        and abs(speed_reg_readback_raw - speed_reg_commanded_raw) > 0.5
+    ):
+        speed_control_reasons.append(
+            f"speed_reg_readback_mismatch:{speed_reg_commanded_raw:g}->{speed_reg_readback_raw:g}"
+        )
+    if actual_speed <= 0:
+        speed_control_reasons.append("actual_speed_nonpositive")
+    invariant_reason = _detect_speed_effect_invariant_against_recent_runs(
+        output_path=output_path,
+        commanded_speed_raw=speed_reg_commanded_raw,
+        actual_speed_user_s=float(actual_speed) if actual_speed is not None else None,
+    )
+    if invariant_reason:
+        speed_control_reasons.append(invariant_reason)
+
+    speed_effect_suspect = len(speed_control_reasons) > 0
+    speed_control_validation_status = "suspect" if speed_effect_suspect else "pass"
 
     stage_meta: dict = {
         "schema_version": 1,
         "mode": recipe.mode,
         "axis": recipe.axis,
         "direction": recipe.direction,
+        # Legacy keys retained for compatibility; values are raw XIMC register inputs.
         "travel_user_commanded": recipe.travel,
         "speed_user_s_commanded": recipe.speed,
         "accel_user_s2_commanded": recipe.accel,
         "decel_user_s2_commanded": recipe.decel,
+        # Semantically explicit command keys (preferred for new readers).
+        "travel_user_commanded_raw": recipe.travel,
+        "speed_reg_commanded_raw": speed_reg_commanded_raw,
+        "accel_reg_commanded_raw": float(backend_cmd.accel_reg) if backend_cmd is not None else float(recipe.accel),
+        "decel_reg_commanded_raw": float(backend_cmd.decel_reg) if backend_cmd is not None else float(recipe.decel),
+        "speed_reg_readback_raw": speed_reg_readback_raw,
         "actual_travel_user": actual_travel,
         "actual_motion_duration_s": actual_duration,
         "actual_speed_user_s": actual_speed,
+        "pre_motion_status_flags": pre_motion_flags,
+        "pre_motion_gpio_flags": pre_motion_gpio_flags,
+        "pre_motion_mv_cmd_sts": pre_motion_mv_cmd_sts,
+        "pre_motion_alarm_nonfatal_allowed": pre_motion_alarm_nonfatal_allowed,
+        "speed_effect_suspect": speed_effect_suspect,
+        "speed_control_validation_status": speed_control_validation_status,
+        "speed_control_validation_reasons": list(speed_control_reasons),
         "pre_delay_s": recipe.pre_delay_s,
         "post_delay_s": recipe.post_delay_s,
         "sign_stage_to_image_x": recipe.sign_stage_to_image_x,
@@ -520,10 +719,12 @@ def run_record_and_motion(
 
     _tr("writing stage JSON")  # #region agent log  #endregion
     try:
+        _log("[MOTION-LIFECYCLE] artifact_write: stage_json begin")
         stage_json_path.write_text(
             json.dumps(stage_meta, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        _log("[MOTION-LIFECYCLE] artifact_write: stage_json done")
         _log(f"Stage meta written: {stage_json_path}")
     except Exception as exc:
         raise MotionRunError(f"Failed to write stage JSON: {exc}") from exc

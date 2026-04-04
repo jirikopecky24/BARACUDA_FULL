@@ -32,6 +32,13 @@ class MotionResult:
     # Optional backend-reported delay between move command issuance and confirmed
     # transition to controller running state.
     running_confirmed_delay_s: Optional[float] = None
+    # Optional backend diagnostics for speed-control auditability.
+    commanded_speed_raw: Optional[float] = None
+    speed_reg_readback_raw: Optional[float] = None
+    pre_motion_flags: Optional[int] = None
+    pre_motion_gpio_flags: Optional[int] = None
+    pre_motion_mv_cmd_sts: Optional[int] = None
+    pre_motion_alarm_nonfatal_allowed: Optional[bool] = None
 
 
 class AbstractStage(ABC):
@@ -39,6 +46,11 @@ class AbstractStage(ABC):
 
     Backends must implement connect/disconnect, get_position, and move_constant_velocity.
     They must NOT know about recording, physics, or DRAG analysis.
+
+    Unit contract for Acquisition Motion workflow:
+    - travel is stage user units (derived from UI travel_um / stage_um_per_unit)
+    - speed/accel/decel are backend command units. For XIMC this is raw firmware
+      register semantics, not metric µm/s or µm/s².
     """
 
     @property
@@ -62,9 +74,9 @@ class AbstractStage(ABC):
         self,
         direction: int,          # +1 or -1
         travel: float,           # user units
-        speed: float,            # user units / s
-        accel: float,            # user units / s²
-        decel: float,            # user units / s²
+        speed: float,            # backend command units (XIMC raw register path)
+        accel: float,            # backend command units (XIMC raw register path)
+        decel: float,            # backend command units (XIMC raw register path)
         stop_event=None,         # threading.Event — checked during move for early abort
     ) -> MotionResult:
         """Execute a constant-velocity move and block until complete.
