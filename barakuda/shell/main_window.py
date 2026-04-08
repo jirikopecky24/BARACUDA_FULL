@@ -1102,6 +1102,7 @@ class ShellMainWindow(QMainWindow):
             linked = baseline_map.get(str(p))
             if linked:
                 pp["brownian_baseline_folder"] = linked
+                self._ot_pairing_origins[str(p)] = "auto"
             payload["postprocess"] = pp
             self.dataset.set_item_params(p, payload)
         self._refresh_drag_pairing_statuses()
