@@ -222,3 +222,6 @@ debug-*.log
 barakuda_crash.log
 *_drag_diagnostic.png
 *_tracking_preview.png
+
+# Ad-hoc pyqtgraph ROI inspect dump (see test_roi2.py)
+roi_shape_source.txt
