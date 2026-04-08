@@ -31,6 +31,7 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     build_pairing_tree_data,
     collect_brownian_baseline_candidates_from_roots,
     format_baseline_link_status,
+    inherit_calibration_mode_for_new_item,
     parse_ot_progress_message,
     resolve_frame_range_for_item,
     merge_ot_params_for_checked,
@@ -483,6 +484,13 @@ class ShellMainWindow(QMainWindow):
                         defaults = self._device_panel.dump_ot_params()
                         self._ot_default_params = defaults
                     load_params = resolve_ot_item_params_for_load(pms, defaults)
+                    # New item: preserve current panel mode so Drag workflow
+                    # does not silently reset to Brownian and hide Pairing tab.
+                    if pms is None:
+                        load_params = inherit_calibration_mode_for_new_item(
+                            load_params,
+                            getattr(self._device_panel, "_calibration_mode", None),
+                        )
                     self._device_panel.load_ot_params(load_params)
 
                     # Frame-range rule:

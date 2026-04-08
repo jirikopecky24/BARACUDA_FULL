@@ -278,6 +278,34 @@ def auto_pair_drag_items(
     return baseline_map, status_map
 
 
+def inherit_calibration_mode_for_new_item(
+    load_params: dict,
+    current_mode: str | None,
+) -> dict:
+    """
+    Preserve the current panel calibration_mode when loading params for a new
+    (not-yet-stored) dataset item.
+
+    Without this, new items always inherit ``calibration_mode: Brownian`` from
+    ``_ot_default_params`` even when the user is working in a Drag workflow,
+    because ``_ot_default_params`` is captured right after ``apply_ot_defaults()``
+    which always resets to Brownian.  The consequence: importing videos while in
+    Drag mode silently calls ``set_calibration_mode("Brownian")`` and hides the
+    Pairing tab.
+
+    Only the ``calibration_mode`` field is overridden; all other defaults (tracking
+    params, scale, gate thresholds …) are preserved unchanged.
+    """
+    if not current_mode or str(current_mode) == "Brownian":
+        return load_params
+    result = dict(load_params)
+    pp = dict(result.get("postprocess") or {})
+    if pp.get("calibration_mode") != current_mode:
+        pp["calibration_mode"] = str(current_mode)
+        result["postprocess"] = pp
+    return result
+
+
 def build_pairing_tree_data(
     drag_paths: list[Path],
     candidates: list[PairingCandidate],
