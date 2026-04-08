@@ -20,10 +20,20 @@ MODE_STRATEGIES: dict[str, list[str]] = {
 
 @dataclass(frozen=True)
 class PairingCandidate:
-    """Brownian analysis folder (contains audit/ + csv/) and its pairing identity."""
+    """
+    Brownian analysis folder (contains audit/) and its pairing identity.
+
+    ``folder``       — the analysis folder passed to ``load_brownian_calibration_from_folder``
+                       (typically ``<run_folder>/analysis``).
+    ``family_key``   — derived from the *run* folder name, not the analysis sub-folder,
+                       so it matches drag-path family keys correctly.
+    ``display_name`` — human-readable name shown in the Pairing tab tree
+                       (defaults to run-folder name, e.g. ``Gly20_brown_rep01``).
+    """
 
     folder: Path
     family_key: str
+    display_name: str = ""
 
 
 def make_pair_key(path: Path | str) -> str:
@@ -106,6 +116,20 @@ def make_family_pair_key(path: Path | str) -> str:
     return "|".join(core)
 
 
+def _run_folder_for_analysis(analysis_folder: Path) -> Path:
+    """
+    Return the meaningful *run* folder for a Brownian analysis path.
+
+    BARAKUDA convention: ``<run>/analysis/audit``.  When the analysis folder is
+    named ``"analysis"`` we step up one level to get the run folder whose name
+    carries the sample identity (e.g. ``Gly20_brown_rep01``).  For any other
+    folder name the folder itself is the run folder.
+    """
+    if analysis_folder.name.lower() == "analysis":
+        return analysis_folder.parent
+    return analysis_folder
+
+
 def collect_brownian_baseline_candidates_from_roots(
     roots: list[Path],
     *,
@@ -114,19 +138,31 @@ def collect_brownian_baseline_candidates_from_roots(
     """
     Walk selected folders for analysis roots containing an audit/ directory and
     successful Brownian calibration import. Used by the OT baseline-root workflow.
+
+    ``PairingCandidate.folder``       — the analysis folder (passed to
+                                        ``load_brownian_calibration_from_folder``).
+    ``PairingCandidate.family_key``   — derived from the *run* folder (parent of
+                                        the analysis folder), NOT from ``analysis/``,
+                                        so it matches drag-path family keys.
+    ``PairingCandidate.display_name`` — run folder name (e.g. ``Gly20_brown_rep01``).
     """
     seen: dict[str, PairingCandidate] = {}
     for root in roots:
         if not root.exists() or not root.is_dir():
             continue
         for audit_dir in root.rglob("audit"):
-            folder = audit_dir.parent
+            analysis_folder = audit_dir.parent
             try:
-                validate_folder(folder)
+                validate_folder(analysis_folder)
             except Exception:
                 continue
-            fk = make_family_pair_key(folder)
-            seen[str(folder)] = PairingCandidate(folder=folder, family_key=fk)
+            run_folder = _run_folder_for_analysis(analysis_folder)
+            fk = make_family_pair_key(run_folder)
+            seen[str(analysis_folder)] = PairingCandidate(
+                folder=analysis_folder,
+                family_key=fk,
+                display_name=run_folder.name,
+            )
     return sorted(seen.values(), key=lambda c: str(c.folder).lower())
 
 
@@ -134,7 +170,9 @@ def format_baseline_link_status(linked_folder: str, n_drag_items_sharing: int) -
     """User-visible pairing label; multiple Drag rows may share one Brownian folder."""
     if n_drag_items_sharing <= 1:
         return "baseline linked"
-    short = Path(linked_folder).name
+    # Show the run-folder name (not "analysis") in the shared-baseline label.
+    p = Path(linked_folder)
+    short = p.parent.name if p.name.lower() == "analysis" else p.name
     return f"baseline linked (shared {n_drag_items_sharing}×, {short})"
 
 
@@ -324,6 +362,11 @@ def build_pairing_tree_data(
       - available_baseline_folders: sorted list of str (from candidates + manually-assigned)
     """
     known_folders: set[str] = {str(c.folder) for c in candidates}
+    # Map folder_str → human-readable display name (run folder name, not "analysis").
+    folder_display: dict[str, str] = {
+        str(c.folder): (c.display_name or _run_folder_for_analysis(c.folder).name)
+        for c in candidates
+    }
 
     paired_by_baseline: dict[str, list[dict]] = {}
     unpaired: list[dict] = []
@@ -344,10 +387,17 @@ def build_pairing_tree_data(
             unpaired.append(entry)
 
     all_baseline_folders: set[str] = known_folders | set(paired_by_baseline.keys())
+
+    def _display_name_for(f: str) -> str:
+        if f in folder_display:
+            return folder_display[f]
+        p = Path(f)
+        return p.parent.name if p.name.lower() == "analysis" else p.name
+
     baselines = [
         {
             "folder": f,
-            "folder_name": Path(f).name,
+            "folder_name": _display_name_for(f),
             "drags": paired_by_baseline.get(f, []),
         }
         for f in sorted(all_baseline_folders, key=str.lower)
