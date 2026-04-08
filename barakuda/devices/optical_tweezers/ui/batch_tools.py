@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import copy
-from typing import Callable
+from typing import Any, Callable
 
 
 FILE_SPECIFIC_PROTECTED_FIELDS = {
@@ -20,8 +20,10 @@ MODE_STRATEGIES: dict[str, list[str]] = {
 
 @dataclass(frozen=True)
 class PairingCandidate:
-    key: str
+    """Brownian analysis folder (contains audit/ + csv/) and its pairing identity."""
+
     folder: Path
+    family_key: str
 
 
 def make_pair_key(path: Path | str) -> str:
@@ -30,6 +32,110 @@ def make_pair_key(path: Path | str) -> str:
     if not tokenized:
         return stem
     return "|".join(tokenized)
+
+
+# Tokens that distinguish Brownian vs Drag calibration runs but not bead/location identity.
+_CALIBRATION_MODE_TOKENS = frozenset(
+    {
+        "brown",
+        "brownian",
+        "brow",
+        "brn",
+        "passive",
+        "drag",
+        "dragging",
+        "constant",
+        "velocity",
+        "cv",
+        "viscous",
+    }
+)
+
+
+def _tokenize_name_stem(path: Path | str) -> list[str]:
+    stem = Path(path).stem.lower()
+    return [t for t in re.split(r"[^a-z0-9]+", stem) if t]
+
+
+_OPTIONAL_TRAILING_VARIANT_TOKENS = frozenset(
+    {
+        "slow",
+        "fast",
+        "slower",
+        "faster",
+        "high",
+        "low",
+        "hi",
+        "lo",
+    }
+)
+
+
+def _strip_trailing_motion_variant_tokens(tokens: list[str]) -> list[str]:
+    """Remove trailing motion/repeat tokens (e.g. r001, slow, fast) from a token list."""
+    out = list(tokens)
+    changed = True
+    while out and changed:
+        changed = False
+        t = out[-1]
+        if re.fullmatch(r"r\d+", t) or re.fullmatch(r"run\d+", t) or re.fullmatch(r"v\d+", t):
+            out.pop()
+            changed = True
+            continue
+        if t in _OPTIONAL_TRAILING_VARIANT_TOKENS:
+            out.pop()
+            changed = True
+            continue
+    return out
+
+
+def make_family_pair_key(path: Path | str) -> str:
+    """
+    Shared pairing key for Brownian baselines and Drag inputs: same physical run / location
+    (replicate, bead, sample id) while ignoring calibration mode (brown vs drag) and
+    trailing motion-variant suffixes (e.g. r001 vs r002 on the same drag replicate).
+    """
+    tokens = _tokenize_name_stem(path)
+    if not tokens:
+        return make_pair_key(path)
+    stripped_mode = [t for t in tokens if t not in _CALIBRATION_MODE_TOKENS]
+    stripped_suffix = _strip_trailing_motion_variant_tokens(stripped_mode)
+    core = stripped_suffix if stripped_suffix else stripped_mode
+    if not core:
+        core = tokens
+    return "|".join(core)
+
+
+def collect_brownian_baseline_candidates_from_roots(
+    roots: list[Path],
+    *,
+    validate_folder: Callable[[Path], Any],
+) -> list[PairingCandidate]:
+    """
+    Walk selected folders for analysis roots containing an audit/ directory and
+    successful Brownian calibration import. Used by the OT baseline-root workflow.
+    """
+    seen: dict[str, PairingCandidate] = {}
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for audit_dir in root.rglob("audit"):
+            folder = audit_dir.parent
+            try:
+                validate_folder(folder)
+            except Exception:
+                continue
+            fk = make_family_pair_key(folder)
+            seen[str(folder)] = PairingCandidate(folder=folder, family_key=fk)
+    return sorted(seen.values(), key=lambda c: str(c.folder).lower())
+
+
+def format_baseline_link_status(linked_folder: str, n_drag_items_sharing: int) -> str:
+    """User-visible pairing label; multiple Drag rows may share one Brownian folder."""
+    if n_drag_items_sharing <= 1:
+        return "baseline linked"
+    short = Path(linked_folder).name
+    return f"baseline linked (shared {n_drag_items_sharing}×, {short})"
 
 
 def merge_ot_params_for_checked(
@@ -146,23 +252,29 @@ def auto_pair_drag_items(
     drag_paths: list[Path],
     candidates: list[PairingCandidate],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    by_key: dict[str, list[Path]] = {}
+    """
+    Map each Drag path to at most one Brownian analysis folder. Many Drag items may share
+    the same folder (1 Brownian : N Drag). Ambiguous only when two *distinct* candidate
+    folders share the same family key.
+    """
+    by_family: dict[str, set[Path]] = {}
     for c in candidates:
-        by_key.setdefault(c.key, []).append(c.folder)
+        by_family.setdefault(c.family_key, set()).add(c.folder)
 
     baseline_map: dict[str, str] = {}
     status_map: dict[str, str] = {}
 
     for p in drag_paths:
-        p_key = make_pair_key(p)
-        hits = by_key.get(p_key, [])
-        if len(hits) == 1:
-            baseline_map[str(p)] = str(hits[0])
-            status_map[str(p)] = "baseline linked"
-        elif len(hits) > 1:
+        fk = make_family_pair_key(p)
+        folders = sorted(by_family.get(fk, set()), key=lambda x: str(x).lower())
+        n = len(folders)
+        if n == 0:
+            status_map[str(p)] = "baseline missing"
+        elif n > 1:
             status_map[str(p)] = "baseline ambiguous"
         else:
-            status_map[str(p)] = "baseline missing"
+            baseline_map[str(p)] = str(folders[0])
+            status_map[str(p)] = "baseline linked"
     return baseline_map, status_map
 
 
