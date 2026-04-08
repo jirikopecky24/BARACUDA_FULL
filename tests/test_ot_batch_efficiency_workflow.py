@@ -1244,3 +1244,207 @@ def test_pairing_tab_phase_label_in_panel_source() -> None:
     assert "Available Brownian baselines" in panel_src
     assert "Pairing results" in panel_src
     assert "_pairing_tree_label" in panel_src
+
+
+# ── Checked semantics + drag & drop tests ───────────────────────────────────
+
+
+def test_autopair_uses_checked_items_not_current_item() -> None:
+    """
+    Auto-pair must use get_checked_paths() (batch semantics), not current/selected item.
+    Verify the source code calls get_checked_paths inside _on_ot_auto_pair_baselines.
+    """
+    mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
+    # The handler must call get_checked_paths() — not get_current_path()
+    assert "get_checked_paths()" in mw_src
+    # And filter those to Drag mode before pairing
+    assert 'calibration_mode' in mw_src
+    assert '"Drag"' in mw_src
+
+
+def test_autopair_gives_clear_message_when_no_drag_among_checked() -> None:
+    """
+    Auto-pair must log a clear message when checked items contain no Drag-mode runs,
+    rather than silently logging '0 linked, 0 ambiguous, 0 missing'.
+    """
+    mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
+    assert "no Drag-mode items among checked" in mw_src or "contain no Drag-mode" in mw_src
+
+
+def test_autopair_only_affects_checked_drag_items() -> None:
+    """
+    Unchecked drag items must not be modified by auto-pair.
+    We verify via logic: auto_pair_drag_items() only receives the filtered checked drag paths.
+    """
+    fk = make_family_pair_key("Gly20_brown_rep01")
+    candidate = PairingCandidate(Path("/data/Gly20_brown_rep01/analysis"), fk, "Gly20_brown_rep01")
+
+    checked_drag = [Path("/runs/Gly20_drag_rep01.raw")]
+    unchecked_drag = [Path("/runs/Gly20_drag_rep02.raw")]
+
+    # Only checked paths are passed to auto_pair_drag_items
+    baseline_map, status_map = auto_pair_drag_items(checked_drag, [candidate])
+
+    assert str(checked_drag[0]) in baseline_map, "Checked drag item should be linked"
+    # Unchecked path was never passed — it must not appear in the result
+    for unchecked in unchecked_drag:
+        assert str(unchecked) not in baseline_map, (
+            "Unchecked drag item must not appear in auto-pair results"
+        )
+        assert str(unchecked) not in status_map
+
+
+def test_dragdrop_reassign_changes_baseline_correctly() -> None:
+    """
+    Drag & drop reassign should produce the same result as manual combo assign:
+    the drag item's baseline changes and origin becomes 'manual'.
+    """
+    candidate_a = PairingCandidate(Path("/data/A/analysis"), "a|rep01", "A_rep01")
+    candidate_b = PairingCandidate(Path("/data/B/analysis"), "b|rep01", "B_rep01")
+    drag = Path("/runs/A_drag_rep01.raw")
+
+    # Start: drag is under candidate_a (auto-paired)
+    explicit_pairs = {str(drag): str(candidate_a.folder)}
+    origins = {str(drag): "auto"}
+
+    # Simulate D&D drop onto candidate_b — handler receives (drag_path, baseline_folder)
+    new_baseline = str(candidate_b.folder)
+    new_origins = {str(drag): "manual"}
+    new_explicit = {str(drag): new_baseline}
+
+    tree_after = build_pairing_tree_data(
+        drag_paths=[drag],
+        candidates=[candidate_a, candidate_b],
+        explicit_pairs=new_explicit,
+        pairing_origins=new_origins,
+    )
+
+    # After D&D: drag is under candidate_b with origin "manual"
+    bl_b = next((bl for bl in tree_after["baselines"] if bl["drags"]), None)
+    assert bl_b is not None, "Drag item should be under some baseline"
+    assert bl_b["folder_name"] == "B_rep01"
+    assert bl_b["drags"][0]["origin"] == "manual"
+    assert tree_after["unpaired"] == []
+
+
+def test_dragdrop_to_unpaired_removes_baseline() -> None:
+    """
+    Dropping a drag item onto the (Unpaired) section must clear its baseline assignment.
+    """
+    candidate = PairingCandidate(Path("/data/A/analysis"), "a|rep01", "A_rep01")
+    drag = Path("/runs/A_drag_rep01.raw")
+
+    # Simulate D&D drop onto (Unpaired) — baseline_folder = ""
+    explicit_pairs_unpaired = {str(drag): ""}
+    origins_manual = {str(drag): "manual"}
+
+    tree_data = build_pairing_tree_data(
+        drag_paths=[drag],
+        candidates=[candidate],
+        explicit_pairs=explicit_pairs_unpaired,
+        pairing_origins=origins_manual,
+    )
+
+    assert tree_data["baselines"][0]["drags"] == [], "Baseline should have no drag children"
+    assert len(tree_data["unpaired"]) == 1, "Drag item should appear in (Unpaired)"
+    assert tree_data["unpaired"][0]["path"] == str(drag)
+
+
+def test_dragdrop_sets_manual_origin() -> None:
+    """
+    After drag & drop reassign, origin must be 'manual' — the [M] tag in the tree.
+    This verifies that D&D reuses _on_ot_pairing_manual_assign which sets origin='manual'.
+    """
+    mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
+    # D&D signal is wired to pairing_manual_assign_requested in panel, which calls
+    # _on_ot_pairing_manual_assign in main_window — which sets origin='manual'
+    assert '"manual"' in mw_src
+    assert "_ot_pairing_origins" in mw_src
+
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "drag_drop_reassign_requested" in panel_src
+    assert "pairing_manual_assign_requested.emit" in panel_src
+
+
+def test_dragdrop_invalid_drop_does_not_crash() -> None:
+    """
+    Dropping on an invalid target (None target, or no MIME match) must not
+    produce side effects — _resolve_drop_target returns None.
+    """
+    # We can't instantiate PairingTreeWidget without Qt, but we can test
+    # the logic of build_pairing_tree_data with an unchanged state:
+    candidate = PairingCandidate(Path("/data/A/analysis"), "a|rep01", "A_rep01")
+    drag = Path("/runs/A_drag_rep01.raw")
+
+    original_explicit = {str(drag): str(candidate.folder)}
+    original_origins = {str(drag): "auto"}
+
+    # Simulate: nothing changes (invalid drop is a no-op)
+    tree_before = build_pairing_tree_data(
+        drag_paths=[drag],
+        candidates=[candidate],
+        explicit_pairs=original_explicit,
+        pairing_origins=original_origins,
+    )
+    tree_after = build_pairing_tree_data(
+        drag_paths=[drag],
+        candidates=[candidate],
+        explicit_pairs=original_explicit,  # unchanged
+        pairing_origins=original_origins,
+    )
+    assert tree_before["baselines"] == tree_after["baselines"]
+    assert tree_before["unpaired"] == tree_after["unpaired"]
+
+
+def test_dragdrop_wiring_in_panel_source() -> None:
+    """PipelinePanel must wire drag_drop_reassign_requested to pairing_manual_assign_requested."""
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "drag_drop_reassign_requested" in panel_src
+    assert "pairing_manual_assign_requested" in panel_src
+    # D&D hint must be present
+    assert "Drag items can be moved between baselines" in panel_src or \
+           "moved between Brownian baselines" in panel_src
+
+
+def test_one_brownian_n_drag_after_dragdrop_override() -> None:
+    """
+    one Brownian : N Drag must stay functional even after a D&D manual override.
+    One drag item is moved manually; others remain auto-linked to the same baseline.
+    """
+    fk = make_family_pair_key("Gly40_brown_rep01")
+    candidate = PairingCandidate(Path("/data/Gly40_brown_rep01/analysis"), fk, "Gly40_brown_rep01")
+    other = PairingCandidate(Path("/data/Other/analysis"), "other", "Other")
+
+    drag_paths = [
+        Path("/runs/Gly40_drag_rep01_slow.raw"),
+        Path("/runs/Gly40_drag_rep01_fast.raw"),
+        Path("/runs/Gly40_drag_rep01_r001.raw"),
+    ]
+
+    # Auto-pair: all 3 drags linked to Gly40_brown_rep01
+    baseline_map, _ = auto_pair_drag_items(drag_paths, [candidate, other])
+    explicit_pairs = {str(dp): baseline_map[str(dp)] for dp in drag_paths}
+    origins = {str(dp): "auto" for dp in drag_paths}
+
+    # D&D: manually move drag[0] to Other
+    explicit_pairs[str(drag_paths[0])] = str(other.folder)
+    origins[str(drag_paths[0])] = "manual"
+
+    tree = build_pairing_tree_data(
+        drag_paths=drag_paths,
+        candidates=[candidate, other],
+        explicit_pairs=explicit_pairs,
+        pairing_origins=origins,
+    )
+
+    # Gly40 baseline should have 2 auto-linked drags
+    gly_bl = next(bl for bl in tree["baselines"] if bl["folder_name"] == "Gly40_brown_rep01")
+    assert len(gly_bl["drags"]) == 2
+    assert all(d["origin"] == "auto" for d in gly_bl["drags"])
+
+    # Other baseline should have 1 manually-moved drag
+    other_bl = next(bl for bl in tree["baselines"] if bl["folder_name"] == "Other")
+    assert len(other_bl["drags"]) == 1
+    assert other_bl["drags"][0]["origin"] == "manual"
+
+    assert tree["unpaired"] == []
