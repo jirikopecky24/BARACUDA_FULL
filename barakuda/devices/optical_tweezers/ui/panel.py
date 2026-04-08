@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox, QLineEdit,
     QToolButton, QHBoxLayout, QMenu, QComboBox, QScrollArea, QFrame,
-    QSizePolicy, QAbstractSpinBox, QTabWidget
+    QSizePolicy, QAbstractSpinBox, QTabWidget,
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,
 )
 from barakuda.core.truth_resolvers import build_collision_safe_export_path
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
@@ -19,6 +20,85 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     run_stop_enabled_state,
     resolve_strategy_selection,
 )
+
+class PairingTreeWidget(QTreeWidget):
+    """
+    Hierarchical view of the explicit Drag ↔ Brownian pairing map.
+
+    Top-level items are Brownian baseline folders.
+    Child items are Drag runs assigned to that baseline.
+    A dedicated "(Unpaired)" root collects Drag runs with no baseline.
+    """
+
+    drag_item_selected = pyqtSignal(str, list)  # drag_path_str, available_baseline_folders
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setColumnCount(2)
+        self.setHeaderLabels(["Item", "Status"])
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setRootIsDecorated(True)
+        self.setExpandsOnDoubleClick(True)
+        self.setMinimumHeight(150)
+        self._available_baselines: list[str] = []
+        self.itemSelectionChanged.connect(self._on_selection_changed)
+
+    def _on_selection_changed(self) -> None:
+        items = self.selectedItems()
+        if not items:
+            self.drag_item_selected.emit("", [])
+            return
+        raw = items[0].data(0, Qt.ItemDataRole.UserRole) or ""
+        if isinstance(raw, str) and raw.startswith("drag:"):
+            self.drag_item_selected.emit(raw[5:], list(self._available_baselines))
+        else:
+            self.drag_item_selected.emit("", [])
+
+    def refresh_tree(self, tree_data: dict) -> None:
+        self._available_baselines = list(tree_data.get("available_baseline_folders", []))
+
+        expanded_keys: set[str] = set()
+        for i in range(self.topLevelItemCount()):
+            top = self.topLevelItem(i)
+            if top and top.isExpanded():
+                key = str(top.data(0, Qt.ItemDataRole.UserRole) or "")
+                if key:
+                    expanded_keys.add(key)
+
+        self.clear()
+
+        for bl in tree_data.get("baselines", []):
+            folder_str = bl["folder"]
+            top = QTreeWidgetItem([bl["folder_name"], ""])
+            top.setData(0, Qt.ItemDataRole.UserRole, f"baseline:{folder_str}")
+            top.setToolTip(0, folder_str)
+            top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            for d in bl.get("drags", []):
+                origin = d.get("origin", "unset")
+                origin_tag = " [M]" if origin == "manual" else " [A]" if origin == "auto" else ""
+                child = QTreeWidgetItem([d["name"] + origin_tag, d["status"]])
+                child.setData(0, Qt.ItemDataRole.UserRole, f"drag:{d['path']}")
+                child.setToolTip(0, d["path"])
+                top.addChild(child)
+            self.addTopLevelItem(top)
+            key = f"baseline:{folder_str}"
+            top.setExpanded(key in expanded_keys or bool(bl.get("drags")))
+
+        unpaired = tree_data.get("unpaired", [])
+        if unpaired:
+            top_u = QTreeWidgetItem(["(Unpaired)", ""])
+            top_u.setData(0, Qt.ItemDataRole.UserRole, "section:unpaired")
+            top_u.setFlags(top_u.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            for d in unpaired:
+                child = QTreeWidgetItem([d["name"], d["status"]])
+                child.setData(0, Qt.ItemDataRole.UserRole, f"drag:{d['path']}")
+                child.setToolTip(0, d["path"])
+                top_u.addChild(child)
+            self.addTopLevelItem(top_u)
+            top_u.setExpanded(True)
+
+        self.resizeColumnToContents(0)
+
 
 class NoWheelValueChangeFilter(QObject):
     """Event filter that blocks mouse wheel from changing values in scrollable panels."""
@@ -54,6 +134,9 @@ class PipelinePanel(QWidget):
     apply_to_checked_clicked = pyqtSignal()
     auto_pair_baselines_clicked = pyqtSignal()
     add_baseline_roots_clicked = pyqtSignal()
+    # Emitted when the user manually reassigns a Drag item to a different Brownian baseline
+    # (drag_path_str, baseline_folder_str) — baseline_folder_str is "" to unpair
+    pairing_manual_assign_requested = pyqtSignal(str, str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -721,8 +804,6 @@ class PipelinePanel(QWidget):
         tab_run_content_layout.addWidget(self.btn_stop)
         tab_run_content_layout.addWidget(self.btn_reset)
         tab_run_content_layout.addWidget(self.btn_apply_to_checked)
-        tab_run_content_layout.addWidget(self.btn_add_baseline_roots)
-        tab_run_content_layout.addWidget(self.btn_auto_pair_baselines)
         tab_run_content_layout.addWidget(self._editing_item_label)
         tab_run_content_layout.addWidget(self._progress_label)
         tab_run_content_layout.addWidget(self._current_file_progress_label)
@@ -798,9 +879,79 @@ class PipelinePanel(QWidget):
         scroll_set.setWidget(settings_box)
         tab_settings_layout.addWidget(scroll_set)
 
+        # ── Pairing tab (Drag only) ───────────────────────────────────────────
+        tab_pairing = QWidget()
+        tab_pairing_layout = QVBoxLayout(tab_pairing)
+        tab_pairing_layout.setContentsMargins(8, 8, 8, 8)
+        tab_pairing_layout.setSpacing(6)
+
+        _pair_hdr = QLabel("Drag ↔ Brownian Pairing")
+        _pair_hdr.setStyleSheet("font-weight: bold; color: #555;")
+        tab_pairing_layout.addWidget(_pair_hdr)
+
+        self.btn_add_baseline_roots_pair = QPushButton("Add Brownian folders from tree…")
+        self.btn_add_baseline_roots_pair.setToolTip(
+            "Pick a day or experiment root, then check nested Brownian run folders in the tree. "
+            "Candidates must contain valid audit/ + csv/ outputs."
+        )
+        self.btn_auto_pair_baselines_pair = QPushButton("Auto-pair Brownian baselines")
+        self.btn_auto_pair_baselines_pair.setToolTip(
+            "Auto-link checked Drag items to discovered Brownian baseline folders using family key matching."
+        )
+        self.btn_add_baseline_roots_pair.clicked.connect(self.add_baseline_roots_clicked.emit)
+        self.btn_auto_pair_baselines_pair.clicked.connect(self.auto_pair_baselines_clicked.emit)
+        tab_pairing_layout.addWidget(self.btn_add_baseline_roots_pair)
+        tab_pairing_layout.addWidget(self.btn_auto_pair_baselines_pair)
+
+        _sep_pair1 = QFrame()
+        _sep_pair1.setFrameShape(QFrame.Shape.HLine)
+        _sep_pair1.setStyleSheet("color: #ddd;")
+        tab_pairing_layout.addWidget(_sep_pair1)
+
+        _map_lbl = QLabel("Pairing map:")
+        _map_lbl.setStyleSheet("color: #555;")
+        tab_pairing_layout.addWidget(_map_lbl)
+
+        self._pairing_tree = PairingTreeWidget()
+        tab_pairing_layout.addWidget(self._pairing_tree, stretch=1)
+
+        _sep_pair2 = QFrame()
+        _sep_pair2.setFrameShape(QFrame.Shape.HLine)
+        _sep_pair2.setStyleSheet("color: #ddd;")
+        tab_pairing_layout.addWidget(_sep_pair2)
+
+        _reassign_lbl = QLabel("Manual reassign:")
+        _reassign_lbl.setStyleSheet("color: #555;")
+        tab_pairing_layout.addWidget(_reassign_lbl)
+
+        self._pairing_selected_drag: str = ""
+        self._pairing_selected_label = QLabel("Selected: (none)")
+        self._pairing_selected_label.setStyleSheet("color: #444;")
+        tab_pairing_layout.addWidget(self._pairing_selected_label)
+
+        _move_row = QHBoxLayout()
+        _move_lbl = QLabel("Move to:")
+        _move_row.addWidget(_move_lbl)
+        self._pairing_target_combo = QComboBox()
+        self._pairing_target_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._pairing_target_combo.setEnabled(False)
+        _move_row.addWidget(self._pairing_target_combo, 1)
+        tab_pairing_layout.addLayout(_move_row)
+
+        self._pairing_assign_btn = QPushButton("Assign")
+        self._pairing_assign_btn.setToolTip(
+            "Move the selected Drag item to the chosen Brownian baseline (or to Unpaired)."
+        )
+        self._pairing_assign_btn.setEnabled(False)
+        self._pairing_assign_btn.clicked.connect(self._on_pairing_assign_clicked)
+        tab_pairing_layout.addWidget(self._pairing_assign_btn)
+
+        self._pairing_tree.drag_item_selected.connect(self._on_pairing_drag_selected)
+
         self.tabs.addTab(tab_run, "Run")
         self.tabs.addTab(tab_tracking, "Tracking")
         self.tabs.addTab(tab_postprocess, "Postprocess")
+        self._pairing_tab_idx = self.tabs.addTab(tab_pairing, "Pairing")
         self.tabs.addTab(tab_settings, "Settings")
 
         layout.addWidget(self.tabs, stretch=1)
@@ -1346,9 +1497,13 @@ class PipelinePanel(QWidget):
     def set_calibration_mode(self, mode: str, preferred_strategy: str | None = None) -> None:
         self._calibration_mode = str(mode)
         self._update_strategy_dropdown(mode, preferred_strategy=preferred_strategy)
-        vis_actions = drag_action_visibility(mode)
-        self.btn_add_baseline_roots.setVisible(vis_actions["add_baseline_roots"])
-        self.btn_auto_pair_baselines.setVisible(vis_actions["auto_pair_baselines"])
+        # The original buttons are kept as hidden QWidget references; actual action
+        # buttons are now inside the Pairing tab, shown/hidden via tab visibility.
+        self.btn_add_baseline_roots.setVisible(False)
+        self.btn_auto_pair_baselines.setVisible(False)
+        # Show the Pairing tab only in Drag mode.
+        if hasattr(self, "_pairing_tab_idx"):
+            self.tabs.setTabVisible(self._pairing_tab_idx, str(mode) == "Drag")
         
         if mode == "Brownian":
             self._set_row_visible(self._stage_speed, False)
@@ -1392,6 +1547,43 @@ class PipelinePanel(QWidget):
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()
+
+    # ── Pairing tab helpers ───────────────────────────────────────────────────
+
+    def _on_pairing_drag_selected(self, drag_path: str, available_baselines: list[str]) -> None:
+        self._pairing_selected_drag = drag_path
+        if drag_path:
+            self._pairing_selected_label.setText(f"Selected: {Path(drag_path).name}")
+            self._pairing_target_combo.setEnabled(True)
+            self._pairing_assign_btn.setEnabled(True)
+            self._pairing_target_combo.blockSignals(True)
+            self._pairing_target_combo.clear()
+            self._pairing_target_combo.addItem("(Unpaired)", "")
+            for folder in available_baselines:
+                self._pairing_target_combo.addItem(Path(folder).name, folder)
+                self._pairing_target_combo.setItemData(
+                    self._pairing_target_combo.count() - 1,
+                    folder,
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+            self._pairing_target_combo.blockSignals(False)
+        else:
+            self._pairing_selected_drag = ""
+            self._pairing_selected_label.setText("Selected: (none)")
+            self._pairing_target_combo.setEnabled(False)
+            self._pairing_assign_btn.setEnabled(False)
+
+    def _on_pairing_assign_clicked(self) -> None:
+        drag_path = getattr(self, "_pairing_selected_drag", "")
+        if not drag_path:
+            return
+        folder = str(self._pairing_target_combo.currentData() or "")
+        self.pairing_manual_assign_requested.emit(drag_path, folder)
+
+    def refresh_pairing_view(self, tree_data: dict) -> None:
+        """Refresh the Pairing tab tree with new pairing map data."""
+        if hasattr(self, "_pairing_tree"):
+            self._pairing_tree.refresh_tree(tree_data)
 
     def _on_browse_run_output_root(self) -> None:
         from PyQt6.QtWidgets import QFileDialog
