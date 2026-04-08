@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 from PyQt6.QtCore import pyqtSignal, Qt, QDir
 from PyQt6.QtGui import QIcon
@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QLineEdit,
     QCheckBox,
+    QTreeWidget,
+    QTreeWidgetItem,
 )
 
 from barakuda.core.models import DatasetItem
@@ -136,6 +138,39 @@ def discover_from_parent_selected_subfolders(parent: Path, selected_subfolders: 
     return discover_importable_paths_from_roots(roots)
 
 
+def _path_is_strict_descendant_of(child: Path, ancestor: Path) -> bool:
+    try:
+        a = ancestor.resolve()
+        c = child.resolve()
+        if c == a:
+            return False
+        c.relative_to(a)
+        return True
+    except ValueError:
+        return False
+
+
+def minimal_import_roots(selected: Sequence[Path]) -> list[Path]:
+    """
+    From a set of folder paths marked for import (e.g. checked in a tree), keep only
+    roots that are not nested under another selected path — one parent covers its subtree.
+    """
+    if not selected:
+        return []
+    resolved = [p.resolve() for p in selected]
+    minimal: list[Path] = []
+    for p in resolved:
+        if any(_path_is_strict_descendant_of(p, q) for q in resolved):
+            continue
+        minimal.append(p)
+    return sorted(minimal, key=lambda x: str(x).lower())
+
+
+def discover_from_hierarchical_folder_selection(selected_folders: Sequence[Path]) -> list[Path]:
+    roots = minimal_import_roots(selected_folders)
+    return discover_importable_paths_from_roots(roots)
+
+
 def summarize_master_check_state(flags: list[bool]) -> str:
     if not flags:
         return "unchecked"
@@ -225,6 +260,218 @@ class SubfolderSelectionDialog(QDialog):
         return out
 
 
+class HierarchicalFolderImportDialog(QDialog):
+    """
+    Multi-level folder tree with tri-state checkboxes for importing a day (or other root)
+    with nested sample / run folders without running separate single-level imports.
+    """
+
+    def __init__(
+        self,
+        root_folder: Path,
+        parent: QWidget | None = None,
+        *,
+        max_depth: int = 8,
+    ) -> None:
+        super().__init__(parent)
+        self._root = root_folder.resolve()
+        self._max_depth = max_depth
+        self.setWindowTitle(f"Import from folder tree — {self._root.name}")
+        self.resize(820, 620)
+
+        hint = QLabel(
+            "Check folders to import. Checking a parent selects all items below; "
+            "you can adjust individual branches (partial state on parents)."
+        )
+        hint.setWordWrap(True)
+
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filter by folder name (e.g. water, brown, Gly)…")
+        self._filter.textChanged.connect(self._on_filter_changed)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setUniformRowHeights(True)
+        self._tree.setAnimated(True)
+        self._populate_tree()
+        self._tree.itemChanged.connect(self._on_item_changed)
+
+        self._btn_expand = QPushButton("Expand all")
+        self._btn_collapse = QPushButton("Collapse all")
+        self._btn_expand.clicked.connect(self._tree.expandAll)
+        self._btn_collapse.clicked.connect(self._tree.collapseAll)
+        row_btns = QHBoxLayout()
+        row_btns.addWidget(self._btn_expand)
+        row_btns.addWidget(self._btn_collapse)
+        row_btns.addStretch(1)
+
+        self._btn_all = QPushButton("Check all")
+        self._btn_none = QPushButton("Clear")
+        self._btn_all.clicked.connect(self._check_all)
+        self._btn_none.clicked.connect(self._check_none)
+        row_checks = QHBoxLayout()
+        row_checks.addWidget(self._btn_all)
+        row_checks.addWidget(self._btn_none)
+        row_checks.addStretch(1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(hint)
+        layout.addWidget(self._filter)
+        layout.addLayout(row_btns)
+        layout.addWidget(self._tree, 1)
+        layout.addLayout(row_checks)
+        layout.addWidget(buttons)
+
+    def _item_flags_for_folder(self, folder: Path) -> Qt.ItemFlag:
+        has_subdirs = bool(discover_subfolders(folder))
+        base = (
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsUserCheckable
+        )
+        if has_subdirs:
+            base |= Qt.ItemFlag.ItemIsUserTristate
+        return base
+
+    def _populate_tree(self) -> None:
+        self._tree.blockSignals(True)
+        self._tree.clear()
+        top_dirs = discover_subfolders(self._root)
+        if not top_dirs:
+            has_primary = any(
+                is_primary_dataset_input(p) for p in self._root.iterdir() if p.is_file()
+            )
+            if has_primary:
+                item = QTreeWidgetItem([f"{self._root.name}  (this folder)"])
+                item.setData(0, Qt.ItemDataRole.UserRole, str(self._root.resolve()))
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsSelectable
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                item.setCheckState(0, Qt.CheckState.Unchecked)
+                self._tree.addTopLevelItem(item)
+            else:
+                empty = QTreeWidgetItem(["(no subfolders in this folder)"])
+                empty.setFlags(Qt.ItemFlag.NoItemFlags)
+                self._tree.addTopLevelItem(empty)
+            self._tree.blockSignals(False)
+            return
+        for folder in top_dirs:
+            it = self._make_tree_item(folder, 1)
+            self._tree.addTopLevelItem(it)
+        self._tree.blockSignals(False)
+
+    def _make_tree_item(self, folder: Path, depth: int) -> QTreeWidgetItem:
+        name, count, kind = build_subfolder_preview(folder)
+        label = f"{name}  ({kind}, files: {count})"
+        item = QTreeWidgetItem([label])
+        item.setData(0, Qt.ItemDataRole.UserRole, str(folder.resolve()))
+        item.setFlags(self._item_flags_for_folder(folder))
+        item.setCheckState(0, Qt.CheckState.Unchecked)
+        if depth >= self._max_depth:
+            return item
+        subs = discover_subfolders(folder)
+        for sub in subs:
+            item.addChild(self._make_tree_item(sub, depth + 1))
+        return item
+
+    def _on_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
+        if not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+            return
+        self._tree.blockSignals(True)
+        try:
+            st = item.checkState(0)
+            if st != Qt.CheckState.PartiallyChecked:
+                self._propagate_down(item, st)
+            self._bubble_up(item)
+        finally:
+            self._tree.blockSignals(False)
+
+    def _propagate_down(self, item: QTreeWidgetItem, state: Qt.CheckState) -> None:
+        if state == Qt.CheckState.PartiallyChecked:
+            return
+        for i in range(item.childCount()):
+            ch = item.child(i)
+            if ch.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                ch.setCheckState(0, state)
+                self._propagate_down(ch, state)
+
+    def _bubble_up(self, item: QTreeWidgetItem) -> None:
+        parent = item.parent()
+        if parent is None or not (parent.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+            return
+        states = [parent.child(i).checkState(0) for i in range(parent.childCount())]
+        if all(s == Qt.CheckState.Checked for s in states):
+            parent.setCheckState(0, Qt.CheckState.Checked)
+        elif all(s == Qt.CheckState.Unchecked for s in states):
+            parent.setCheckState(0, Qt.CheckState.Unchecked)
+        else:
+            parent.setCheckState(0, Qt.CheckState.PartiallyChecked)
+        self._bubble_up(parent)
+
+    def _check_all(self) -> None:
+        self._tree.blockSignals(True)
+        try:
+            for i in range(self._tree.topLevelItemCount()):
+                it = self._tree.topLevelItem(i)
+                if it.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                    it.setCheckState(0, Qt.CheckState.Checked)
+                    self._propagate_down(it, Qt.CheckState.Checked)
+        finally:
+            self._tree.blockSignals(False)
+
+    def _check_none(self) -> None:
+        self._tree.blockSignals(True)
+        try:
+            for i in range(self._tree.topLevelItemCount()):
+                it = self._tree.topLevelItem(i)
+                if it.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                    it.setCheckState(0, Qt.CheckState.Unchecked)
+                    self._propagate_down(it, Qt.CheckState.Unchecked)
+        finally:
+            self._tree.blockSignals(False)
+
+    def _on_filter_changed(self, text: str) -> None:
+        needle = text.strip().lower()
+
+        def visit(it: QTreeWidgetItem) -> bool:
+            label = it.text(0).lower()
+            child_any = any(visit(it.child(i)) for i in range(it.childCount()))
+            hit = (not needle) or (needle in label) or child_any
+            it.setHidden(not hit)
+            return hit
+
+        for i in range(self._tree.topLevelItemCount()):
+            visit(self._tree.topLevelItem(i))
+
+    def _collect_checked_paths(self) -> list[Path]:
+        out: list[Path] = []
+
+        def walk(it: QTreeWidgetItem) -> None:
+            if it.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                if it.checkState(0) == Qt.CheckState.Checked:
+                    raw = it.data(0, Qt.ItemDataRole.UserRole)
+                    if raw:
+                        out.append(Path(str(raw)))
+            for i in range(it.childCount()):
+                walk(it.child(i))
+
+        for i in range(self._tree.topLevelItemCount()):
+            walk(self._tree.topLevelItem(i))
+        return out
+
+    def selected_folder_paths(self) -> list[Path]:
+        """Checked folders reduced to minimal import roots."""
+        return minimal_import_roots(self._collect_checked_paths())
+
+
 class DatasetPanel(QWidget):
     item_selected = pyqtSignal(Path)
 
@@ -249,10 +496,11 @@ class DatasetPanel(QWidget):
         self._btn_import_folder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._btn_import_folder.setToolTip("Import all supported files (or item.json manifests) from a folder.")
         self._btn_import_folder.clicked.connect(self._on_import_folder)
-        self._btn_import_folders_recursive = QPushButton("Add from parent folder…")
+        self._btn_import_folders_recursive = QPushButton("Add from folder tree…")
         self._btn_import_folders_recursive.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._btn_import_folders_recursive.setToolTip(
-            "Pick one parent folder, then choose multiple subfolders in an internal checklist."
+            "Pick a day or experiment root folder, then check any mix of nested sample/run folders "
+            "(multi-level tree). Primary data files are discovered under the selection; sidecars stay attached."
         )
         self._btn_import_folders_recursive.clicked.connect(self._on_import_folders_recursive)
 
@@ -322,17 +570,19 @@ class DatasetPanel(QWidget):
         self._add_paths(files)
 
     def _on_import_folders_recursive(self) -> None:
-        parent_folder = QFileDialog.getExistingDirectory(self, "Select parent folder", "")
+        parent_folder = QFileDialog.getExistingDirectory(
+            self, "Select day or parent folder (experiment root)", ""
+        )
         if not parent_folder:
             return
         parent_path = Path(parent_folder)
-        dlg = SubfolderSelectionDialog(parent_path, self)
+        dlg = HierarchicalFolderImportDialog(parent_path, self)
         if dlg.exec() != int(QDialog.DialogCode.Accepted):
             return
-        selected = dlg.selected_folders()
-        if not selected:
+        roots = dlg.selected_folder_paths()
+        if not roots:
             return
-        paths = discover_from_parent_selected_subfolders(parent_path, selected)
+        paths = discover_from_hierarchical_folder_selection(roots)
         self._add_paths(paths)
 
     def _add_paths(self, paths: List[Path]) -> None:
