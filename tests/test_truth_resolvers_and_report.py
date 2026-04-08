@@ -659,6 +659,55 @@ def test_dropped_frames_semantics_kept_separate(tmp_path: Path) -> None:
     assert diagnostics["lost_fraction"] == pytest.approx(0.11)
 
 
+def test_brownian_conditions_qc_do_not_include_drag_na_ballast() -> None:
+    summary = {
+        "metrics": {
+            "mode": "BROWNIAN",
+            "fps": 1000.0,
+            "um_per_px": 0.06042,
+            "scale_source": "dataset",
+            "temperature_c": 25.0,
+            "bead_diameter_um": 2.0,
+            "bead_radius_um": 1.0,
+            "bead_source": "run_config",
+        },
+        "diagnostics": {
+            "effective_fps": 999.0,
+            "elapsed_time_s": 10.0,
+            "timing_source": "timestamps",
+            "selected_calibration_path": "C:/run/audit/c.json",
+            "selected_trajectory_path": "C:/run/csv/t.csv",
+            "selected_timestamps_path": "C:/run/raw/ts.csv",
+            "report_source_kind": "brownian",
+            "report_source_path": "C:/run/audit/run.json",
+            "lost_fraction": 0.01,
+            "camera_dropped_frames": 0,
+            "tracking_lost_frames": 2,
+            "timestamp_validation_pass": True,
+            "timestamp_validation_message": "ok",
+            "warning_count": 0,
+        },
+        "warnings": [],
+    }
+    cond_rows = ot_report._conditions_rows(summary)
+    cond_labels = [r[0] for r in cond_rows]
+    assert "Current drag input" not in cond_labels
+    assert "Brownian baseline folder" not in cond_labels
+
+    qc_rows = ot_report._qc_rows(summary)
+    qc_labels = [r[0] for r in qc_rows]
+    assert "Drag force [N]" not in qc_labels
+    assert "Alignment offset [s]" not in qc_labels
+
+
+def test_brownian_preview_selection_is_representative_and_limited() -> None:
+    previews = [Path(f"C:/run/raw/video_preview_{i:02d}.png") for i in range(1, 11)]
+    selected = ot_report._select_representative_preview_paths(previews, max_images=6)
+    assert len(selected) == 6
+    assert selected[0].name == "video_preview_01.png"
+    assert selected[-1].name == "video_preview_10.png"
+
+
 def test_scale_resolution_explicit_and_fallback() -> None:
     ok = resolve_scale_for_run(explicit_scale_um_per_px=0.06042, scale_source="dataset_sidecar")
     assert ok.um_per_px == pytest.approx(0.06042)

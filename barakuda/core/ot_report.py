@@ -1229,8 +1229,6 @@ def _conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Bead diameter", _fmt_measure(metrics.get("bead_diameter_um"), "um")],
         ["Bead radius", _fmt_measure(metrics.get("bead_radius_um"), "um")],
         ["Bead source", _wrap(metrics.get("bead_source"), 50)],
-        ["Current drag input", _wrap(diagnostics.get("current_drag_input_path"), 50)],
-        ["Brownian baseline folder", _wrap(diagnostics.get("brownian_baseline_folder"), 50)],
         ["Selected calibration source", _wrap(diagnostics.get("selected_calibration_path"), 50)],
         ["Selected trajectory source", _wrap(diagnostics.get("selected_trajectory_path"), 50)],
         ["Selected timestamps source", _wrap(diagnostics.get("selected_timestamps_path"), 50)],
@@ -1408,41 +1406,6 @@ def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Timestamp validation pass", _fmt_value(diagnostics.get("timestamp_validation_pass"))],
         ["Timestamp validation message", _wrap(diagnostics.get("timestamp_validation_message"), 52)],
         ["Warnings", _fmt_value(diagnostics.get("warning_count"))],
-        ["Alignment status", _wrap(diagnostics.get("alignment_status"), 52)],
-        ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
-        ["Baseline window [s]", _wrap(f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", 52)],
-        ["Steady window [s]", _wrap(f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", 52)],
-        ["Motion start stage [s]", _fmt_value(diagnostics.get("motion_start_stage_s"))],
-        ["Motion start video [s]", _fmt_value(diagnostics.get("motion_start_video_s_detected"))],
-        ["Motion stop stage-aligned video [s]", _fmt_value(diagnostics.get("motion_stop_video_s_stage_aligned"))],
-        ["Alignment offset [s]", _fmt_value(diagnostics.get("alignment_offset_s"))],
-        ["Drag force [N]", _fmt_value(diagnostics.get("drag_force_n"))],
-        ["Offset [um]", _fmt_value(diagnostics.get("offset_um"))],
-        ["Drag stiffness [pN/um]", _fmt_value((summary.get("metrics") or {}).get("kappa_drag_pn_per_um"))],
-        ["Viscosity [Pa*s]", _fmt_value(diagnostics.get("eta_pa_s"))],
-        ["Actual speed [um/s]", _fmt_value(diagnostics.get("actual_speed_um_s"))],
-        ["Speed stage json [um/s]", _fmt_value(diagnostics.get("speed_stage_json"))],
-        ["Speed trace derived [um/s]", _fmt_value(diagnostics.get("speed_trace_derived"))],
-        ["Speed used for physics [um/s]", _fmt_value(diagnostics.get("speed_used_for_physics"))],
-        ["Speed consistency error [%]", _fmt_value(diagnostics.get("speed_consistency_error_pct"))],
-        ["Stage speed from trace [um/s]", _fmt_value(diagnostics.get("stage_speed_from_trace_um_s"))],
-        ["Stage speed relative diff", _fmt_value(diagnostics.get("stage_speed_relative_diff"))],
-        ["Stage speed consistent", _fmt_value(diagnostics.get("stage_speed_consistent"))],
-        ["Offset current windows [um]", _fmt_value(diagnostics.get("offset_current_windows_um"))],
-        ["Offset alt baseline [um]", _fmt_value(diagnostics.get("offset_alt_baseline_um"))],
-        ["Eta current windows [Pa*s]", _fmt_value(diagnostics.get("eta_current_windows"))],
-        ["Eta alt baseline [Pa*s]", _fmt_value(diagnostics.get("eta_alt_baseline"))],
-        ["Baseline robustness flag", _fmt_value(diagnostics.get("baseline_robustness_flag"))],
-        ["Onset robustness flag", _fmt_value(diagnostics.get("onset_robustness_flag"))],
-        ["Kinematics robustness flag", _fmt_value(diagnostics.get("kinematics_robustness_flag"))],
-        ["Onset confidence class", _fmt_value(diagnostics.get("onset_confidence_class"))],
-        ["Onset candidate density", _fmt_value(diagnostics.get("onset_candidate_density"))],
-        ["Competing durable candidates", _fmt_value(diagnostics.get("competing_durable_candidates_count"))],
-        ["Baseline strategy difference ratio", _fmt_value(diagnostics.get("baseline_strategy_difference_ratio"))],
-        ["Window clipping applied", _fmt_value(diagnostics.get("window_clipping_applied"))],
-        ["Window clipping message", _wrap(diagnostics.get("window_clipping_message"), 52)],
-        ["Analysis status", _fmt_value(diagnostics.get("analysis_status"))],
-        ["Physics status", _fmt_value(diagnostics.get("physics_status"))],
     ]
     if summary.get("error"):
         rows.append(["Failure reason", _wrap(summary.get("error"), 52)])
@@ -1931,7 +1894,7 @@ def _render_theory_page(
     ax.text(
         0.0,
         y,
-        "where $k_{\mathrm{B}}$ is the Boltzmann constant, $T$ is temperature, and $\\langle x^2 \\rangle$ is the",
+        r"where $k_{\mathrm{B}}$ is the Boltzmann constant, $T$ is temperature, and $\langle x^2 \rangle$ is the",
         fontsize=FONT_SIZE_SMALL,
         color=TEXT_COLOR,
         fontstyle="italic",
@@ -2142,7 +2105,7 @@ def _render_theory_page(
     ax.text(
         0.0,
         y,
-        "- PSD fitting uncertainty for the corner frequency $f_{\mathrm{c}}$, obtained from the Lorentzian fit.",
+        r"- PSD fitting uncertainty for the corner frequency $f_{\mathrm{c}}$, obtained from the Lorentzian fit.",
         fontsize=FONT_SIZE_SMALL,
         color=TEXT_COLOR,
         fontstyle="italic",
@@ -2639,6 +2602,15 @@ def _render_preview_grid_page(
     plt.close(fig)
 
 
+def _select_representative_preview_paths(image_paths: list[Path], max_images: int = 6) -> list[Path]:
+    paths = [Path(p) for p in image_paths]
+    if len(paths) <= max_images:
+        return paths
+    n = len(paths)
+    idxs = {int(round(i * (n - 1) / float(max_images - 1))) for i in range(max_images)}
+    return [paths[i] for i in sorted(idxs)]
+
+
 def _render_drag_windows_table_page(
     pdf,
     windows_csv: Path,
@@ -2813,6 +2785,8 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
     artifacts = summary.get("artifacts") or {}
     preview_paths = [Path(p) for p in (artifacts.get("preview_grid_pngs") or []) if p]
     drag_mode = _is_drag_report(summary)
+    if not drag_mode:
+        preview_paths = _select_representative_preview_paths(preview_paths, max_images=6)
 
     psd_entries = [
         entry
@@ -2953,15 +2927,15 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             if psd_entries:
                 _render_plot_pages(pdf, "Power Spectral Density", psd_entries,
                                   layout="vertical", items_per_page=2, page_counter=page_counter)
-            if hist_curve_entries_xy:
-                _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries_xy,
-                                  layout="vertical", items_per_page=2, page_counter=page_counter)
-            _render_histogram_r_and_msd_page(
-                pdf,
-                artifacts.get("hist_r_csv"),
-                artifacts.get("msd_csv"),
-                page_counter=page_counter,
-            )
+            hist_r = artifacts.get("hist_r_csv")
+            msd = artifacts.get("msd_csv")
+            if hist_r or msd:
+                _render_histogram_r_and_msd_page(
+                    pdf,
+                    hist_r,
+                    msd,
+                    page_counter=page_counter,
+                )
         # Artifact appendix removed - file structure is consistent across analyses
         # and documented in the user manual
     return report_path
