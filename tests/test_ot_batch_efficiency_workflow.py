@@ -9,6 +9,7 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     PairingCandidate,
     advanced_visibility,
     auto_pair_drag_items,
+    build_pairing_tree_data,
     collect_brownian_baseline_candidates_from_roots,
     drag_action_visibility,
     format_baseline_link_status,
@@ -508,3 +509,237 @@ def test_pair_key_is_route_normalized() -> None:
     key1 = make_pair_key(Path("C:/x/Sample_A-rep01 bead03.raw"))
     key2 = make_pair_key(Path("sample-a_rep01-bead03.mp4"))
     assert key1 == key2
+
+
+# ── build_pairing_tree_data ──────────────────────────────────────────────────
+
+def test_build_pairing_tree_data_basic() -> None:
+    brown = Path("/data/day01/Gly20_brown_rep01/analysis")
+    drag1 = Path("/data/day01/Gly20_drag_rep01_fast.raw")
+    cands = [PairingCandidate(folder=brown, family_key="gly20|rep01")]
+    pairs = {str(drag1): str(brown)}
+    origins = {str(drag1): "auto"}
+
+    data = build_pairing_tree_data([drag1], cands, pairs, origins)
+
+    assert len(data["baselines"]) == 1
+    bl = data["baselines"][0]
+    assert bl["folder"] == str(brown)
+    assert bl["folder_name"] == brown.name
+    assert len(bl["drags"]) == 1
+    assert bl["drags"][0]["path"] == str(drag1)
+    assert bl["drags"][0]["origin"] == "auto"
+    assert bl["drags"][0]["status"] == "linked"
+    assert data["unpaired"] == []
+
+
+def test_build_pairing_tree_data_unpaired_section() -> None:
+    drag1 = Path("/data/Gly20_drag_rep01.raw")
+    drag2 = Path("/data/Gly20_drag_rep02.raw")
+    brown = Path("/data/Gly20_brown_rep01/analysis")
+    cands = [PairingCandidate(folder=brown, family_key="gly20|rep01")]
+    pairs: dict[str, str | None] = {str(drag1): str(brown), str(drag2): None}
+    origins: dict[str, str] = {str(drag1): "auto", str(drag2): "unset"}
+
+    data = build_pairing_tree_data([drag1, drag2], cands, pairs, origins)
+
+    paired_names = [d["name"] for d in data["baselines"][0]["drags"]]
+    assert drag1.name in paired_names
+    assert len(data["unpaired"]) == 1
+    assert data["unpaired"][0]["path"] == str(drag2)
+    assert data["unpaired"][0]["status"] == "missing"
+
+
+def test_build_pairing_tree_data_many_to_one() -> None:
+    brown = Path("/data/Gly20_brown_rep01/analysis")
+    drag_fast = Path("/data/Gly20_drag_rep01_fast.raw")
+    drag_slow = Path("/data/Gly20_drag_rep01_slow.raw")
+    cands = [PairingCandidate(folder=brown, family_key="gly20|rep01")]
+    pairs = {str(drag_fast): str(brown), str(drag_slow): str(brown)}
+    origins = {str(drag_fast): "auto", str(drag_slow): "auto"}
+
+    data = build_pairing_tree_data([drag_fast, drag_slow], cands, pairs, origins)
+
+    assert len(data["baselines"]) == 1
+    drags = data["baselines"][0]["drags"]
+    assert len(drags) == 2
+    drag_names = {d["name"] for d in drags}
+    assert drag_fast.name in drag_names
+    assert drag_slow.name in drag_names
+    assert data["unpaired"] == []
+
+
+def test_build_pairing_tree_data_origin_auto_vs_manual() -> None:
+    brown = Path("/data/Gly20_brown/analysis")
+    drag_a = Path("/data/Gly20_drag_a.raw")
+    drag_b = Path("/data/Gly20_drag_b.raw")
+    cands = [PairingCandidate(folder=brown, family_key="gly20")]
+    pairs = {str(drag_a): str(brown), str(drag_b): str(brown)}
+    origins = {str(drag_a): "auto", str(drag_b): "manual"}
+
+    data = build_pairing_tree_data([drag_a, drag_b], cands, pairs, origins)
+
+    drags_by_name = {d["name"]: d for d in data["baselines"][0]["drags"]}
+    assert drags_by_name[drag_a.name]["origin"] == "auto"
+    assert drags_by_name[drag_b.name]["origin"] == "manual"
+
+
+def test_build_pairing_tree_data_candidates_appear_without_drags() -> None:
+    brown1 = Path("/data/Gly20_brown/analysis")
+    brown2 = Path("/data/Gly40_brown/analysis")
+    cands = [
+        PairingCandidate(folder=brown1, family_key="gly20"),
+        PairingCandidate(folder=brown2, family_key="gly40"),
+    ]
+    data = build_pairing_tree_data([], cands, {}, {})
+
+    folder_names = {bl["folder_name"] for bl in data["baselines"]}
+    assert brown1.name in folder_names
+    assert brown2.name in folder_names
+    assert all(len(bl["drags"]) == 0 for bl in data["baselines"])
+    assert data["unpaired"] == []
+
+
+def test_build_pairing_tree_data_available_baseline_folders() -> None:
+    brown = Path("/data/Gly20_brown/analysis")
+    drag1 = Path("/data/Gly20_drag.raw")
+    cands = [PairingCandidate(folder=brown, family_key="gly20")]
+    pairs = {str(drag1): str(brown)}
+
+    data = build_pairing_tree_data([drag1], cands, pairs, {})
+
+    assert str(brown) in data["available_baseline_folders"]
+
+
+# ── Pairing tab panel source checks ─────────────────────────────────────────
+
+def test_pairing_tab_visible_only_drag_described_in_panel_source() -> None:
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "_pairing_tab_idx" in panel_src
+    assert "setTabVisible" in panel_src
+    assert 'str(mode) == "Drag"' in panel_src or "mode) == \"Drag\"" in panel_src
+
+
+def test_pairing_tab_has_expected_ui_strings() -> None:
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "Add Brownian folders from tree" in panel_src
+    assert "Auto-pair Brownian baselines" in panel_src
+    assert "Pairing map" in panel_src
+    assert "Manual reassign" in panel_src
+    assert "Move to:" in panel_src
+    assert "Assign" in panel_src
+
+
+def test_pairing_tab_tree_widget_class_defined() -> None:
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "class PairingTreeWidget" in panel_src
+    assert "refresh_tree" in panel_src
+    assert "drag_item_selected" in panel_src
+
+
+def test_pairing_manual_assign_signal_defined_in_panel() -> None:
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "pairing_manual_assign_requested" in panel_src
+    assert "refresh_pairing_view" in panel_src
+
+
+# ── manual pairing logic ─────────────────────────────────────────────────────
+
+def test_manual_assign_overrides_auto_pair_result() -> None:
+    """Manual reassign to a different Brownian baseline must override auto-pair."""
+    brown_a = Path("/data/Gly20_brown_a_analysis")
+    brown_b = Path("/data/Gly20_brown_b_analysis")
+    drag = Path("/data/Gly20_drag.raw")
+
+    cands = [
+        PairingCandidate(folder=brown_a, family_key="gly20|a"),
+        PairingCandidate(folder=brown_b, family_key="gly20|b"),
+    ]
+    # auto-pair would link drag → brown_a
+    pairs_auto = {str(drag): str(brown_a)}
+    origins_auto = {str(drag): "auto"}
+    tree_auto = build_pairing_tree_data([drag], cands, pairs_auto, origins_auto)
+    assert tree_auto["baselines"][0]["drags"][0]["origin"] == "auto"
+
+    # manual override: link drag → brown_b
+    pairs_manual = {str(drag): str(brown_b)}
+    origins_manual = {str(drag): "manual"}
+    tree_manual = build_pairing_tree_data([drag], cands, pairs_manual, origins_manual)
+
+    # bl_by_name keyed on folder_name (last path component)
+    bl_by_name = {bl["folder_name"]: bl for bl in tree_manual["baselines"]}
+    assert len(bl_by_name[brown_b.name]["drags"]) == 1
+    assert bl_by_name[brown_b.name]["drags"][0]["origin"] == "manual"
+    assert len(bl_by_name[brown_a.name]["drags"]) == 0
+
+
+def test_manual_unpair_moves_drag_to_unpaired() -> None:
+    brown = Path("/data/Gly20_brown_analysis")
+    drag = Path("/data/Gly20_drag.raw")
+    cands = [PairingCandidate(folder=brown, family_key="gly20")]
+    pairs: dict[str, str | None] = {str(drag): None}
+    origins = {str(drag): "manual"}
+
+    data = build_pairing_tree_data([drag], cands, pairs, origins)
+
+    assert data["baselines"][0]["drags"] == []
+    assert len(data["unpaired"]) == 1
+    assert data["unpaired"][0]["origin"] == "manual"
+
+
+# ── run preflight still uses explicit pairing map (stored params) ────────────
+
+def test_preflight_blocks_drag_without_baseline(tmp_path: Path) -> None:
+    drag_raw = tmp_path / "Gly20_drag.raw"
+    drag_raw.write_text("x")
+    params = {
+        str(drag_raw): {
+            "postprocess": {"calibration_mode": "Drag", "brownian_baseline_folder": ""}
+        }
+    }
+
+    def _validate(_folder: Path) -> tuple[bool, str]:
+        return True, "baseline linked"
+
+    ok, issues = validate_drag_baseline_batch([drag_raw], params, _validate)
+    assert not ok
+    assert "baseline missing" in issues[str(drag_raw)]
+
+
+def test_preflight_passes_drag_with_valid_baseline(tmp_path: Path) -> None:
+    drag_raw = tmp_path / "Gly20_drag.raw"
+    drag_raw.write_text("x")
+    baseline = tmp_path / "brown_analysis"
+    baseline.mkdir()
+    params = {
+        str(drag_raw): {
+            "postprocess": {
+                "calibration_mode": "Drag",
+                "brownian_baseline_folder": str(baseline),
+            }
+        }
+    }
+
+    def _validate(_folder: Path) -> tuple[bool, str]:
+        return True, "baseline linked"
+
+    ok, issues = validate_drag_baseline_batch([drag_raw], params, _validate)
+    assert ok
+    assert issues == {}
+
+
+def test_preflight_passes_brownian_items_unconditionally(tmp_path: Path) -> None:
+    brown_raw = tmp_path / "Gly20_brown.raw"
+    brown_raw.write_text("x")
+    params = {
+        str(brown_raw): {
+            "postprocess": {"calibration_mode": "Brownian", "brownian_baseline_folder": ""}
+        }
+    }
+
+    def _validate(_folder: Path) -> tuple[bool, str]:
+        return False, "baseline invalid"
+
+    ok, issues = validate_drag_baseline_batch([brown_raw], params, _validate)
+    assert ok
+    assert issues == {}
