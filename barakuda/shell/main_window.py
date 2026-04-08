@@ -28,6 +28,7 @@ from barakuda.devices.optical_tweezers.drag.calibration_import import load_brown
 from barakuda.devices.optical_tweezers.ui.batch_tools import (
     PairingCandidate,
     auto_pair_drag_items,
+    build_pairing_tree_data,
     collect_brownian_baseline_candidates_from_roots,
     format_baseline_link_status,
     parse_ot_progress_message,
@@ -184,6 +185,7 @@ class ShellMainWindow(QMainWindow):
         self._last_non_acq_splitter_sizes: Optional[list[int]] = None
         self._last_dataset_dock_width: int = 300
         self._ot_baseline_candidates: list[PairingCandidate] = []
+        self._ot_pairing_origins: dict[str, str] = {}  # drag_path_str -> "auto" | "manual" | "unset"
         self._ot_default_params: dict | None = None
         self._ot_loading_item_params: bool = False
 
@@ -993,6 +995,35 @@ class ShellMainWindow(QMainWindow):
             self.dataset.set_pairing_status(
                 p, format_baseline_link_status(baseline, share_counts[baseline])
             )
+        self._rebuild_pairing_tree_view()
+
+    def _rebuild_pairing_tree_view(self) -> None:
+        """Collect current Drag item pairings from stored params and push to the Pairing tab."""
+        if self._device_panel is None or self._active_device_id != "optical_tweezers":
+            return
+        if not hasattr(self._device_panel, "refresh_pairing_view"):
+            return
+        drag_paths: list[Path] = []
+        explicit_pairs: dict[str, str | None] = {}
+        for entry in self.dataset.get_all_items():
+            p = Path(str(entry.get("path") or ""))
+            if not p:
+                continue
+            params = self.dataset.get_item_params(p)
+            if params is None:
+                continue
+            pp = dict(params.get("postprocess") or {})
+            if str(pp.get("calibration_mode") or "Brownian") == "Drag":
+                drag_paths.append(p)
+                baseline = str(pp.get("brownian_baseline_folder") or "").strip()
+                explicit_pairs[str(p)] = baseline or None
+        tree_data = build_pairing_tree_data(
+            drag_paths=drag_paths,
+            candidates=self._ot_baseline_candidates,
+            explicit_pairs=explicit_pairs,
+            pairing_origins=self._ot_pairing_origins,
+        )
+        self._device_panel.refresh_pairing_view(tree_data)
 
     def _on_ot_apply_to_checked(self) -> None:
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
@@ -1042,6 +1073,7 @@ class ShellMainWindow(QMainWindow):
             candidates[str(c.folder)] = c
         self._ot_baseline_candidates = sorted(candidates.values(), key=lambda c: str(c.folder).lower())
         self.log_panel.log(f"Baseline candidates loaded: {len(self._ot_baseline_candidates)}")
+        self._rebuild_pairing_tree_view()
 
     def _on_ot_auto_pair_baselines(self) -> None:
         if self._active_device_id != "optical_tweezers":

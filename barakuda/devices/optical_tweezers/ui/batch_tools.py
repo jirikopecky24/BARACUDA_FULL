@@ -278,6 +278,60 @@ def auto_pair_drag_items(
     return baseline_map, status_map
 
 
+def build_pairing_tree_data(
+    drag_paths: list[Path],
+    candidates: list[PairingCandidate],
+    explicit_pairs: dict[str, str | None],
+    pairing_origins: dict[str, str],
+) -> dict:
+    """
+    Build tree data for the Pairing tab view.
+
+    ``explicit_pairs`` maps drag_path_str → baseline_folder_str (or None/empty = unpaired).
+    ``pairing_origins`` maps drag_path_str → "auto" | "manual" | "unset".
+
+    Returns a dict with keys:
+      - baselines: list[{folder, folder_name, drags: list[{path, name, origin, status}]}]
+      - unpaired:  list[{path, name, origin, status}]
+      - available_baseline_folders: sorted list of str (from candidates + manually-assigned)
+    """
+    known_folders: set[str] = {str(c.folder) for c in candidates}
+
+    paired_by_baseline: dict[str, list[dict]] = {}
+    unpaired: list[dict] = []
+
+    for dp in drag_paths:
+        dp_str = str(dp)
+        folder_str = (explicit_pairs.get(dp_str) or "").strip()
+        origin = pairing_origins.get(dp_str, "unset")
+        entry: dict = {
+            "path": dp_str,
+            "name": Path(dp_str).name,
+            "origin": origin,
+            "status": "linked" if folder_str else "missing",
+        }
+        if folder_str:
+            paired_by_baseline.setdefault(folder_str, []).append(entry)
+        else:
+            unpaired.append(entry)
+
+    all_baseline_folders: set[str] = known_folders | set(paired_by_baseline.keys())
+    baselines = [
+        {
+            "folder": f,
+            "folder_name": Path(f).name,
+            "drags": paired_by_baseline.get(f, []),
+        }
+        for f in sorted(all_baseline_folders, key=str.lower)
+    ]
+
+    return {
+        "baselines": baselines,
+        "unpaired": unpaired,
+        "available_baseline_folders": sorted(all_baseline_folders, key=str.lower),
+    }
+
+
 def validate_drag_baseline_batch(
     checked_paths: list[Path],
     params_by_path: dict[str, dict],
