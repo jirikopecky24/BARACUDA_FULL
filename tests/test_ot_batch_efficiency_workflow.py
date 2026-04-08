@@ -9,9 +9,12 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     PairingCandidate,
     advanced_visibility,
     auto_pair_drag_items,
+    collect_brownian_baseline_candidates_from_roots,
     drag_action_visibility,
+    format_baseline_link_status,
     format_batch_progress,
     format_current_file_progress,
+    make_family_pair_key,
     make_pair_key,
     merge_ot_params_for_checked,
     parse_ot_progress_message,
@@ -116,6 +119,12 @@ def test_report_action_removed_from_ot_ui_definition() -> None:
     assert "btn_gate_report = QPushButton" not in panel_src
 
 
+def test_ot_panel_drag_baseline_actions_use_folder_tree_and_auto_pair() -> None:
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "Add baseline roots from folder tree" in panel_src
+    assert "Auto-pair Brownian baselines" in panel_src
+
+
 def test_frame_range_defaults_for_new_item() -> None:
     s, e = resolve_frame_range_for_item(start=0, end=0, last_frame=149, is_new_item=True)
     assert s == 0
@@ -188,6 +197,61 @@ def test_invalid_stored_end_frame_gets_clamped() -> None:
     assert (s, e) == (3, 149)
 
 
+def test_family_key_unifies_brownian_drag_and_motion_suffixes() -> None:
+    assert make_family_pair_key("Gly40_brown_rep02") == make_family_pair_key("Gly40_drag_rep02.raw")
+    assert make_family_pair_key("Gly40_drag_rep02") == make_family_pair_key("Gly40_drag_rep02_r001.raw")
+    assert make_family_pair_key("Gly40_drag_rep02_slow.raw") == make_family_pair_key("Gly40_drag_rep02_fast.raw")
+
+
+def test_auto_pair_many_drags_one_brownian_candidate() -> None:
+    drags = [
+        Path("Gly40_drag_rep02.raw"),
+        Path("Gly40_drag_rep02_r002.raw"),
+        Path("Gly40_drag_rep02_slow.raw"),
+    ]
+    fk = make_family_pair_key(drags[0])
+    candidates = [PairingCandidate(Path("analysis/Gly40_brown_rep02"), fk)]
+    baseline_map, status_map = auto_pair_drag_items(drags, candidates)
+    for d in drags:
+        assert status_map[str(d)] == "baseline linked"
+        assert baseline_map[str(d)] == str(candidates[0].folder)
+
+
+def test_auto_pair_ambiguous_when_two_distinct_folders_share_family_key() -> None:
+    drags = [Path("Gly40_drag_rep02.raw")]
+    fk = make_family_pair_key(drags[0])
+    candidates = [
+        PairingCandidate(Path("sessionA/Gly40_brown_rep02"), fk),
+        PairingCandidate(Path("sessionB/Gly40_brown_rep02"), fk),
+    ]
+    baseline_map, status_map = auto_pair_drag_items(drags, candidates)
+    assert status_map[str(drags[0])] == "baseline ambiguous"
+    assert str(drags[0]) not in baseline_map
+
+
+def test_format_baseline_link_status_shared_suffix() -> None:
+    assert format_baseline_link_status("C:/x/B", 1) == "baseline linked"
+    assert "shared 3×" in format_baseline_link_status("C:/x/B", 3)
+
+
+def test_collect_baseline_candidates_from_roots_filters_by_validate(tmp_path: Path) -> None:
+    good = tmp_path / "run1" / "analysis" / "Gly40_brown_rep02"
+    (good / "audit").mkdir(parents=True)
+    bad = tmp_path / "run_bad" / "analysis" / "x"
+    (bad / "audit").mkdir(parents=True)
+
+    def _validate(p: Path) -> None:
+        if "run_bad" in str(p).replace("\\", "/"):
+            raise ValueError("invalid")
+
+    cands = collect_brownian_baseline_candidates_from_roots(
+        [tmp_path / "run1", tmp_path / "run_bad"],
+        validate_folder=_validate,
+    )
+    assert len(cands) == 1
+    assert cands[0].folder == good
+
+
 def test_auto_pair_unique_and_ambiguous_and_missing() -> None:
     drag = [
         Path("2026-04-01-sampleA-rep1-bead01.raw"),
@@ -195,9 +259,9 @@ def test_auto_pair_unique_and_ambiguous_and_missing() -> None:
         Path("2026-04-01-sampleC-rep1-bead01.raw"),
     ]
     candidates = [
-        PairingCandidate("2026|04|01|samplea|rep1|bead01", Path("bA")),
-        PairingCandidate("2026|04|01|sampleb|rep1|bead01", Path("bB_1")),
-        PairingCandidate("2026|04|01|sampleb|rep1|bead01", Path("bB_2")),
+        PairingCandidate(Path("bA"), "2026|04|01|samplea|rep1|bead01"),
+        PairingCandidate(Path("bB_1"), "2026|04|01|sampleb|rep1|bead01"),
+        PairingCandidate(Path("bB_2"), "2026|04|01|sampleb|rep1|bead01"),
     ]
     baseline_map, status_map = auto_pair_drag_items(drag, candidates)
     assert baseline_map[str(drag[0])] == "bA"
