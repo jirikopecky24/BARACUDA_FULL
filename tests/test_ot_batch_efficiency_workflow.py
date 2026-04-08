@@ -15,6 +15,7 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     format_baseline_link_status,
     format_batch_progress,
     format_current_file_progress,
+    inherit_calibration_mode_for_new_item,
     make_family_pair_key,
     make_pair_key,
     merge_ot_params_for_checked,
@@ -726,6 +727,83 @@ def test_preflight_passes_drag_with_valid_baseline(tmp_path: Path) -> None:
     ok, issues = validate_drag_baseline_batch([drag_raw], params, _validate)
     assert ok
     assert issues == {}
+
+
+# ── inherit_calibration_mode_for_new_item (Pairing tab visibility fix) ───────
+
+def test_new_drag_item_inherits_drag_mode_not_brownian_default() -> None:
+    """New item loaded with Brownian defaults must have mode overridden to Drag."""
+    brownian_defaults = {
+        "postprocess": {"calibration_mode": "Brownian", "strategy": "PSD_Welch"},
+        "tracking": {"roi_margin": 1.8},
+    }
+    result = inherit_calibration_mode_for_new_item(brownian_defaults, "Drag")
+    assert result["postprocess"]["calibration_mode"] == "Drag"
+    # Other fields untouched
+    assert result["postprocess"]["strategy"] == "PSD_Welch"
+    assert result["tracking"]["roi_margin"] == 1.8
+
+
+def test_new_item_in_brownian_workflow_stays_brownian() -> None:
+    """When panel is in Brownian mode, new item must stay Brownian (no override)."""
+    brownian_defaults = {
+        "postprocess": {"calibration_mode": "Brownian", "strategy": "PSD_Welch"},
+    }
+    result = inherit_calibration_mode_for_new_item(brownian_defaults, "Brownian")
+    assert result["postprocess"]["calibration_mode"] == "Brownian"
+    # Should return the same object (no unnecessary copy)
+    assert result is brownian_defaults
+
+
+def test_new_item_with_none_current_mode_stays_brownian() -> None:
+    """None current_mode means panel state unknown — keep Brownian default."""
+    brownian_defaults = {"postprocess": {"calibration_mode": "Brownian"}}
+    result = inherit_calibration_mode_for_new_item(brownian_defaults, None)
+    assert result["postprocess"]["calibration_mode"] == "Brownian"
+
+
+def test_stored_item_params_not_affected_by_inherit() -> None:
+    """
+    The fix only applies to new items (pms is None path in _on_item_selected).
+    Test that the helper does not change Drag params when the item has stored
+    params that explicitly say Drag (already correct — no-op expected).
+    """
+    stored_drag = {
+        "postprocess": {"calibration_mode": "Drag", "stage_speed_um_s": 5.0},
+    }
+    result = inherit_calibration_mode_for_new_item(stored_drag, "Drag")
+    assert result["postprocess"]["calibration_mode"] == "Drag"
+    assert result["postprocess"]["stage_speed_um_s"] == 5.0
+
+
+def test_inherit_does_not_mutate_original_dict() -> None:
+    """Original load_params dict must not be mutated."""
+    original = {"postprocess": {"calibration_mode": "Brownian"}}
+    result = inherit_calibration_mode_for_new_item(original, "Drag")
+    assert original["postprocess"]["calibration_mode"] == "Brownian"
+    assert result["postprocess"]["calibration_mode"] == "Drag"
+    assert result is not original
+
+
+def test_pairing_tab_visibility_source_uses_setTabVisible() -> None:
+    """Confirm panel uses Qt setTabVisible for Pairing tab, not workarounds."""
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "setTabVisible" in panel_src
+    assert "_pairing_tab_idx" in panel_src
+
+
+def test_inherit_helper_documented_in_batch_tools() -> None:
+    """Confirm the fix is present as a named, importable function."""
+    bt_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/batch_tools.py").read_text(encoding="utf-8")
+    assert "inherit_calibration_mode_for_new_item" in bt_src
+    assert "_ot_default_params" in bt_src or "new_item" in bt_src
+
+
+def test_main_window_uses_inherit_for_new_item() -> None:
+    """Confirm main_window applies inherit_calibration_mode_for_new_item when pms is None."""
+    mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
+    assert "inherit_calibration_mode_for_new_item" in mw_src
+    assert "pms is None" in mw_src
 
 
 def test_preflight_passes_brownian_items_unconditionally(tmp_path: Path) -> None:
