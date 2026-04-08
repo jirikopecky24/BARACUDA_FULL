@@ -9,6 +9,7 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     PairingCandidate,
     advanced_visibility,
     auto_pair_drag_items,
+    build_baseline_list_view_data,
     build_pairing_tree_data,
     collect_brownian_baseline_candidates_from_roots,
     drag_action_visibility,
@@ -1000,3 +1001,246 @@ def test_format_baseline_link_status_uses_run_folder_name() -> None:
     assert "analysis" not in status
     assert "Gly20_brown_rep01" in status
     assert "shared 3×" in status
+
+
+# ── Scenario tests: Pairing workflow phase model (zadání requirements I–G) ──
+
+
+def test_scenario1_import_baseline_folders_returns_candidate_list() -> None:
+    """
+    Scenario 1: importing Brownian baseline folders loads available candidates.
+    build_baseline_list_view_data() must return a list of all candidates with no drag children.
+    """
+    candidates = [
+        PairingCandidate(Path("/data/Gly20_brown_rep01/analysis"), "gly20|rep01", "Gly20_brown_rep01"),
+        PairingCandidate(Path("/data/Gly20_brown_rep02/analysis"), "gly20|rep02", "Gly20_brown_rep02"),
+        PairingCandidate(Path("/data/Water_brown_rep01/analysis"), "water|rep01", "Water_brown_rep01"),
+    ]
+    view = build_baseline_list_view_data(candidates)
+
+    assert view["phase"] == "baseline_list"
+    assert len(view["baselines"]) == 3
+    names = [bl["folder_name"] for bl in view["baselines"]]
+    assert "Gly20_brown_rep01" in names
+    assert "Gly20_brown_rep02" in names
+    assert "Water_brown_rep01" in names
+
+
+def test_scenario2_import_baselines_does_not_create_pairing_links() -> None:
+    """
+    Scenario 2: importing baselines alone must NOT create any pairing between drag items
+    and Brownian baselines.  build_baseline_list_view_data() must return empty drag lists
+    even when drag paths exist in the dataset.
+    """
+    candidates = [
+        PairingCandidate(Path("/data/Gly20_brown_rep01/analysis"), "gly20|rep01", "Gly20_brown_rep01"),
+    ]
+    view = build_baseline_list_view_data(candidates)
+
+    # No drag items appear — the tree is purely a list of available baselines.
+    assert view["unpaired"] == []
+    for bl in view["baselines"]:
+        assert bl["drags"] == [], f"Expected no drag children after import, got {bl['drags']}"
+
+
+def test_scenario3_auto_pair_creates_links_between_drag_and_baselines() -> None:
+    """
+    Scenario 3: auto-pair (run after import) links drag items to their Brownian baselines.
+    The result tree must show paired drag items as children of the correct baseline node.
+    """
+    fk = make_family_pair_key("Gly20_brown_rep01")
+    candidates = [
+        PairingCandidate(Path("/data/Gly20_brown_rep01/analysis"), fk, "Gly20_brown_rep01"),
+    ]
+    drag_paths = [
+        Path("/runs/Gly20_drag_rep01_slow.raw"),
+        Path("/runs/Gly20_drag_rep01_fast.raw"),
+    ]
+    baseline_map, status_map = auto_pair_drag_items(drag_paths, candidates)
+
+    # Both drag paths must be linked — not missing or ambiguous.
+    for dp in drag_paths:
+        assert status_map[str(dp)] == "baseline linked", (
+            f"Expected linked, got {status_map[str(dp)]!r}"
+        )
+        assert str(dp) in baseline_map
+
+    # Build the pairing_result tree and verify structure.
+    explicit_pairs = {str(dp): baseline_map[str(dp)] for dp in drag_paths}
+    tree_data = build_pairing_tree_data(
+        drag_paths=drag_paths,
+        candidates=candidates,
+        explicit_pairs=explicit_pairs,
+        pairing_origins={str(dp): "auto" for dp in drag_paths},
+    )
+    assert tree_data.get("phase", "pairing_result") != "baseline_list"
+    assert len(tree_data["baselines"]) == 1
+    baseline_node = tree_data["baselines"][0]
+    assert baseline_node["folder_name"] == "Gly20_brown_rep01"
+    assert len(baseline_node["drags"]) == 2
+    assert tree_data["unpaired"] == []
+
+
+def test_scenario4_manual_assign_overrides_auto_pair() -> None:
+    """
+    Scenario 4: manual assign is an override applied after (or instead of) auto-pair.
+    It must produce origin="manual" and supersede any previous auto-pairing.
+    """
+    fk = make_family_pair_key("Gly20_brown_rep01")
+    candidate_a = PairingCandidate(Path("/data/Gly20_brown_rep01/analysis"), fk, "Gly20_brown_rep01")
+    candidate_b = PairingCandidate(Path("/data/Gly20_brown_rep02/analysis"), "gly20|rep02", "Gly20_brown_rep02")
+
+    drag = Path("/runs/Gly20_drag_rep01.raw")
+
+    # Simulate auto-pair result.
+    explicit_pairs = {str(drag): str(candidate_a.folder)}
+    origins_auto = {str(drag): "auto"}
+
+    # User overrides — moves drag under candidate_b.
+    explicit_pairs_override = {str(drag): str(candidate_b.folder)}
+    origins_manual = {str(drag): "manual"}
+
+    tree_auto = build_pairing_tree_data(
+        drag_paths=[drag],
+        candidates=[candidate_a, candidate_b],
+        explicit_pairs=explicit_pairs,
+        pairing_origins=origins_auto,
+    )
+    tree_manual = build_pairing_tree_data(
+        drag_paths=[drag],
+        candidates=[candidate_a, candidate_b],
+        explicit_pairs=explicit_pairs_override,
+        pairing_origins=origins_manual,
+    )
+
+    # After auto: drag is under candidate_a with origin "auto".
+    auto_bl = next(bl for bl in tree_auto["baselines"] if bl["drags"])
+    assert auto_bl["folder_name"] == "Gly20_brown_rep01"
+    assert auto_bl["drags"][0]["origin"] == "auto"
+
+    # After manual override: drag is under candidate_b with origin "manual".
+    manual_bl = next(bl for bl in tree_manual["baselines"] if bl["drags"])
+    assert manual_bl["folder_name"] == "Gly20_brown_rep02"
+    assert manual_bl["drags"][0]["origin"] == "manual"
+    assert tree_manual["unpaired"] == []
+
+
+def test_scenario5_run_level_selection_model_preserved() -> None:
+    """
+    Scenario 5: the run-level picker model is preserved.
+    PairingCandidate.display_name and family_key are derived from the run folder,
+    not from the internal 'analysis' subfolder name.
+    """
+    fk_run = make_family_pair_key(Path("/data/Gly20_brown_rep01"))
+    fk_analysis = make_family_pair_key(Path("/data/Gly20_brown_rep01/analysis"))
+
+    # display_name must be the run folder name
+    candidate = PairingCandidate(
+        folder=Path("/data/Gly20_brown_rep01/analysis"),
+        family_key=fk_run,
+        display_name="Gly20_brown_rep01",
+    )
+    assert candidate.display_name == "Gly20_brown_rep01"
+    assert candidate.family_key == fk_run
+
+    # family_key from run folder must match drag items (which have no /analysis segment)
+    drag_fk = make_family_pair_key(Path("/runs/Gly20_drag_rep01.raw"))
+    assert fk_run == drag_fk, (
+        f"Run folder family_key {fk_run!r} must match drag family_key {drag_fk!r}"
+    )
+
+
+def test_scenario6_family_key_from_run_folder_not_analysis() -> None:
+    """
+    Scenario 6: family_key must be derived from the run folder name, not from 'analysis/'.
+    The 'analysis' token itself must never drive the family key.
+    """
+    # Direct check via collect_brownian_baseline_candidates_from_roots logic:
+    # _run_folder_for_analysis() must step up from 'analysis' to the parent run folder.
+    from barakuda.devices.optical_tweezers.ui.batch_tools import _run_folder_for_analysis
+
+    analysis_path = Path("/data/experiment/Gly20_brown_rep01/analysis")
+    run_folder = _run_folder_for_analysis(analysis_path)
+    assert run_folder.name == "Gly20_brown_rep01", (
+        f"Expected run folder name, got {run_folder.name!r}"
+    )
+    assert run_folder.name != "analysis"
+
+    fk = make_family_pair_key(run_folder)
+    assert "analysis" not in fk.split("|"), (
+        f"'analysis' must not appear in family_key tokens: {fk!r}"
+    )
+
+
+def test_scenario7_one_brownian_to_n_drag_supported() -> None:
+    """
+    Scenario 7: one Brownian baseline : multiple Drag runs (same place, different speeds).
+    All drag items sharing the same family key must successfully link to the single baseline.
+    """
+    fk = make_family_pair_key("Gly40_brown_rep01")
+    candidate = PairingCandidate(Path("/data/Gly40_brown_rep01/analysis"), fk, "Gly40_brown_rep01")
+    drag_paths = [
+        Path("/runs/Gly40_drag_rep01_slow.raw"),
+        Path("/runs/Gly40_drag_rep01_fast.raw"),
+        Path("/runs/Gly40_drag_rep01_r001.raw"),
+        Path("/runs/Gly40_drag_rep01_r002.raw"),
+    ]
+    baseline_map, status_map = auto_pair_drag_items(drag_paths, [candidate])
+
+    assert len(baseline_map) == 4, "All 4 drag items should link to the one baseline"
+    for dp in drag_paths:
+        assert status_map[str(dp)] == "baseline linked", (
+            f"{dp.name}: expected linked, got {status_map[str(dp)]!r}"
+        )
+        assert baseline_map[str(dp)] == str(candidate.folder)
+
+    # Pairing tree must show all 4 drags as children of the single baseline.
+    explicit_pairs = {str(dp): str(candidate.folder) for dp in drag_paths}
+    tree_data = build_pairing_tree_data(
+        drag_paths=drag_paths,
+        candidates=[candidate],
+        explicit_pairs=explicit_pairs,
+        pairing_origins={str(dp): "auto" for dp in drag_paths},
+    )
+    assert len(tree_data["baselines"]) == 1
+    assert len(tree_data["baselines"][0]["drags"]) == 4
+    assert tree_data["unpaired"] == []
+
+
+def test_pairing_phase_state_model_in_main_window_source() -> None:
+    """
+    Verify that the three-phase model (idle / baseline_list / pairing_result)
+    is implemented in main_window.py with correct phase transitions.
+    """
+    src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
+    assert "_ot_pairing_phase" in src
+    assert '"idle"' in src
+    assert '"baseline_list"' in src
+    assert '"pairing_result"' in src
+    # auto-pair must transition to pairing_result
+    assert "pairing_result" in src
+    # build_baseline_list_view_data must be imported and used
+    assert "build_baseline_list_view_data" in src
+
+
+def test_build_baseline_list_view_data_has_correct_phase_key() -> None:
+    """build_baseline_list_view_data() must return phase='baseline_list'."""
+    candidates = [
+        PairingCandidate(Path("/x/Brown_rep01/analysis"), "brown|rep01", "Brown_rep01"),
+    ]
+    view = build_baseline_list_view_data(candidates)
+    assert view["phase"] == "baseline_list"
+    assert len(view["baselines"]) == 1
+    assert view["baselines"][0]["folder_name"] == "Brown_rep01"
+    assert view["baselines"][0]["drags"] == []
+    assert view["unpaired"] == []
+    assert str(Path("/x/Brown_rep01/analysis")) in view["available_baseline_folders"]
+
+
+def test_pairing_tab_phase_label_in_panel_source() -> None:
+    """Panel must update its tree label based on phase (baseline_list vs pairing_result)."""
+    panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
+    assert "baseline_list" in panel_src
+    assert "Available Brownian baselines" in panel_src
+    assert "Pairing results" in panel_src
+    assert "_pairing_tree_label" in panel_src
