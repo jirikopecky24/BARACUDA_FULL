@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 import re
@@ -8,10 +9,11 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy, QMessageBox, QFileDialog
+    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy, QMessageBox, QFileDialog,
+    QDialog,
 )
 
-from barakuda.shell.widgets.dataset_panel import DatasetPanel
+from barakuda.shell.widgets.dataset_panel import DatasetPanel, HierarchicalFolderImportDialog
 from barakuda.shell.widgets.preview_panel import PreviewPanel
 from barakuda.shell.widgets.log_panel import LogPanel
 from barakuda.devices.registry import list_devices
@@ -26,10 +28,14 @@ from barakuda.devices.optical_tweezers.drag.calibration_import import load_brown
 from barakuda.devices.optical_tweezers.ui.batch_tools import (
     PairingCandidate,
     auto_pair_drag_items,
+    build_baseline_list_view_data,
+    build_pairing_tree_data,
+    collect_brownian_baseline_candidates_from_roots,
+    format_baseline_link_status,
+    inherit_calibration_mode_for_new_item,
     parse_ot_progress_message,
     resolve_frame_range_for_item,
     merge_ot_params_for_checked,
-    make_pair_key,
     resolve_ot_item_params_for_load,
     validate_drag_baseline_batch,
 )
@@ -71,6 +77,14 @@ class ShellMainWindow(QMainWindow):
         # Track per-item completion for progressive OT overlay updates.
         self._ot_last_done_seen: int = -1
         self._ot_overlay_last_applied_done: int = -1
+
+        # Deferred OT batch PDF generation — runs in a background thread so the
+        # UI event loop is never blocked by matplotlib's GIL-holding rendering.
+        self._ot_pdf_thread = None
+        self._ot_pdf_worker = None
+        # Stores the batch summary dict delivered by OTRunWorker.batch_summary_ready
+        # and consumed by _start_ot_pdf_generation() after finished fires.
+        self._ot_pending_pdf_summary: dict | None = None
 
         runs_folder = Path(__file__).resolve().parents[2] / "runs"
         self.batch = BatchController(runs_folder=runs_folder, log_fn=self.log_panel.log)
@@ -181,6 +195,12 @@ class ShellMainWindow(QMainWindow):
         self._last_non_acq_splitter_sizes: Optional[list[int]] = None
         self._last_dataset_dock_width: int = 300
         self._ot_baseline_candidates: list[PairingCandidate] = []
+        self._ot_pairing_origins: dict[str, str] = {}  # drag_path_str -> "auto" | "manual" | "unset"
+        # Workflow phase for the Pairing tab:
+        #   "idle"          — no baselines loaded yet (blank Pairing tab)
+        #   "baseline_list" — baselines imported, auto-pair not yet run
+        #   "pairing_result"— auto-pair has run (or manual assign happened)
+        self._ot_pairing_phase: str = "idle"
         self._ot_default_params: dict | None = None
         self._ot_loading_item_params: bool = False
 
@@ -478,6 +498,13 @@ class ShellMainWindow(QMainWindow):
                         defaults = self._device_panel.dump_ot_params()
                         self._ot_default_params = defaults
                     load_params = resolve_ot_item_params_for_load(pms, defaults)
+                    # New item: preserve current panel mode so Drag workflow
+                    # does not silently reset to Brownian and hide Pairing tab.
+                    if pms is None:
+                        load_params = inherit_calibration_mode_for_new_item(
+                            load_params,
+                            getattr(self._device_panel, "_calibration_mode", None),
+                        )
                     self._device_panel.load_ot_params(load_params)
 
                     # Frame-range rule:
@@ -604,6 +631,8 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.add_baseline_roots_clicked.connect(self._on_ot_add_baseline_roots)
                 if hasattr(self._device_panel, "auto_pair_baselines_clicked"):
                     self._device_panel.auto_pair_baselines_clicked.connect(self._on_ot_auto_pair_baselines)
+                if hasattr(self._device_panel, "pairing_manual_assign_requested"):
+                    self._device_panel.pairing_manual_assign_requested.connect(self._on_ot_pairing_manual_assign)
                     
                 if hasattr(self._device_panel, "auto_roi_clicked"):
                     self._device_panel.auto_roi_clicked.connect(self._on_auto_roi)
@@ -821,10 +850,6 @@ class ShellMainWindow(QMainWindow):
 
     # ---------------- OT helpers ----------------
 
-    def _on_ot_load_profile(self, profile_name: str) -> None:
-        """Minimal handler to satisfy signal wiring without modifying profile logic."""
-        self.log_panel.log(f"OT load profile requested: {profile_name} (No-op)")
-
     def _ot_save_scale(self) -> None:
         if self._device_panel is None:
             return
@@ -967,6 +992,7 @@ class ShellMainWindow(QMainWindow):
 
     def _refresh_drag_pairing_statuses(self) -> None:
         all_items = self.dataset.get_all_items()
+        linked: list[tuple[Path, str]] = []
         for entry in all_items:
             p = Path(str(entry.get("path") or ""))
             if not p:
@@ -984,7 +1010,62 @@ class ShellMainWindow(QMainWindow):
                 self.dataset.set_pairing_status(p, "baseline missing")
                 continue
             ok, status = self._validate_brownian_folder(Path(baseline))
-            self.dataset.set_pairing_status(p, "baseline linked" if ok else status)
+            if not ok:
+                self.dataset.set_pairing_status(p, status)
+                continue
+            linked.append((p, baseline))
+        share_counts = Counter(b for _, b in linked)
+        for p, baseline in linked:
+            self.dataset.set_pairing_status(
+                p, format_baseline_link_status(baseline, share_counts[baseline])
+            )
+        self._rebuild_pairing_tree_view()
+
+    def _rebuild_pairing_tree_view(self) -> None:
+        """Push the appropriate Pairing tab view based on the current workflow phase."""
+        if self._device_panel is None or self._active_device_id != "optical_tweezers":
+            return
+        if not hasattr(self._device_panel, "refresh_pairing_view"):
+            return
+
+        if self._ot_pairing_phase == "idle":
+            # No baselines loaded — show an empty placeholder.
+            self._device_panel.refresh_pairing_view({
+                "phase": "pairing_result",
+                "baselines": [],
+                "unpaired": [],
+                "available_baseline_folders": [],
+            })
+            return
+
+        if self._ot_pairing_phase == "baseline_list":
+            # Baselines loaded, auto-pair not yet run — show candidate list only.
+            tree_data = build_baseline_list_view_data(self._ot_baseline_candidates)
+            self._device_panel.refresh_pairing_view(tree_data)
+            return
+
+        # "pairing_result": full tree after auto-pair or manual assign.
+        drag_paths: list[Path] = []
+        explicit_pairs: dict[str, str | None] = {}
+        for entry in self.dataset.get_all_items():
+            p = Path(str(entry.get("path") or ""))
+            if not p:
+                continue
+            params = self.dataset.get_item_params(p)
+            if params is None:
+                continue
+            pp = dict(params.get("postprocess") or {})
+            if str(pp.get("calibration_mode") or "Brownian") == "Drag":
+                drag_paths.append(p)
+                baseline = str(pp.get("brownian_baseline_folder") or "").strip()
+                explicit_pairs[str(p)] = baseline or None
+        tree_data = build_pairing_tree_data(
+            drag_paths=drag_paths,
+            candidates=self._ot_baseline_candidates,
+            explicit_pairs=explicit_pairs,
+            pairing_origins=self._ot_pairing_origins,
+        )
+        self._device_panel.refresh_pairing_view(tree_data)
 
     def _on_ot_apply_to_checked(self) -> None:
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
@@ -1013,25 +1094,36 @@ class ShellMainWindow(QMainWindow):
     def _on_ot_add_baseline_roots(self) -> None:
         if self._active_device_id != "optical_tweezers":
             return
-        dialog = QFileDialog(self, "Select baseline root folders")
-        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        if dialog.exec() != int(QFileDialog.DialogCode.Accepted):
+        parent_folder = QFileDialog.getExistingDirectory(
+            self, "Select day or Brownian baseline root folder", ""
+        )
+        if not parent_folder:
             return
-        selected_roots = [Path(p) for p in dialog.selectedFiles() if Path(p).is_dir()]
+        parent_path = Path(parent_folder)
+        # Hide internal technical sub-directories so users see run-level items only.
+        # "analysis", "raw", "audit", "csv" etc. are BARAKUDA-internal structure.
+        _BASELINE_SKIP: frozenset[str] = frozenset(
+            {"analysis", "raw", "audit", "csv", "exports", "runs", "output", "outputs"}
+        )
+        dlg = HierarchicalFolderImportDialog(parent_path, self, skip_folder_names=_BASELINE_SKIP)
+        dlg.setWindowTitle(f"Brownian baselines — folder tree under {parent_path.name}")
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        selected_roots = dlg.selected_folder_paths()
+        if not selected_roots:
+            return
         candidates: dict[str, PairingCandidate] = {str(c.folder): c for c in self._ot_baseline_candidates}
-        for root in selected_roots:
-            for audit_dir in root.rglob("audit"):
-                folder = audit_dir.parent
-                try:
-                    load_brownian_calibration_from_folder(folder)
-                except Exception:
-                    continue
-                key = make_pair_key(folder)
-                candidates[str(folder)] = PairingCandidate(key=key, folder=folder)
+        for c in collect_brownian_baseline_candidates_from_roots(
+            selected_roots,
+            validate_folder=load_brownian_calibration_from_folder,
+        ):
+            candidates[str(c.folder)] = c
         self._ot_baseline_candidates = sorted(candidates.values(), key=lambda c: str(c.folder).lower())
         self.log_panel.log(f"Baseline candidates loaded: {len(self._ot_baseline_candidates)}")
+        # Advance to baseline_list only when coming from idle (not if auto-pair already ran).
+        if self._ot_pairing_phase == "idle":
+            self._ot_pairing_phase = "baseline_list"
+        self._rebuild_pairing_tree_view()
 
     def _on_ot_auto_pair_baselines(self) -> None:
         if self._active_device_id != "optical_tweezers":
@@ -1044,7 +1136,7 @@ class ShellMainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Auto-pair baselines",
-                "No baseline candidates loaded. Use 'Add baseline roots…' first.",
+                "No baseline candidates loaded. Use 'Add baseline roots from folder tree…' first.",
             )
             return
         params_map = self._build_dataset_params_map()
@@ -1053,6 +1145,14 @@ class ShellMainWindow(QMainWindow):
             pp = dict((params_map.get(str(p), {}).get("postprocess") or {}))
             if str(pp.get("calibration_mode") or "Brownian") == "Drag":
                 drag_paths.append(p)
+        if not drag_paths:
+            self.log_panel.log(
+                "Auto-pair: checked items contain no Drag-mode runs. "
+                "Check one or more Drag items in the dataset first."
+            )
+            return
+        # Transition to pairing_result phase — tree will now show full pairing map.
+        self._ot_pairing_phase = "pairing_result"
         baseline_map, status_map = auto_pair_drag_items(drag_paths, self._ot_baseline_candidates)
         for p in drag_paths:
             payload = dict(self.dataset.get_item_params(p) or {})
@@ -1060,15 +1160,57 @@ class ShellMainWindow(QMainWindow):
             linked = baseline_map.get(str(p))
             if linked:
                 pp["brownian_baseline_folder"] = linked
+                self._ot_pairing_origins[str(p)] = "auto"
             payload["postprocess"] = pp
             self.dataset.set_item_params(p, payload)
-            self.dataset.set_pairing_status(p, status_map.get(str(p), "baseline missing"))
+        self._refresh_drag_pairing_statuses()
+        for p in drag_paths:
+            st = status_map.get(str(p), "baseline missing")
+            if st in ("baseline ambiguous", "baseline missing"):
+                self.dataset.set_pairing_status(p, st)
         linked_count = sum(1 for s in status_map.values() if s == "baseline linked")
         amb_count = sum(1 for s in status_map.values() if s == "baseline ambiguous")
         miss_count = sum(1 for s in status_map.values() if s == "baseline missing")
         self.log_panel.log(
             f"Auto-pair baselines: linked={linked_count}, ambiguous={amb_count}, missing={miss_count}"
         )
+
+    def _on_ot_pairing_manual_assign(self, drag_path_str: str, baseline_folder_str: str) -> None:
+        """
+        Handle a manual pairing reassignment from the Pairing tab.
+
+        ``baseline_folder_str`` is "" to unpair the item.
+        Writes directly to stored params and marks origin as "manual".
+        """
+        if not drag_path_str:
+            return
+        # Manual assign is an explicit override — transition to pairing_result phase.
+        self._ot_pairing_phase = "pairing_result"
+        p = Path(drag_path_str)
+        self._ot_pairing_origins[drag_path_str] = "manual"
+        payload = dict(self.dataset.get_item_params(p) or {})
+        pp = dict(payload.get("postprocess") or {})
+        pp["brownian_baseline_folder"] = baseline_folder_str
+        payload["postprocess"] = pp
+        self.dataset.set_item_params(p, payload)
+        # Keep panel in sync if this is the currently selected item.
+        # Block value_changed while syncing the QLineEdit to prevent a redundant
+        # second call to _refresh_drag_pairing_statuses via _on_ot_panel_value_changed.
+        current = self.dataset.get_current_path()
+        if (
+            current is not None
+            and str(current) == drag_path_str
+            and self._device_panel is not None
+            and hasattr(self._device_panel, "_brownian_baseline_folder")
+        ):
+            self._ot_loading_item_params = True
+            try:
+                self._device_panel._brownian_baseline_folder.setText(baseline_folder_str)
+            finally:
+                self._ot_loading_item_params = False
+        self._refresh_drag_pairing_statuses()
+        dest = Path(baseline_folder_str).name if baseline_folder_str else "(unpaired)"
+        self.log_panel.log(f"Manual pairing: {p.name} → {dest}")
 
     # ---------------- preview gate ----------------
 
@@ -1370,6 +1512,10 @@ class ShellMainWindow(QMainWindow):
             self._ot_run_worker.log_msg.connect(self.log_panel.log)
             self._ot_run_worker.status_update.connect(self.dataset.set_status)
 
+            # Stash the deferred PDF summary delivered by the worker BEFORE finished.
+            def _on_ot_batch_summary_ready(summary: object) -> None:
+                self._ot_pending_pdf_summary = summary if isinstance(summary, dict) and summary else None
+
             def _on_ot_done():
                 if hasattr(self._device_panel, 'btn_run'):
                     self._device_panel.btn_run.setEnabled(True)
@@ -1378,14 +1524,34 @@ class ShellMainWindow(QMainWindow):
                 overlay_video_path = getattr(self.batch, "last_ot_overlay_video_path", None)
                 overlay_trajectory_path = getattr(self.batch, "last_ot_overlay_trajectory_path", None)
                 if overlay_video_path and overlay_trajectory_path:
-                    try:
-                        self._ot_preview.set_ot_live_overlay(
-                            overlay_trajectory_path,
-                            video_path=overlay_video_path,
-                        )
-                    except Exception:
-                        pass
+                    # Skip if the overlay was already applied progressively during the run
+                    # (_on_ot_prog handles per-item live overlay updates).  Re-applying the
+                    # same overlay re-reads the CSV on the UI thread, which is wasteful.
+                    already_applied = (
+                        getattr(self._ot_preview, "_ot_live_overlay_enabled", False)
+                        and str(getattr(self._ot_preview, "_ot_live_trajectory_path", ""))
+                        == str(overlay_trajectory_path)
+                    )
+                    if not already_applied:
+                        try:
+                            self._ot_preview.set_ot_live_overlay(
+                                overlay_trajectory_path,
+                                video_path=overlay_video_path,
+                            )
+                        except Exception:
+                            pass
                 self._ot_run_thread.quit()
+                # Refresh pairing tree / dataset suffixes so the Pairing tab reflects
+                # the final run state (items may have moved to done/failed).
+                try:
+                    self._refresh_drag_pairing_statuses()
+                except Exception:
+                    pass
+                # Kick off deferred PDF generation now that the UI is unblocked.
+                # This runs in a separate thread so matplotlib never blocks the event loop.
+                if self._ot_pending_pdf_summary:
+                    self._start_ot_pdf_generation(dict(self._ot_pending_pdf_summary))
+                    self._ot_pending_pdf_summary = None
 
             def _on_ot_err(err: str):
                 self.log_panel.log(f"OT RUN ERROR: {err}")
@@ -1393,8 +1559,10 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.btn_run.setEnabled(True)
                 if hasattr(self._device_panel, "set_batch_running"):
                     self._device_panel.set_batch_running(False)
+                self._ot_pending_pdf_summary = None
                 self._ot_run_thread.quit()
 
+            self._ot_run_worker.batch_summary_ready.connect(_on_ot_batch_summary_ready)
             self._ot_run_worker.finished.connect(_on_ot_done)
             self._ot_run_worker.error.connect(_on_ot_err)
 
@@ -1699,4 +1867,56 @@ class ShellMainWindow(QMainWindow):
                 pass
             self._afm_run_thread = None
             self._afm_run_worker = None
+
+    # ── Deferred OT batch PDF generation ─────────────────────────────────────
+
+    def _start_ot_pdf_generation(self, summary: dict) -> None:
+        """Start background PDF export so matplotlib never blocks the UI event loop.
+
+        The PDF was previously generated inline inside run_batch() which caused
+        the application to enter "Not Responding" state on Windows because
+        matplotlib's C-extension rendering holds the Python GIL for many seconds,
+        starving the Qt main-thread event loop of CPU time.
+
+        Here we offload the work to a dedicated QThread.  The thread is
+        fire-and-forget: the user can continue working while the PDF is written.
+        """
+        from PyQt6.QtCore import QThread
+        from barakuda.shell.workers.ot_pdf_worker import OTPdfWorker
+
+        if self._ot_pdf_thread is not None:
+            try:
+                if self._ot_pdf_thread.isRunning():
+                    self.log_panel.log("OT PDF: previous export still running, skipping new request.")
+                    return
+            except RuntimeError:
+                pass
+            self._ot_pdf_thread = None
+            self._ot_pdf_worker = None
+
+        if not summary.get("_pdf_path"):
+            return
+
+        self._ot_pdf_thread = QThread()
+        self._ot_pdf_worker = OTPdfWorker(summary)
+        self._ot_pdf_worker.moveToThread(self._ot_pdf_thread)
+        self._ot_pdf_thread.started.connect(self._ot_pdf_worker.run)
+
+        def _on_pdf_done() -> None:
+            self.log_panel.log("OT PDF: batch_summary.pdf exported ✅")
+            if self._ot_pdf_thread is not None:
+                self._ot_pdf_thread.quit()
+
+        def _on_pdf_err(msg: str) -> None:
+            self.log_panel.log(f"OT PDF: export failed:\n{msg}")
+            if self._ot_pdf_thread is not None:
+                self._ot_pdf_thread.quit()
+
+        self._ot_pdf_worker.finished.connect(_on_pdf_done)
+        self._ot_pdf_worker.error.connect(_on_pdf_err)
+        self._ot_pdf_thread.finished.connect(self._ot_pdf_worker.deleteLater)
+        self._ot_pdf_thread.finished.connect(lambda: setattr(self, "_ot_pdf_thread", None))
+
+        self.log_panel.log("OT PDF: starting background export of batch_summary.pdf…")
+        self._ot_pdf_thread.start()
 

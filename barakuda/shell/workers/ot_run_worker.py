@@ -69,6 +69,10 @@ class OTRunWorker(QObject):
     progress_pct = pyqtSignal(int, str)
     log_msg = pyqtSignal(str)
     status_update = pyqtSignal(object, str)
+    # Emitted before finished with the deferred-PDF summary dict (or empty dict if
+    # there is nothing to export).  The receiver must NOT block on this signal —
+    # PDF generation must be offloaded to a separate QThread.
+    batch_summary_ready = pyqtSignal(object)
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -148,6 +152,10 @@ class OTRunWorker(QObject):
 
             if not self._is_cancelled:
                 self.progress_pct.emit(100, "RUN: Done")
+                # Pass the deferred PDF summary to the UI thread so it can start
+                # a background export thread without blocking the event loop.
+                pdf_summary = getattr(self._batch, "_pending_ot_batch_pdf_summary", None)
+                self.batch_summary_ready.emit(pdf_summary if pdf_summary is not None else {})
                 self.finished.emit()
 
         except Exception:

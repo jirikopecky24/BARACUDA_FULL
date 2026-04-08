@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import copy
-from typing import Callable
+from typing import Any, Callable
 
 
 FILE_SPECIFIC_PROTECTED_FIELDS = {
@@ -20,8 +20,20 @@ MODE_STRATEGIES: dict[str, list[str]] = {
 
 @dataclass(frozen=True)
 class PairingCandidate:
-    key: str
+    """
+    Brownian analysis folder (contains audit/) and its pairing identity.
+
+    ``folder``       — the analysis folder passed to ``load_brownian_calibration_from_folder``
+                       (typically ``<run_folder>/analysis``).
+    ``family_key``   — derived from the *run* folder name, not the analysis sub-folder,
+                       so it matches drag-path family keys correctly.
+    ``display_name`` — human-readable name shown in the Pairing tab tree
+                       (defaults to run-folder name, e.g. ``Gly20_brown_rep01``).
+    """
+
     folder: Path
+    family_key: str
+    display_name: str = ""
 
 
 def make_pair_key(path: Path | str) -> str:
@@ -30,6 +42,138 @@ def make_pair_key(path: Path | str) -> str:
     if not tokenized:
         return stem
     return "|".join(tokenized)
+
+
+# Tokens that distinguish Brownian vs Drag calibration runs but not bead/location identity.
+_CALIBRATION_MODE_TOKENS = frozenset(
+    {
+        "brown",
+        "brownian",
+        "brow",
+        "brn",
+        "passive",
+        "drag",
+        "dragging",
+        "constant",
+        "velocity",
+        "cv",
+        "viscous",
+    }
+)
+
+
+def _tokenize_name_stem(path: Path | str) -> list[str]:
+    stem = Path(path).stem.lower()
+    return [t for t in re.split(r"[^a-z0-9]+", stem) if t]
+
+
+_OPTIONAL_TRAILING_VARIANT_TOKENS = frozenset(
+    {
+        "slow",
+        "fast",
+        "slower",
+        "faster",
+        "high",
+        "low",
+        "hi",
+        "lo",
+    }
+)
+
+
+def _strip_trailing_motion_variant_tokens(tokens: list[str]) -> list[str]:
+    """Remove trailing motion/repeat tokens (e.g. r001, slow, fast) from a token list."""
+    out = list(tokens)
+    changed = True
+    while out and changed:
+        changed = False
+        t = out[-1]
+        if re.fullmatch(r"r\d+", t) or re.fullmatch(r"run\d+", t) or re.fullmatch(r"v\d+", t):
+            out.pop()
+            changed = True
+            continue
+        if t in _OPTIONAL_TRAILING_VARIANT_TOKENS:
+            out.pop()
+            changed = True
+            continue
+    return out
+
+
+def make_family_pair_key(path: Path | str) -> str:
+    """
+    Shared pairing key for Brownian baselines and Drag inputs: same physical run / location
+    (replicate, bead, sample id) while ignoring calibration mode (brown vs drag) and
+    trailing motion-variant suffixes (e.g. r001 vs r002 on the same drag replicate).
+    """
+    tokens = _tokenize_name_stem(path)
+    if not tokens:
+        return make_pair_key(path)
+    stripped_mode = [t for t in tokens if t not in _CALIBRATION_MODE_TOKENS]
+    stripped_suffix = _strip_trailing_motion_variant_tokens(stripped_mode)
+    core = stripped_suffix if stripped_suffix else stripped_mode
+    if not core:
+        core = tokens
+    return "|".join(core)
+
+
+def _run_folder_for_analysis(analysis_folder: Path) -> Path:
+    """
+    Return the meaningful *run* folder for a Brownian analysis path.
+
+    BARAKUDA convention: ``<run>/analysis/audit``.  When the analysis folder is
+    named ``"analysis"`` we step up one level to get the run folder whose name
+    carries the sample identity (e.g. ``Gly20_brown_rep01``).  For any other
+    folder name the folder itself is the run folder.
+    """
+    if analysis_folder.name.lower() == "analysis":
+        return analysis_folder.parent
+    return analysis_folder
+
+
+def collect_brownian_baseline_candidates_from_roots(
+    roots: list[Path],
+    *,
+    validate_folder: Callable[[Path], Any],
+) -> list[PairingCandidate]:
+    """
+    Walk selected folders for analysis roots containing an audit/ directory and
+    successful Brownian calibration import. Used by the OT baseline-root workflow.
+
+    ``PairingCandidate.folder``       — the analysis folder (passed to
+                                        ``load_brownian_calibration_from_folder``).
+    ``PairingCandidate.family_key``   — derived from the *run* folder (parent of
+                                        the analysis folder), NOT from ``analysis/``,
+                                        so it matches drag-path family keys.
+    ``PairingCandidate.display_name`` — run folder name (e.g. ``Gly20_brown_rep01``).
+    """
+    seen: dict[str, PairingCandidate] = {}
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for audit_dir in root.rglob("audit"):
+            analysis_folder = audit_dir.parent
+            try:
+                validate_folder(analysis_folder)
+            except Exception:
+                continue
+            run_folder = _run_folder_for_analysis(analysis_folder)
+            fk = make_family_pair_key(run_folder)
+            seen[str(analysis_folder)] = PairingCandidate(
+                folder=analysis_folder,
+                family_key=fk,
+                display_name=run_folder.name,
+            )
+    return sorted(seen.values(), key=lambda c: str(c.folder).lower())
+
+
+def format_baseline_link_status(linked_folder: str, n_drag_items_sharing: int) -> str:
+    """User-visible pairing label; multiple Drag rows may share one Brownian folder."""
+    if n_drag_items_sharing <= 1:
+        return "baseline linked"
+    # Show the run-folder name (not "analysis") in the shared-baseline label.
+    p = Path(linked_folder)
+    short = p.parent.name if p.name.lower() == "analysis" else p.name
+    return f"baseline linked (shared {n_drag_items_sharing}×, {short})"
 
 
 def merge_ot_params_for_checked(
@@ -146,24 +290,156 @@ def auto_pair_drag_items(
     drag_paths: list[Path],
     candidates: list[PairingCandidate],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    by_key: dict[str, list[Path]] = {}
+    """
+    Map each Drag path to at most one Brownian analysis folder. Many Drag items may share
+    the same folder (1 Brownian : N Drag). Ambiguous only when two *distinct* candidate
+    folders share the same family key.
+    """
+    by_family: dict[str, set[Path]] = {}
     for c in candidates:
-        by_key.setdefault(c.key, []).append(c.folder)
+        by_family.setdefault(c.family_key, set()).add(c.folder)
 
     baseline_map: dict[str, str] = {}
     status_map: dict[str, str] = {}
 
     for p in drag_paths:
-        p_key = make_pair_key(p)
-        hits = by_key.get(p_key, [])
-        if len(hits) == 1:
-            baseline_map[str(p)] = str(hits[0])
-            status_map[str(p)] = "baseline linked"
-        elif len(hits) > 1:
+        fk = make_family_pair_key(p)
+        folders = sorted(by_family.get(fk, set()), key=lambda x: str(x).lower())
+        n = len(folders)
+        if n == 0:
+            status_map[str(p)] = "baseline missing"
+        elif n > 1:
             status_map[str(p)] = "baseline ambiguous"
         else:
-            status_map[str(p)] = "baseline missing"
+            baseline_map[str(p)] = str(folders[0])
+            status_map[str(p)] = "baseline linked"
     return baseline_map, status_map
+
+
+def inherit_calibration_mode_for_new_item(
+    load_params: dict,
+    current_mode: str | None,
+) -> dict:
+    """
+    Preserve the current panel calibration_mode when loading params for a new
+    (not-yet-stored) dataset item.
+
+    Without this, new items always inherit ``calibration_mode: Brownian`` from
+    ``_ot_default_params`` even when the user is working in a Drag workflow,
+    because ``_ot_default_params`` is captured right after ``apply_ot_defaults()``
+    which always resets to Brownian.  The consequence: importing videos while in
+    Drag mode silently calls ``set_calibration_mode("Brownian")`` and hides the
+    Pairing tab.
+
+    Only the ``calibration_mode`` field is overridden; all other defaults (tracking
+    params, scale, gate thresholds …) are preserved unchanged.
+    """
+    if not current_mode or str(current_mode) == "Brownian":
+        return load_params
+    result = dict(load_params)
+    pp = dict(result.get("postprocess") or {})
+    if pp.get("calibration_mode") != current_mode:
+        pp["calibration_mode"] = str(current_mode)
+        result["postprocess"] = pp
+    return result
+
+
+def build_pairing_tree_data(
+    drag_paths: list[Path],
+    candidates: list[PairingCandidate],
+    explicit_pairs: dict[str, str | None],
+    pairing_origins: dict[str, str],
+) -> dict:
+    """
+    Build tree data for the Pairing tab view.
+
+    ``explicit_pairs`` maps drag_path_str → baseline_folder_str (or None/empty = unpaired).
+    ``pairing_origins`` maps drag_path_str → "auto" | "manual" | "unset".
+
+    Returns a dict with keys:
+      - baselines: list[{folder, folder_name, drags: list[{path, name, origin, status}]}]
+      - unpaired:  list[{path, name, origin, status}]
+      - available_baseline_folders: sorted list of str (from candidates + manually-assigned)
+    """
+    known_folders: set[str] = {str(c.folder) for c in candidates}
+    # Map folder_str → human-readable display name (run folder name, not "analysis").
+    folder_display: dict[str, str] = {
+        str(c.folder): (c.display_name or _run_folder_for_analysis(c.folder).name)
+        for c in candidates
+    }
+
+    paired_by_baseline: dict[str, list[dict]] = {}
+    unpaired: list[dict] = []
+
+    for dp in drag_paths:
+        dp_str = str(dp)
+        folder_str = (explicit_pairs.get(dp_str) or "").strip()
+        origin = pairing_origins.get(dp_str, "unset")
+        entry: dict = {
+            "path": dp_str,
+            "name": Path(dp_str).name,
+            "origin": origin,
+            "status": "linked" if folder_str else "missing",
+        }
+        if folder_str:
+            paired_by_baseline.setdefault(folder_str, []).append(entry)
+        else:
+            unpaired.append(entry)
+
+    all_baseline_folders: set[str] = known_folders | set(paired_by_baseline.keys())
+
+    def _display_name_for(f: str) -> str:
+        if f in folder_display:
+            return folder_display[f]
+        p = Path(f)
+        return p.parent.name if p.name.lower() == "analysis" else p.name
+
+    baselines = [
+        {
+            "folder": f,
+            "folder_name": _display_name_for(f),
+            "drags": paired_by_baseline.get(f, []),
+        }
+        for f in sorted(all_baseline_folders, key=str.lower)
+    ]
+
+    return {
+        "baselines": baselines,
+        "unpaired": unpaired,
+        "available_baseline_folders": sorted(all_baseline_folders, key=str.lower),
+    }
+
+
+def build_baseline_list_view_data(candidates: list[PairingCandidate]) -> dict:
+    """
+    Build Pairing tab view data for the *pre-auto-pair* phase.
+
+    After the user imports Brownian baseline folders but before running
+    ``Auto-pair Brownian baselines``, the Pairing tab should show a plain list
+    of available baseline units — no drag items, no pairing links.
+
+    ``PairingTreeWidget`` reads the ``"phase": "baseline_list"`` key and
+    renders the list in a simplified flat view, making the CTA to run
+    auto-pair clearly visible as the next step.
+
+    Returns a dict with the same top-level keys as ``build_pairing_tree_data``
+    so that ``refresh_pairing_view`` can consume either without branching.
+    """
+    return {
+        "phase": "baseline_list",
+        "baselines": [
+            {
+                "folder": str(c.folder),
+                "folder_name": c.display_name or _run_folder_for_analysis(c.folder).name,
+                "drags": [],
+            }
+            for c in candidates
+        ],
+        "unpaired": [],
+        "available_baseline_folders": sorted(
+            {str(c.folder) for c in candidates}, key=str.lower
+        ),
+    }
 
 
 def validate_drag_baseline_batch(
