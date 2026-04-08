@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy
+    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy, QMessageBox, QFileDialog
 )
 
 from barakuda.shell.widgets.dataset_panel import DatasetPanel
@@ -22,6 +22,17 @@ from barakuda.core.calibration_store import save_dataset_scale
 from barakuda.core.calibration_store import load_dataset_scale
 from barakuda.shell.widgets.preview_gate_report_dialog import PreviewGateReportDialog
 from barakuda.shell.widgets.run_protocol_dialog import RunProtocolDialog
+from barakuda.devices.optical_tweezers.drag.calibration_import import load_brownian_calibration_from_folder
+from barakuda.devices.optical_tweezers.ui.batch_tools import (
+    PairingCandidate,
+    auto_pair_drag_items,
+    parse_ot_progress_message,
+    resolve_frame_range_for_item,
+    merge_ot_params_for_checked,
+    make_pair_key,
+    resolve_ot_item_params_for_load,
+    validate_drag_baseline_batch,
+)
 
 
 class ShellMainWindow(QMainWindow):
@@ -169,6 +180,9 @@ class ShellMainWindow(QMainWindow):
         self._last_ot_bead_diameter_um: Optional[float] = None
         self._last_non_acq_splitter_sizes: Optional[list[int]] = None
         self._last_dataset_dock_width: int = 300
+        self._ot_baseline_candidates: list[PairingCandidate] = []
+        self._ot_default_params: dict | None = None
+        self._ot_loading_item_params: bool = False
 
     def _remember_non_acq_splitter_sizes(self) -> None:
         """Persist user-adjusted center splitter widths for OT/AFM view."""
@@ -333,6 +347,9 @@ class ShellMainWindow(QMainWindow):
 
     def _on_item_selected(self, path: Path) -> None:
         self.log_panel.log(f"Selected: {path}")
+        if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
+            if hasattr(self._device_panel, "set_editing_item"):
+                self._device_panel.set_editing_item(path.name)
 
         # OT dataset inputs: resolve item.json / item root / item video for all downstream use
         # (scale loading, end-frame, params key). PreviewPanel handles the same resolution too.
@@ -378,15 +395,19 @@ class ShellMainWindow(QMainWindow):
         except Exception as e:
             self.log_panel.log(f"Preview ERROR: {e!r}")
 
-        # Auto-set OT end-frame to last frame of the loaded video (frame_count - 1).
-        if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
+        # Resolve video frame count once; frame-range defaults/clamp are handled
+        # later inside OT per-item load (with load guard) to avoid overwriting
+        # persisted user end-frame values.
+        _video_frame_count: int | None = None
+        if self._active_device_id == "optical_tweezers":
             try:
                 fc = self.preview.get_video_frame_count()
-                if fc is not None and fc > 0 and hasattr(self._device_panel, "set_end_frame"):
-                    self._device_panel.set_end_frame(int(fc - 1))  # type: ignore[attr-defined]
+                if fc is not None and fc > 0:
+                    _video_frame_count = int(fc)
             except Exception as e:
-                self.log_panel.log(f"WARN: end-frame autoload failed: {e!r}")
-                
+                self.log_panel.log(f"WARN: video frame count read failed: {e!r}")
+
+        if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
             try:
                 if hasattr(self._device_panel, "is_auto_roi_on_load") and self._device_panel.is_auto_roi_on_load():
                     if str(path) not in getattr(self, "_manual_roi_edited_paths", set()):
@@ -449,30 +470,60 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
             if hasattr(self._device_panel, "load_ot_params") and hasattr(self._device_panel, "dump_ot_params"):
                 try:
+                    self._ot_loading_item_params = True
                     pms = self.dataset.get_item_params(path)
-                    if pms is not None:
-                        self._device_panel.load_ot_params(pms)
-                    else:
-                        # First time clicking this video: snapshot current UI as its params
+                    # First click for item uses clean defaults, not previous item's UI state.
+                    defaults = self._ot_default_params
+                    if defaults is None:
+                        defaults = self._device_panel.dump_ot_params()
+                        self._ot_default_params = defaults
+                    load_params = resolve_ot_item_params_for_load(pms, defaults)
+                    self._device_panel.load_ot_params(load_params)
+
+                    # Frame-range rule:
+                    # - new item -> default (0, last frame)
+                    # - persisted item -> keep stored range, clamp only if invalid/out of bounds
+                    if (
+                        _video_frame_count is not None
+                        and hasattr(self._device_panel, "get_frame_range")
+                        and hasattr(self._device_panel, "set_frame_range")
+                    ):
+                        start_raw, end_raw = self._device_panel.get_frame_range()
+                        start_norm, end_norm = resolve_frame_range_for_item(
+                            start=int(start_raw),
+                            end=int(end_raw),
+                            last_frame=int(_video_frame_count - 1),
+                            is_new_item=(pms is None),
+                        )
+                        if (start_norm, end_norm) != (int(start_raw), int(end_raw)):
+                            self._device_panel.set_frame_range(start_norm, end_norm)
+
+                    if pms is None:
+                        self.dataset.set_item_params(path, self._device_panel.dump_ot_params())
+                    elif _video_frame_count is not None:
+                        # Persist only normalized clamp (if any); no-op if unchanged.
                         self.dataset.set_item_params(path, self._device_panel.dump_ot_params())
                 except Exception as e:
                     self.log_panel.log(f"WARN: OT per-video load failed: {e!r}")
+                finally:
+                    self._ot_loading_item_params = False
             self._sync_ot_bead_diameter_state()
+            self._refresh_drag_pairing_statuses()
 
     def _on_ot_panel_value_changed(self) -> None:
         """When an OT control changes, save the new params to the currently active dataset item."""
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
             return
-            
-        paths = self.dataset.get_selected_paths()
-        if not paths:
+        if self._ot_loading_item_params:
             return
             
-        # We only save to the single actively previewed item (the first selected)
-        active_path = paths[0]
+        active_path = self.dataset.get_current_path()
+        if active_path is None:
+            return
         try:
             pms = self._device_panel.dump_ot_params()
             self.dataset.set_item_params(active_path, pms)
+            self._refresh_drag_pairing_statuses()
         except Exception as e:
             self.log_panel.log(f"WARN: Failed to save OT params to dataset item: {e!r}")
 
@@ -529,6 +580,8 @@ class ShellMainWindow(QMainWindow):
 
         self._active_device = spec
         self._active_device_id = str(spec.device_id)
+        if hasattr(self.dataset, "configure_for_device"):
+            self.dataset.configure_for_device(self._active_device_id)
         self._device_panel = spec.create_panel()
         self._device_container_layout.addWidget(self._device_panel)
         QTimer.singleShot(0, self._sync_device_container_floor_from_panel)
@@ -545,6 +598,12 @@ class ShellMainWindow(QMainWindow):
                 
                 if hasattr(self._device_panel, "value_changed"):
                     self._device_panel.value_changed.connect(self._on_ot_panel_value_changed)
+                if hasattr(self._device_panel, "apply_to_checked_clicked"):
+                    self._device_panel.apply_to_checked_clicked.connect(self._on_ot_apply_to_checked)
+                if hasattr(self._device_panel, "add_baseline_roots_clicked"):
+                    self._device_panel.add_baseline_roots_clicked.connect(self._on_ot_add_baseline_roots)
+                if hasattr(self._device_panel, "auto_pair_baselines_clicked"):
+                    self._device_panel.auto_pair_baselines_clicked.connect(self._on_ot_auto_pair_baselines)
                     
                 if hasattr(self._device_panel, "auto_roi_clicked"):
                     self._device_panel.auto_roi_clicked.connect(self._on_auto_roi)
@@ -562,6 +621,9 @@ class ShellMainWindow(QMainWindow):
                 # Fetch profiles and populate UI
                 self._update_ot_profile_list()
                 self._sync_ot_bead_diameter_state()
+                if hasattr(self._device_panel, "dump_ot_params"):
+                    self._ot_default_params = self._device_panel.dump_ot_params()
+                self._refresh_drag_pairing_statuses()
             except Exception as e:
                 self.log_panel.log(f"WARN: OT panel signals not wired: {e!r}")
 
@@ -711,11 +773,11 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id == "optical_tweezers" and self._device_panel is not None:
             if hasattr(self._device_panel, "_adaptive_roi"):
                 self._device_panel._adaptive_roi.setChecked(False)
-        paths = self.dataset.get_selected_paths()
-        if paths:
+        active_path = self.dataset.get_current_path()
+        if active_path is not None:
             if not hasattr(self, "_manual_roi_edited_paths"):
                 self._manual_roi_edited_paths = set()
-            self._manual_roi_edited_paths.add(str(paths[0]))
+            self._manual_roi_edited_paths.add(str(active_path))
 
     def _get_current_ot_bead_diameter_um(self) -> Optional[float]:
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
@@ -766,12 +828,12 @@ class ShellMainWindow(QMainWindow):
     def _ot_save_scale(self) -> None:
         if self._device_panel is None:
             return
-        sel = self.dataset.get_selected_paths()
-        if not sel:
+        active_path = self.dataset.get_current_path()
+        if active_path is None:
             self.log_panel.log("Save scale: no selected file.")
             return
 
-        p = sel[0]
+        p = active_path
         try:
             scale_params = self._device_panel.get_scale_params()  # type: ignore[attr-defined]
             um = float(scale_params.get("um_per_px", 0.0))
@@ -797,10 +859,10 @@ class ShellMainWindow(QMainWindow):
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
             return
 
-        paths = self.dataset.get_selected_paths()
-        if paths:
+        active_path = self.dataset.get_current_path()
+        if active_path is not None:
             if hasattr(self, "_manual_roi_edited_paths"):
-                self._manual_roi_edited_paths.discard(str(paths[0]))
+                self._manual_roi_edited_paths.discard(str(active_path))
 
         frame = self._ot_preview.get_before_image()
         if frame is None:
@@ -880,6 +942,133 @@ class ShellMainWindow(QMainWindow):
             self._update_ot_profile_list()
         except Exception as e:
             self.log_panel.log(f"OT profile save ERROR: {e!r}")
+
+    def _build_dataset_params_map(self) -> dict[str, dict]:
+        data: dict[str, dict] = {}
+        for entry in self.dataset.get_all_items():
+            p = str(entry.get("path") or "")
+            if not p:
+                continue
+            params = self.dataset.get_item_params(p)
+            if params is not None:
+                data[p] = params
+        return data
+
+    def _validate_brownian_folder(self, folder: Path) -> tuple[bool, str]:
+        if not folder.exists() or not folder.is_dir():
+            return False, "baseline invalid"
+        try:
+            load_brownian_calibration_from_folder(folder)
+            return True, "baseline linked"
+        except ValueError:
+            return False, "baseline ambiguous"
+        except Exception:
+            return False, "baseline invalid"
+
+    def _refresh_drag_pairing_statuses(self) -> None:
+        all_items = self.dataset.get_all_items()
+        for entry in all_items:
+            p = Path(str(entry.get("path") or ""))
+            if not p:
+                continue
+            params = self.dataset.get_item_params(p)
+            if params is None:
+                self.dataset.set_pairing_status(p, None)
+                continue
+            pp = dict(params.get("postprocess") or {})
+            if str(pp.get("calibration_mode") or "Brownian") != "Drag":
+                self.dataset.set_pairing_status(p, None)
+                continue
+            baseline = str(pp.get("brownian_baseline_folder") or "").strip()
+            if not baseline:
+                self.dataset.set_pairing_status(p, "baseline missing")
+                continue
+            ok, status = self._validate_brownian_folder(Path(baseline))
+            self.dataset.set_pairing_status(p, "baseline linked" if ok else status)
+
+    def _on_ot_apply_to_checked(self) -> None:
+        if self._active_device_id != "optical_tweezers" or self._device_panel is None:
+            return
+        current = self.dataset.get_current_path()
+        if current is None:
+            self.log_panel.log("Apply to checked: no current item.")
+            return
+        source = self.dataset.get_item_params(current)
+        if source is None and hasattr(self._device_panel, "dump_ot_params"):
+            source = self._device_panel.dump_ot_params()
+            self.dataset.set_item_params(current, source)
+        if source is None:
+            self.log_panel.log("Apply to checked: no source params.")
+            return
+        checked = self.dataset.get_checked_paths()
+        if not checked:
+            self.log_panel.log("Apply to checked: no checked items.")
+            return
+        for p in checked:
+            merged = merge_ot_params_for_checked(source, self.dataset.get_item_params(p))
+            self.dataset.set_item_params(p, merged)
+        self._refresh_drag_pairing_statuses()
+        self.log_panel.log(f"Apply to checked: updated {len(checked)} item(s).")
+
+    def _on_ot_add_baseline_roots(self) -> None:
+        if self._active_device_id != "optical_tweezers":
+            return
+        dialog = QFileDialog(self, "Select baseline root folders")
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if dialog.exec() != int(QFileDialog.DialogCode.Accepted):
+            return
+        selected_roots = [Path(p) for p in dialog.selectedFiles() if Path(p).is_dir()]
+        candidates: dict[str, PairingCandidate] = {str(c.folder): c for c in self._ot_baseline_candidates}
+        for root in selected_roots:
+            for audit_dir in root.rglob("audit"):
+                folder = audit_dir.parent
+                try:
+                    load_brownian_calibration_from_folder(folder)
+                except Exception:
+                    continue
+                key = make_pair_key(folder)
+                candidates[str(folder)] = PairingCandidate(key=key, folder=folder)
+        self._ot_baseline_candidates = sorted(candidates.values(), key=lambda c: str(c.folder).lower())
+        self.log_panel.log(f"Baseline candidates loaded: {len(self._ot_baseline_candidates)}")
+
+    def _on_ot_auto_pair_baselines(self) -> None:
+        if self._active_device_id != "optical_tweezers":
+            return
+        checked = self.dataset.get_checked_paths()
+        if not checked:
+            self.log_panel.log("Auto-pair: no checked items.")
+            return
+        if not self._ot_baseline_candidates:
+            QMessageBox.information(
+                self,
+                "Auto-pair baselines",
+                "No baseline candidates loaded. Use 'Add baseline roots…' first.",
+            )
+            return
+        params_map = self._build_dataset_params_map()
+        drag_paths: list[Path] = []
+        for p in checked:
+            pp = dict((params_map.get(str(p), {}).get("postprocess") or {}))
+            if str(pp.get("calibration_mode") or "Brownian") == "Drag":
+                drag_paths.append(p)
+        baseline_map, status_map = auto_pair_drag_items(drag_paths, self._ot_baseline_candidates)
+        for p in drag_paths:
+            payload = dict(self.dataset.get_item_params(p) or {})
+            pp = dict(payload.get("postprocess") or {})
+            linked = baseline_map.get(str(p))
+            if linked:
+                pp["brownian_baseline_folder"] = linked
+            payload["postprocess"] = pp
+            self.dataset.set_item_params(p, payload)
+            self.dataset.set_pairing_status(p, status_map.get(str(p), "baseline missing"))
+        linked_count = sum(1 for s in status_map.values() if s == "baseline linked")
+        amb_count = sum(1 for s in status_map.values() if s == "baseline ambiguous")
+        miss_count = sum(1 for s in status_map.values() if s == "baseline missing")
+        self.log_panel.log(
+            f"Auto-pair baselines: linked={linked_count}, ambiguous={amb_count}, missing={miss_count}"
+        )
 
     # ---------------- preview gate ----------------
 
@@ -1072,9 +1261,32 @@ class ShellMainWindow(QMainWindow):
             self.log_panel.log("Run Batch: ROI is required.")
             return
 
+        if self._active_device_id == "optical_tweezers":
+            params_map = self._build_dataset_params_map()
+            checked = self.dataset.get_checked_paths()
+            ok_drag, drag_issues = validate_drag_baseline_batch(
+                checked_paths=checked,
+                params_by_path=params_map,
+                validate_folder=self._validate_brownian_folder,
+            )
+            if not ok_drag:
+                for p_raw, issue in drag_issues.items():
+                    self.dataset.set_pairing_status(Path(p_raw), issue)
+                issue_lines = [f"{Path(k).name}: {v}" for k, v in drag_issues.items()]
+                QMessageBox.warning(
+                    self,
+                    "Drag batch blocked",
+                    "Run checked was blocked because some Drag items have invalid baseline pairing:\n\n"
+                    + "\n".join(issue_lines),
+                )
+                self.log_panel.log("Run Batch blocked: invalid Drag baseline pairing.")
+                return
+
         # disable RUN on the panel if it exists
         if hasattr(self._device_panel, 'btn_run'):
             self._device_panel.btn_run.setEnabled(False)  # type: ignore[attr-defined]
+        if hasattr(self._device_panel, "set_batch_running"):
+            self._device_panel.set_batch_running(True)
 
         if self._active_device_id == "optical_tweezers":
             from PyQt6.QtCore import QThread
@@ -1093,11 +1305,7 @@ class ShellMainWindow(QMainWindow):
             }
 
             # Collect all per-video params from the dataset panel
-            dataset_params = {}
-            for p in self.dataset.get_all_items():
-                pms = self.dataset.get_item_params(p["path"])
-                if pms is not None:
-                    dataset_params[p["path"]] = pms
+            dataset_params = self._build_dataset_params_map()
 
             self._ot_run_thread = QThread()
             self._ot_run_worker = OTRunWorker(
@@ -1114,7 +1322,9 @@ class ShellMainWindow(QMainWindow):
             def _on_ot_prog(pct: int, msg: str):
                 self.log_panel.log(f"OT batch progress: {pct}% {msg}")
                 if hasattr(self._device_panel, "set_batch_progress"):
-                    self._device_panel.set_batch_progress(0, 100, msg, pct)
+                    done_i, total_i, file_name, file_pct = parse_ot_progress_message(msg, pct)
+                    if total_i > 0:
+                        self._device_panel.set_batch_progress(done_i, total_i, file_name, file_pct)
 
                 # Progressive preview: update overlay only after an OT item
                 # fully completes (i.e. when the "done index" increments).
@@ -1163,6 +1373,8 @@ class ShellMainWindow(QMainWindow):
             def _on_ot_done():
                 if hasattr(self._device_panel, 'btn_run'):
                     self._device_panel.btn_run.setEnabled(True)
+                if hasattr(self._device_panel, "set_batch_running"):
+                    self._device_panel.set_batch_running(False)
                 overlay_video_path = getattr(self.batch, "last_ot_overlay_video_path", None)
                 overlay_trajectory_path = getattr(self.batch, "last_ot_overlay_trajectory_path", None)
                 if overlay_video_path and overlay_trajectory_path:
@@ -1179,6 +1391,8 @@ class ShellMainWindow(QMainWindow):
                 self.log_panel.log(f"OT RUN ERROR: {err}")
                 if hasattr(self._device_panel, 'btn_run'):
                     self._device_panel.btn_run.setEnabled(True)
+                if hasattr(self._device_panel, "set_batch_running"):
+                    self._device_panel.set_batch_running(False)
                 self._ot_run_thread.quit()
 
             self._ot_run_worker.finished.connect(_on_ot_done)
