@@ -410,6 +410,38 @@ def build_pairing_tree_data(
     }
 
 
+def build_baseline_list_view_data(candidates: list[PairingCandidate]) -> dict:
+    """
+    Build Pairing tab view data for the *pre-auto-pair* phase.
+
+    After the user imports Brownian baseline folders but before running
+    ``Auto-pair Brownian baselines``, the Pairing tab should show a plain list
+    of available baseline units — no drag items, no pairing links.
+
+    ``PairingTreeWidget`` reads the ``"phase": "baseline_list"`` key and
+    renders the list in a simplified flat view, making the CTA to run
+    auto-pair clearly visible as the next step.
+
+    Returns a dict with the same top-level keys as ``build_pairing_tree_data``
+    so that ``refresh_pairing_view`` can consume either without branching.
+    """
+    return {
+        "phase": "baseline_list",
+        "baselines": [
+            {
+                "folder": str(c.folder),
+                "folder_name": c.display_name or _run_folder_for_analysis(c.folder).name,
+                "drags": [],
+            }
+            for c in candidates
+        ],
+        "unpaired": [],
+        "available_baseline_folders": sorted(
+            {str(c.folder) for c in candidates}, key=str.lower
+        ),
+    }
+
+
 def validate_drag_baseline_batch(
     checked_paths: list[Path],
     params_by_path: dict[str, dict],

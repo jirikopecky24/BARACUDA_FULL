@@ -28,6 +28,7 @@ from barakuda.devices.optical_tweezers.drag.calibration_import import load_brown
 from barakuda.devices.optical_tweezers.ui.batch_tools import (
     PairingCandidate,
     auto_pair_drag_items,
+    build_baseline_list_view_data,
     build_pairing_tree_data,
     collect_brownian_baseline_candidates_from_roots,
     format_baseline_link_status,
@@ -187,6 +188,11 @@ class ShellMainWindow(QMainWindow):
         self._last_dataset_dock_width: int = 300
         self._ot_baseline_candidates: list[PairingCandidate] = []
         self._ot_pairing_origins: dict[str, str] = {}  # drag_path_str -> "auto" | "manual" | "unset"
+        # Workflow phase for the Pairing tab:
+        #   "idle"          — no baselines loaded yet (blank Pairing tab)
+        #   "baseline_list" — baselines imported, auto-pair not yet run
+        #   "pairing_result"— auto-pair has run (or manual assign happened)
+        self._ot_pairing_phase: str = "idle"
         self._ot_default_params: dict | None = None
         self._ot_loading_item_params: bool = False
 
@@ -1008,11 +1014,29 @@ class ShellMainWindow(QMainWindow):
         self._rebuild_pairing_tree_view()
 
     def _rebuild_pairing_tree_view(self) -> None:
-        """Collect current Drag item pairings from stored params and push to the Pairing tab."""
+        """Push the appropriate Pairing tab view based on the current workflow phase."""
         if self._device_panel is None or self._active_device_id != "optical_tweezers":
             return
         if not hasattr(self._device_panel, "refresh_pairing_view"):
             return
+
+        if self._ot_pairing_phase == "idle":
+            # No baselines loaded — show an empty placeholder.
+            self._device_panel.refresh_pairing_view({
+                "phase": "pairing_result",
+                "baselines": [],
+                "unpaired": [],
+                "available_baseline_folders": [],
+            })
+            return
+
+        if self._ot_pairing_phase == "baseline_list":
+            # Baselines loaded, auto-pair not yet run — show candidate list only.
+            tree_data = build_baseline_list_view_data(self._ot_baseline_candidates)
+            self._device_panel.refresh_pairing_view(tree_data)
+            return
+
+        # "pairing_result": full tree after auto-pair or manual assign.
         drag_paths: list[Path] = []
         explicit_pairs: dict[str, str | None] = {}
         for entry in self.dataset.get_all_items():
@@ -1088,6 +1112,9 @@ class ShellMainWindow(QMainWindow):
             candidates[str(c.folder)] = c
         self._ot_baseline_candidates = sorted(candidates.values(), key=lambda c: str(c.folder).lower())
         self.log_panel.log(f"Baseline candidates loaded: {len(self._ot_baseline_candidates)}")
+        # Advance to baseline_list only when coming from idle (not if auto-pair already ran).
+        if self._ot_pairing_phase == "idle":
+            self._ot_pairing_phase = "baseline_list"
         self._rebuild_pairing_tree_view()
 
     def _on_ot_auto_pair_baselines(self) -> None:
@@ -1104,6 +1131,8 @@ class ShellMainWindow(QMainWindow):
                 "No baseline candidates loaded. Use 'Add baseline roots from folder tree…' first.",
             )
             return
+        # Transition to pairing_result phase — tree will now show full pairing map.
+        self._ot_pairing_phase = "pairing_result"
         params_map = self._build_dataset_params_map()
         drag_paths: list[Path] = []
         for p in checked:
@@ -1141,6 +1170,8 @@ class ShellMainWindow(QMainWindow):
         """
         if not drag_path_str:
             return
+        # Manual assign is an explicit override — transition to pairing_result phase.
+        self._ot_pairing_phase = "pairing_result"
         p = Path(drag_path_str)
         self._ot_pairing_origins[drag_path_str] = "manual"
         payload = dict(self.dataset.get_item_params(p) or {})

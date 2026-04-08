@@ -55,6 +55,7 @@ class PairingTreeWidget(QTreeWidget):
             self.drag_item_selected.emit("", [])
 
     def refresh_tree(self, tree_data: dict) -> None:
+        phase = tree_data.get("phase", "pairing_result")
         self._available_baselines = list(tree_data.get("available_baseline_folders", []))
 
         expanded_keys: set[str] = set()
@@ -67,6 +68,19 @@ class PairingTreeWidget(QTreeWidget):
 
         self.clear()
 
+        if phase == "baseline_list":
+            # Pre-auto-pair: show available baselines as a flat list — no drag children.
+            for bl in tree_data.get("baselines", []):
+                folder_str = bl["folder"]
+                top = QTreeWidgetItem([bl["folder_name"], "available"])
+                top.setData(0, Qt.ItemDataRole.UserRole, f"baseline:{folder_str}")
+                top.setToolTip(0, folder_str)
+                top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                self.addTopLevelItem(top)
+            self.resizeColumnToContents(0)
+            return
+
+        # "pairing_result": full tree — baselines with drag children + unpaired section.
         for bl in tree_data.get("baselines", []):
             folder_str = bl["folder"]
             top = QTreeWidgetItem([bl["folder_name"], ""])
@@ -908,9 +922,9 @@ class PipelinePanel(QWidget):
         _sep_pair1.setStyleSheet("color: #ddd;")
         tab_pairing_layout.addWidget(_sep_pair1)
 
-        _map_lbl = QLabel("Pairing map:")
-        _map_lbl.setStyleSheet("color: #555;")
-        tab_pairing_layout.addWidget(_map_lbl)
+        self._pairing_tree_label = QLabel("Available Brownian baselines:")
+        self._pairing_tree_label.setStyleSheet("color: #555;")
+        tab_pairing_layout.addWidget(self._pairing_tree_label)
 
         self._pairing_tree = PairingTreeWidget()
         tab_pairing_layout.addWidget(self._pairing_tree, stretch=1)
@@ -1581,7 +1595,13 @@ class PipelinePanel(QWidget):
         self.pairing_manual_assign_requested.emit(drag_path, folder)
 
     def refresh_pairing_view(self, tree_data: dict) -> None:
-        """Refresh the Pairing tab tree with new pairing map data."""
+        """Refresh the Pairing tab tree and context label based on the current workflow phase."""
+        phase = tree_data.get("phase", "pairing_result")
+        if hasattr(self, "_pairing_tree_label"):
+            if phase == "baseline_list":
+                self._pairing_tree_label.setText("Available Brownian baselines:")
+            else:
+                self._pairing_tree_label.setText("Pairing results:")
         if hasattr(self, "_pairing_tree"):
             self._pairing_tree.refresh_tree(tree_data)
 

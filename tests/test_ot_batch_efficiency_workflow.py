@@ -630,7 +630,8 @@ def test_pairing_tab_has_expected_ui_strings() -> None:
     panel_src = Path("C:/Work/BARAKUDA_FULL/barakuda/devices/optical_tweezers/ui/panel.py").read_text(encoding="utf-8")
     assert "Add Brownian folders from tree" in panel_src
     assert "Auto-pair Brownian baselines" in panel_src
-    assert "Pairing map" in panel_src
+    # Dynamic label: shows "Available Brownian baselines:" or "Pairing results:" based on phase.
+    assert "Available Brownian baselines" in panel_src or "Pairing results" in panel_src
     assert "Manual reassign" in panel_src
     assert "Move to:" in panel_src
     assert "Assign" in panel_src
