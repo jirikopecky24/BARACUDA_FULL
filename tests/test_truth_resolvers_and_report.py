@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -706,6 +707,165 @@ def test_brownian_preview_selection_is_representative_and_limited() -> None:
     assert len(selected) == 6
     assert selected[0].name == "video_preview_01.png"
     assert selected[-1].name == "video_preview_10.png"
+
+
+def test_brownian_identity_rows_use_acquisition_and_processed_times(tmp_path: Path) -> None:
+    item_root = tmp_path / "items" / "Gly20_brown_rep01"
+    analysis_dir = item_root / "analysis"
+    raw_dir = item_root / "raw"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "video_meta.json").write_text(
+        json.dumps({"timestamp": "2026-04-08T11:23:27"}, indent=2),
+        encoding="utf-8",
+    )
+    summary = {
+        "item_id": "Gly20_brown_rep01",
+        "status": "success",
+        "analysis_dir": str(analysis_dir),
+        "created_at": "2026-04-08T16:50:15",
+    }
+    rows = ot_report._identity_rows(summary)
+    labels = {row[0]: row[1] for row in rows}
+    assert labels["Acquisition date/time"] == "2026-04-08T11:23:27"
+    assert labels["Acquisition source"] == "video_meta.timestamp"
+    assert labels["Processed / report generated"] == "2026-04-08T16:50:15"
+
+
+def test_scientific_notation_uses_multiplication_sign() -> None:
+    s = ot_report._fmt_scientific_text(2.46e-3, sig_figs=3)
+    assert "× 10" in s
+
+
+def test_relaxation_time_from_fc_hz() -> None:
+    fc = 57.77372569470335
+    tau, se = ot_report._relaxation_time_from_fc_hz(fc, 2.0095666970207935e-05)
+    assert tau == pytest.approx(1.0 / (2.0 * math.pi * fc))
+    assert se is not None
+    assert se == pytest.approx(2.0095666970207935e-05 / (2.0 * math.pi * fc * fc))
+
+
+def test_brownian_summary_includes_uncertainties_tau_anisotropy_qc(tmp_path: Path) -> None:
+    run_dir = tmp_path / "analysis"
+    base = "brown_run"
+    audit = run_dir / "audit"
+    audit.mkdir(parents=True)
+    _write(
+        audit / "run.json",
+        {
+            "config": {
+                "tracking": {
+                    "timing": {
+                        "timestamp_validation_pass": True,
+                        "timestamp_validation_message": "ok",
+                    }
+                },
+                "postprocess": {"physics_mode": "BROWNIAN"},
+                "calibration": {},
+            }
+        },
+    )
+    _write(
+        audit / f"{base}_postprocess.json",
+        {
+            "summary": {
+                "qc": {"lost_frames": 0, "lost_fraction": 0.0},
+                "physics": {
+                    "lorentz_fit": {
+                        "x": {"rmse": 8.76e-6, "A": 1.112},
+                        "y": {"rmse": 7.05e-6, "A": 1.375},
+                    }
+                },
+            }
+        },
+    )
+    _write(
+        audit / f"{base}_calibration.json",
+        {
+            "kappa": {
+                "kappa_x_pn_per_um": 18.0,
+                "kappa_y_pn_per_um": 17.0,
+                "kappa_x_pn_per_um_se": 0.07,
+                "kappa_y_pn_per_um_se": 0.07,
+            },
+            "viscosity": {"eta_mean_pa_s": 0.002, "eta_mean_pa_s_se": 1e-5},
+            "diffusion": {"D_m2_s": 1e-13, "D_m2_s_se": 1e-15},
+            "diagnostics": {
+                "fc_x_hz": 57.0,
+                "fc_y_hz": 64.0,
+                "fc_x_hz_se": 0.02,
+                "fc_y_hz_se": 0.02,
+            },
+            "kappa_unit_check": {"pass": True},
+            "anisotropy": {"pass": True},
+        },
+    )
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name=base,
+        item_id=base,
+        source_input_path="x.raw",
+        status="success",
+    )
+    d = summary["diagnostics"]
+    assert d["tau_x_s"] * 2.0 * math.pi * d["fc_x_hz"] == pytest.approx(1.0)
+    assert d["tau_y_s"] * 2.0 * math.pi * d["fc_y_hz"] == pytest.approx(1.0)
+    assert d["trap_kappa_ratio_xy"] == pytest.approx(18.0 / 17.0)
+    assert d["trap_fc_ratio_xy"] == pytest.approx(57.0 / 64.0)
+    assert d["brownian_qc"]["timing"] == "pass"
+    assert d["brownian_qc"]["overall"] == "usable"
+    key_rows = ot_report._key_result_rows(summary)
+    text_blob = " ".join(f"{a} {b}" for a, b in key_rows)
+    assert "±" in text_blob or "×" in text_blob
+    low = text_blob.lower()
+    assert "rms" not in low
+    assert "variance" not in low
+    labels = [a for a, _ in key_rows]
+    assert any("Trap anisotropy" in lab for lab in labels)
+    assert any("Corner-frequency ratio" in lab for lab in labels)
+    assert any(lab.startswith("QC:") for lab in labels)
+    assert "Diffusion coefficient" in labels
+    diff_row = next(r for r in key_rows if r[0] == "Diffusion coefficient")
+    assert "×" in diff_row[1] or "e-" in diff_row[1].lower()
+    qc = ot_report._qc_rows(summary)
+    qc_labels = [r[0] for r in qc]
+    assert "QC: timing" in qc_labels
+    assert "Overall Brownian QC" in qc_labels
+    assert "QC rules (summary)" in qc_labels
+
+
+def test_theory_page_lorentz_equation_replaced_with_stable_form() -> None:
+    path = Path(ot_report.__file__)
+    src = path.read_text(encoding="utf-8")
+    assert r"S_{xx}(f)=\frac{A}{1+(f/f" in src
+    assert r'$P(f) = \frac{A}{f_{\mathrm{c}}^{2} + f^{2}} + B$' not in src
+
+
+def test_export_brownian_pdf_smoke(tmp_path: Path) -> None:
+    run_dir = tmp_path / "analysis"
+    base = "smoke"
+    audit = run_dir / "audit"
+    audit.mkdir(parents=True)
+    _write(
+        audit / "run.json",
+        {"config": {"tracking": {"timing": {}}, "postprocess": {"physics_mode": "BROWNIAN"}, "calibration": {}}},
+    )
+    _write(audit / f"{base}_postprocess.json", {"summary": {"qc": {"lost_fraction": 0.0}}})
+    _write(
+        audit / f"{base}_calibration.json",
+        {
+            "kappa": {"kappa_x_pn_per_um": 1.0, "kappa_y_pn_per_um": 1.0},
+            "viscosity": {"eta_mean_pa_s": 0.001},
+            "diffusion": {"D_m2_s": 1e-12},
+            "diagnostics": {"fc_x_hz": 10.0, "fc_y_hz": 10.0},
+        },
+    )
+    summary = build_ot_item_summary(
+        run_dir=run_dir, base_name=base, item_id=base, source_input_path="x.raw", status="success"
+    )
+    out = tmp_path / "out.pdf"
+    ot_report.export_ot_item_pdf(out, summary)
+    assert out.is_file() and out.stat().st_size > 1000
 
 
 def test_scale_resolution_explicit_and_fallback() -> None:
