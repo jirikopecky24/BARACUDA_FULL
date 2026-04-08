@@ -1194,6 +1194,8 @@ class ShellMainWindow(QMainWindow):
         payload["postprocess"] = pp
         self.dataset.set_item_params(p, payload)
         # Keep panel in sync if this is the currently selected item.
+        # Block value_changed while syncing the QLineEdit to prevent a redundant
+        # second call to _refresh_drag_pairing_statuses via _on_ot_panel_value_changed.
         current = self.dataset.get_current_path()
         if (
             current is not None
@@ -1201,7 +1203,11 @@ class ShellMainWindow(QMainWindow):
             and self._device_panel is not None
             and hasattr(self._device_panel, "_brownian_baseline_folder")
         ):
-            self._device_panel._brownian_baseline_folder.setText(baseline_folder_str)
+            self._ot_loading_item_params = True
+            try:
+                self._device_panel._brownian_baseline_folder.setText(baseline_folder_str)
+            finally:
+                self._ot_loading_item_params = False
         self._refresh_drag_pairing_statuses()
         dest = Path(baseline_folder_str).name if baseline_folder_str else "(unpaired)"
         self.log_panel.log(f"Manual pairing: {p.name} → {dest}")
@@ -1535,6 +1541,12 @@ class ShellMainWindow(QMainWindow):
                         except Exception:
                             pass
                 self._ot_run_thread.quit()
+                # Refresh pairing tree / dataset suffixes so the Pairing tab reflects
+                # the final run state (items may have moved to done/failed).
+                try:
+                    self._refresh_drag_pairing_statuses()
+                except Exception:
+                    pass
                 # Kick off deferred PDF generation now that the UI is unblocked.
                 # This runs in a separate thread so matplotlib never blocks the event loop.
                 if self._ot_pending_pdf_summary:
