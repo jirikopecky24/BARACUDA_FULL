@@ -1131,14 +1131,20 @@ class ShellMainWindow(QMainWindow):
                 "No baseline candidates loaded. Use 'Add baseline roots from folder tree…' first.",
             )
             return
-        # Transition to pairing_result phase — tree will now show full pairing map.
-        self._ot_pairing_phase = "pairing_result"
         params_map = self._build_dataset_params_map()
         drag_paths: list[Path] = []
         for p in checked:
             pp = dict((params_map.get(str(p), {}).get("postprocess") or {}))
             if str(pp.get("calibration_mode") or "Brownian") == "Drag":
                 drag_paths.append(p)
+        if not drag_paths:
+            self.log_panel.log(
+                "Auto-pair: checked items contain no Drag-mode runs. "
+                "Check one or more Drag items in the dataset first."
+            )
+            return
+        # Transition to pairing_result phase — tree will now show full pairing map.
+        self._ot_pairing_phase = "pairing_result"
         baseline_map, status_map = auto_pair_drag_items(drag_paths, self._ot_baseline_candidates)
         for p in drag_paths:
             payload = dict(self.dataset.get_item_params(p) or {})
