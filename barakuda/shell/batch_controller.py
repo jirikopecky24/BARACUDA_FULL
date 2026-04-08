@@ -861,6 +861,7 @@ class BatchController:
         self._stop_requested = False
         self.last_ot_overlay_video_path = None
         self.last_ot_overlay_trajectory_path = None
+        self._pending_ot_batch_pdf_summary = None  # clear any stale summary from prev run
         progress_fn(0, len(ok_inputs), "", 0)
 
         if device_id != "optical_tweezers":
