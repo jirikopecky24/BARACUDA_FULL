@@ -26,6 +26,9 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     run_stop_enabled_state,
     validate_drag_baseline_batch,
 )
+from barakuda.devices.optical_tweezers.drag.calibration_import import (
+    load_brownian_calibration_from_folder,
+)
 
 
 def test_apply_to_checked_copies_shared_params_but_keeps_protected_fields() -> None:
@@ -526,7 +529,8 @@ def test_build_pairing_tree_data_basic() -> None:
     assert len(data["baselines"]) == 1
     bl = data["baselines"][0]
     assert bl["folder"] == str(brown)
-    assert bl["folder_name"] == brown.name
+    # folder_name must show the run folder (parent of "analysis"), not "analysis"
+    assert bl["folder_name"] == brown.parent.name
     assert len(bl["drags"]) == 1
     assert bl["drags"][0]["path"] == str(drag1)
     assert bl["drags"][0]["origin"] == "auto"
@@ -595,8 +599,9 @@ def test_build_pairing_tree_data_candidates_appear_without_drags() -> None:
     data = build_pairing_tree_data([], cands, {}, {})
 
     folder_names = {bl["folder_name"] for bl in data["baselines"]}
-    assert brown1.name in folder_names
-    assert brown2.name in folder_names
+    # folder_name must be the run folder name (parent of "analysis"), not "analysis"
+    assert brown1.parent.name in folder_names
+    assert brown2.parent.name in folder_names
     assert all(len(bl["drags"]) == 0 for bl in data["baselines"])
     assert data["unpaired"] == []
 
@@ -821,3 +826,176 @@ def test_preflight_passes_brownian_items_unconditionally(tmp_path: Path) -> None
     ok, issues = validate_drag_baseline_batch([brown_raw], params, _validate)
     assert ok
     assert issues == {}
+
+
+# ── Run-level selection model (block 3 new tests) ────────────────────────────
+
+def test_collect_candidates_standard_barakuda_structure(tmp_path: Path) -> None:
+    """
+    Standard BARAKUDA layout: <run_folder>/analysis/audit/<calibration>.json
+    collect_brownian_baseline_candidates_from_roots must find the run folder
+    when given the run folder as a root.
+    """
+    run_folder = tmp_path / "Gly20_brown_rep01"
+    analysis = run_folder / "analysis"
+    audit = analysis / "audit"
+    audit.mkdir(parents=True)
+    (audit / "Gly20_brown_rep01_calibration.json").write_text(
+        '{"kappa": {"kappa_x_n_per_m": 0.001, "kappa_y_n_per_m": 0.001}}',
+        encoding="utf-8",
+    )
+
+    cands = collect_brownian_baseline_candidates_from_roots(
+        [run_folder],
+        validate_folder=load_brownian_calibration_from_folder,
+    )
+
+    assert len(cands) == 1
+    # folder stored = analysis path (for loading)
+    assert cands[0].folder == analysis
+    # family_key uses the RUN folder name, not "analysis"
+    assert "analysis" not in cands[0].family_key
+    assert "gly20" in cands[0].family_key.lower() or "brown" in cands[0].family_key.lower()
+    # display_name is the run folder name, not "analysis"
+    assert cands[0].display_name == "Gly20_brown_rep01"
+
+
+def test_collect_candidates_family_key_from_run_folder_not_analysis(tmp_path: Path) -> None:
+    """
+    family_key must be derived from the run folder (Gly20_brown_rep01),
+    NOT from 'analysis' — otherwise auto-pair never matches drag paths.
+    """
+    run_folder = tmp_path / "Gly20_brown_rep01"
+    audit = run_folder / "analysis" / "audit"
+    audit.mkdir(parents=True)
+    (audit / "cal_calibration.json").write_text(
+        '{"kappa": {"kappa_x_n_per_m": 0.002, "kappa_y_n_per_m": 0.002}}',
+        encoding="utf-8",
+    )
+
+    cands = collect_brownian_baseline_candidates_from_roots(
+        [run_folder],
+        validate_folder=load_brownian_calibration_from_folder,
+    )
+
+    assert len(cands) == 1
+    # Generic "analysis" must NOT be the family key (it would block every match)
+    assert cands[0].family_key != "analysis"
+    # The key must derive from Gly20_brown_rep01 tokens
+    fk = cands[0].family_key
+    assert any(token in fk for token in ("gly20", "brown", "rep01", "rep")), (
+        f"Expected run-folder tokens in family_key, got: {fk!r}"
+    )
+
+
+def test_collect_candidates_display_name_is_run_folder(tmp_path: Path) -> None:
+    """display_name must be the run folder name shown in the Pairing tab."""
+    for name in ("Water_brown_rep01", "Gly40_brown_rep02"):
+        run = tmp_path / name
+        audit = run / "analysis" / "audit"
+        audit.mkdir(parents=True)
+        (audit / f"{name}_calibration.json").write_text(
+            '{"kappa": {"kappa_x_n_per_m": 0.001, "kappa_y_n_per_m": 0.001}}',
+            encoding="utf-8",
+        )
+
+    cands = collect_brownian_baseline_candidates_from_roots(
+        [tmp_path / "Water_brown_rep01", tmp_path / "Gly40_brown_rep02"],
+        validate_folder=load_brownian_calibration_from_folder,
+    )
+
+    display_names = {c.display_name for c in cands}
+    assert "Water_brown_rep01" in display_names
+    assert "Gly40_brown_rep02" in display_names
+    assert "analysis" not in display_names
+
+
+def test_build_pairing_tree_uses_display_name_not_analysis() -> None:
+    """folder_name in Pairing tree must show the run folder, never 'analysis'."""
+    brown = Path("/data/day01/Gly20_brown_rep01/analysis")
+    drag1 = Path("/data/day01/Gly20_drag_fast.raw")
+    # Candidate with explicit display_name
+    cands = [PairingCandidate(folder=brown, family_key="gly20|brown|rep01", display_name="Gly20_brown_rep01")]
+    pairs = {str(drag1): str(brown)}
+
+    data = build_pairing_tree_data([drag1], cands, pairs, {})
+
+    assert data["baselines"][0]["folder_name"] == "Gly20_brown_rep01"
+    assert data["baselines"][0]["folder_name"] != "analysis"
+
+
+def test_build_pairing_tree_fallback_when_no_display_name() -> None:
+    """When display_name is empty, folder_name falls back to parent.name if folder is 'analysis'."""
+    brown = Path("/data/SampleA/Gly20_brown_rep01/analysis")
+    cands = [PairingCandidate(folder=brown, family_key="gly20|rep01", display_name="")]
+    data = build_pairing_tree_data([], cands, {}, {})
+
+    # Fallback: parent.name of "analysis" = "Gly20_brown_rep01"
+    assert data["baselines"][0]["folder_name"] == "Gly20_brown_rep01"
+
+
+def test_auto_pair_succeeds_with_standard_barakuda_structure(tmp_path: Path) -> None:
+    """
+    Full round-trip: standard layout, collect candidates from run folder,
+    then auto-pair against a drag path with matching family key.
+    """
+    run_folder = tmp_path / "Gly20_brown_rep01"
+    audit = run_folder / "analysis" / "audit"
+    audit.mkdir(parents=True)
+    (audit / "Gly20_brown_rep01_calibration.json").write_text(
+        '{"kappa": {"kappa_x_n_per_m": 0.001, "kappa_y_n_per_m": 0.001}}',
+        encoding="utf-8",
+    )
+
+    cands = collect_brownian_baseline_candidates_from_roots(
+        [run_folder],
+        validate_folder=load_brownian_calibration_from_folder,
+    )
+    assert len(cands) == 1
+
+    # A drag path whose family key overlaps with the run folder
+    drag_path = tmp_path / "Gly20_drag_rep01_fast.raw"
+    baseline_map, status_map = auto_pair_drag_items([drag_path], cands)
+
+    # Because both have "gly20" in their tokens the pair should succeed
+    assert str(drag_path) in baseline_map, (
+        f"Expected pairing but got status: {status_map.get(str(drag_path))!r}\n"
+        f"candidate family_key={cands[0].family_key!r}"
+    )
+
+
+def test_invalid_run_folder_ignored(tmp_path: Path) -> None:
+    """A run folder without a valid audit/*_calibration.json is silently skipped."""
+    bad_run = tmp_path / "EmptyRun"
+    (bad_run / "analysis" / "audit").mkdir(parents=True)
+    # no calibration JSON → load_brownian_calibration_from_folder raises
+
+    cands = collect_brownian_baseline_candidates_from_roots(
+        [bad_run],
+        validate_folder=load_brownian_calibration_from_folder,
+    )
+    assert cands == []
+
+
+def test_dialog_skip_folder_names_present_in_source() -> None:
+    """dataset_panel.py must expose skip_folder_names on HierarchicalFolderImportDialog."""
+    src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/widgets/dataset_panel.py").read_text(encoding="utf-8")
+    assert "skip_folder_names" in src
+    assert "_skip_names" in src
+
+
+def test_main_window_passes_baseline_skip_to_dialog() -> None:
+    """_on_ot_add_baseline_roots must pass skip_folder_names to the dialog."""
+    mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
+    assert "skip_folder_names" in mw_src
+    assert "analysis" in mw_src   # "analysis" must be in the skip set
+    assert "raw" in mw_src        # "raw" must be in the skip set
+
+
+def test_format_baseline_link_status_uses_run_folder_name() -> None:
+    """format_baseline_link_status must show run folder name, not 'analysis'."""
+    # When the path ends in 'analysis', parent name should be used
+    status = format_baseline_link_status("/data/Gly20_brown_rep01/analysis", 3)
+    assert "analysis" not in status
+    assert "Gly20_brown_rep01" in status
+    assert "shared 3×" in status
