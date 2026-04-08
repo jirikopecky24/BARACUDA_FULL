@@ -249,6 +249,8 @@ def test_recursive_import_multi_folder_and_no_duplicates(tmp_path: Path) -> None
             "QMessageBox",
             "QListView",
             "QTreeView",
+            "QTreeWidget",
+            "QTreeWidgetItem",
             "QAbstractItemView",
             "QDialog",
             "QDialogButtonBox",
@@ -358,6 +360,7 @@ def test_parent_selection_ignores_empty_subfolder(tmp_path: Path) -> None:
         for name in (
             "QWidget", "QVBoxLayout", "QHBoxLayout", "QPushButton", "QListWidget", "QListWidgetItem",
             "QFileDialog", "QLabel", "QStyle", "QSizePolicy", "QMessageBox", "QListView", "QTreeView",
+            "QTreeWidget", "QTreeWidgetItem",
             "QAbstractItemView", "QDialog", "QDialogButtonBox", "QLineEdit",
             "QCheckBox",
         ):
@@ -400,6 +403,7 @@ def test_parent_import_attaches_sidecars_not_as_rows(tmp_path: Path) -> None:
         for name in (
             "QWidget", "QVBoxLayout", "QHBoxLayout", "QPushButton", "QListWidget", "QListWidgetItem",
             "QFileDialog", "QLabel", "QStyle", "QSizePolicy", "QMessageBox", "QListView", "QTreeView",
+            "QTreeWidget", "QTreeWidgetItem",
             "QAbstractItemView", "QDialog", "QDialogButtonBox", "QLineEdit",
             "QCheckBox",
         ):
