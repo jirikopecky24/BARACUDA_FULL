@@ -1068,7 +1068,12 @@ class ShellMainWindow(QMainWindow):
         if not parent_folder:
             return
         parent_path = Path(parent_folder)
-        dlg = HierarchicalFolderImportDialog(parent_path, self)
+        # Hide internal technical sub-directories so users see run-level items only.
+        # "analysis", "raw", "audit", "csv" etc. are BARAKUDA-internal structure.
+        _BASELINE_SKIP: frozenset[str] = frozenset(
+            {"analysis", "raw", "audit", "csv", "exports", "runs", "output", "outputs"}
+        )
+        dlg = HierarchicalFolderImportDialog(parent_path, self, skip_folder_names=_BASELINE_SKIP)
         dlg.setWindowTitle(f"Brownian baselines — folder tree under {parent_path.name}")
         if dlg.exec() != int(QDialog.DialogCode.Accepted):
             return

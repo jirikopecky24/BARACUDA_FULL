@@ -264,6 +264,11 @@ class HierarchicalFolderImportDialog(QDialog):
     """
     Multi-level folder tree with tri-state checkboxes for importing a day (or other root)
     with nested sample / run folders without running separate single-level imports.
+
+    ``skip_folder_names`` — case-insensitive set of folder names that should NOT appear
+    as tree items (neither shown nor checkable).  Use this to hide internal technical
+    sub-directories (e.g. ``{"analysis", "raw", "audit", "csv"}`` for the Brownian
+    baseline picker so users see run-level items, not filesystem internals).
     """
 
     def __init__(
@@ -272,10 +277,14 @@ class HierarchicalFolderImportDialog(QDialog):
         parent: QWidget | None = None,
         *,
         max_depth: int = 8,
+        skip_folder_names: frozenset[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self._root = root_folder.resolve()
         self._max_depth = max_depth
+        self._skip_names: frozenset[str] = (
+            frozenset(n.lower() for n in skip_folder_names) if skip_folder_names else frozenset()
+        )
         self.setWindowTitle(f"Import from folder tree — {self._root.name}")
         self.resize(820, 620)
 
@@ -328,8 +337,15 @@ class HierarchicalFolderImportDialog(QDialog):
         layout.addLayout(row_checks)
         layout.addWidget(buttons)
 
+    def _visible_subfolders(self, folder: Path) -> list[Path]:
+        """Subfolders of ``folder`` that are not in the skip-names set."""
+        return [
+            s for s in discover_subfolders(folder)
+            if s.name.lower() not in self._skip_names
+        ]
+
     def _item_flags_for_folder(self, folder: Path) -> Qt.ItemFlag:
-        has_subdirs = bool(discover_subfolders(folder))
+        has_subdirs = bool(self._visible_subfolders(folder))
         base = (
             Qt.ItemFlag.ItemIsEnabled
             | Qt.ItemFlag.ItemIsSelectable
@@ -342,7 +358,10 @@ class HierarchicalFolderImportDialog(QDialog):
     def _populate_tree(self) -> None:
         self._tree.blockSignals(True)
         self._tree.clear()
-        top_dirs = discover_subfolders(self._root)
+        top_dirs = [
+            d for d in discover_subfolders(self._root)
+            if d.name.lower() not in self._skip_names
+        ]
         if not top_dirs:
             has_primary = any(
                 is_primary_dataset_input(p) for p in self._root.iterdir() if p.is_file()
@@ -377,8 +396,7 @@ class HierarchicalFolderImportDialog(QDialog):
         item.setCheckState(0, Qt.CheckState.Unchecked)
         if depth >= self._max_depth:
             return item
-        subs = discover_subfolders(folder)
-        for sub in subs:
+        for sub in self._visible_subfolders(folder):
             item.addChild(self._make_tree_item(sub, depth + 1))
         return item
 
