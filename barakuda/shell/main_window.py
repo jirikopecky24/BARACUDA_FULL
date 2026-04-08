@@ -824,10 +824,6 @@ class ShellMainWindow(QMainWindow):
 
     # ---------------- OT helpers ----------------
 
-    def _on_ot_load_profile(self, profile_name: str) -> None:
-        """Minimal handler to satisfy signal wiring without modifying profile logic."""
-        self.log_panel.log(f"OT load profile requested: {profile_name} (No-op)")
-
     def _ot_save_scale(self) -> None:
         if self._device_panel is None:
             return
