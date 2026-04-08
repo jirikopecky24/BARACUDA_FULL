@@ -11,6 +11,14 @@ from PyQt6.QtWidgets import (
 )
 from barakuda.core.truth_resolvers import build_collision_safe_export_path
 from barakuda.devices.optical_tweezers.compute import resolve_compute_profile
+from barakuda.devices.optical_tweezers.ui.batch_tools import (
+    advanced_visibility,
+    drag_action_visibility,
+    format_batch_progress,
+    format_current_file_progress,
+    run_stop_enabled_state,
+    resolve_strategy_selection,
+)
 
 class NoWheelValueChangeFilter(QObject):
     """Event filter that blocks mouse wheel from changing values in scrollable panels."""
@@ -43,6 +51,9 @@ class PipelinePanel(QWidget):
 
     # Emitted whenever any user-editable parameter changes value
     value_changed = pyqtSignal()
+    apply_to_checked_clicked = pyqtSignal()
+    auto_pair_baselines_clicked = pyqtSignal()
+    add_baseline_roots_clicked = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -86,9 +97,6 @@ class PipelinePanel(QWidget):
 
         self.btn_preview_gate.clicked.connect(self.preview_gate_clicked.emit)
 
-        self.btn_gate_report = QPushButton("Report\u2026")
-        self.btn_gate_report.setToolTip("View detailed report of the Preview Gate results.")
-        self.btn_gate_report.setEnabled(False)
         self.btn_open_protocol = QPushButton("Open Protocol")
         self.btn_open_protocol.setToolTip("Open run protocol editor for selected run/input.")
         self.btn_run = QPushButton("Run")
@@ -96,17 +104,37 @@ class PipelinePanel(QWidget):
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setToolTip("Stop the current batch processing.")
         self.btn_reset = QPushButton("Reset OT Defaults")
+        self.btn_apply_to_checked = QPushButton("Apply to checked")
+        self.btn_apply_to_checked.setToolTip(
+            "Apply shared parameters from the current item to all checked items."
+        )
+        self.btn_auto_pair_baselines = QPushButton("Auto-pair Brownian baselines")
+        self.btn_auto_pair_baselines.setToolTip(
+            "Auto-link checked Drag items to discovered Brownian baseline folders."
+        )
+        self.btn_add_baseline_roots = QPushButton("Add baseline roots…")
+        self.btn_add_baseline_roots.setToolTip(
+            "Select one or more folders and recursively discover Brownian baseline candidates."
+        )
+        self._editing_item_label = QLabel("Editing: <none>")
+        self._editing_item_label.setStyleSheet("color: #555; font-weight: bold;")
+
         self.btn_reset.setToolTip("Reset all settings to their default values.")
 
-        self.btn_gate_report.clicked.connect(self.gate_report_clicked.emit)
         self.btn_open_protocol.clicked.connect(self.open_protocol_clicked.emit)
         self.btn_run.clicked.connect(self.run_batch_clicked.emit)
         self.btn_stop.clicked.connect(self.stop_clicked.emit)
         self.btn_reset.clicked.connect(self.apply_ot_defaults)
+        self.btn_apply_to_checked.clicked.connect(self.apply_to_checked_clicked.emit)
+        self.btn_auto_pair_baselines.clicked.connect(self.auto_pair_baselines_clicked.emit)
+        self.btn_add_baseline_roots.clicked.connect(self.add_baseline_roots_clicked.emit)
 
-        self._progress_label = QLabel("Ready")
+        self._progress_label = QLabel("Batch progress: 0 / 0 completed (0%)")
+        self._current_file_progress_label = QLabel("Current file: —")
+        self._current_file_progress_label.setStyleSheet("color: #666;")
         self.progress = QProgressBar()
         self.progress.setValue(0)
+        self.btn_stop.setEnabled(False)
 
         # preprocess (keep, not used yet)
         self._normalize_strength = QDoubleSpinBox()
@@ -439,7 +467,7 @@ class PipelinePanel(QWidget):
         self._bead_diameter_um.setRange(0.1, 100.0)
         self._bead_diameter_um.setDecimals(3)
         self._bead_diameter_um.setSingleStep(0.1)
-        self._bead_diameter_um.setValue(1.0)  # DEFAULT as requested (most common)
+        self._bead_diameter_um.setValue(2.0)
         self._bead_diameter_um.setToolTip("Diameter of the trapped bead in micrometers.")
 
         # ── Tracking tab ──
@@ -528,7 +556,7 @@ class PipelinePanel(QWidget):
         def _on_advanced_toggled(checked: bool):
             self._set_row_visible(self._qc_q_min, checked)
             self._set_row_visible(self._qc_jump_max, checked)
-            self._set_row_visible(self._drift_window_s, checked)
+            self._apply_postprocess_advanced_visibility()
             
         # Connection moved to end of __init__ (after apply_ot_defaults) to survive
         # the blanket toggled.disconnect() inside _wire_value_changed_signals
@@ -574,7 +602,9 @@ class PipelinePanel(QWidget):
         row_brownian.setContentsMargins(0, 0, 0, 0)
         row_brownian.addWidget(self._brownian_baseline_folder)
         row_brownian.addWidget(self._btn_browse_brownian)
-        self.post_box_layout.addRow("Brownian baseline (folder)", row_brownian)
+        self._brownian_baseline_row_wrap = QWidget()
+        self._brownian_baseline_row_wrap.setLayout(row_brownian)
+        self.post_box_layout.addRow("Brownian baseline (folder)", self._brownian_baseline_row_wrap)
 
         self._drag_onset_sigma = QDoubleSpinBox()
         self._drag_onset_sigma.setRange(1.0, 20.0)
@@ -685,12 +715,16 @@ class PipelinePanel(QWidget):
 
         # ── Action buttons ──
         tab_run_content_layout.addWidget(self.btn_preview_gate)
-        tab_run_content_layout.addWidget(self.btn_gate_report)
         tab_run_content_layout.addWidget(self.btn_open_protocol)
         tab_run_content_layout.addWidget(self.btn_run)
         tab_run_content_layout.addWidget(self.btn_stop)
         tab_run_content_layout.addWidget(self.btn_reset)
+        tab_run_content_layout.addWidget(self.btn_apply_to_checked)
+        tab_run_content_layout.addWidget(self.btn_add_baseline_roots)
+        tab_run_content_layout.addWidget(self.btn_auto_pair_baselines)
+        tab_run_content_layout.addWidget(self._editing_item_label)
         tab_run_content_layout.addWidget(self._progress_label)
+        tab_run_content_layout.addWidget(self._current_file_progress_label)
         tab_run_content_layout.addWidget(self.progress)
         tab_run_content_layout.addStretch(1)
 
@@ -867,7 +901,7 @@ class PipelinePanel(QWidget):
         self._drag_axis.setCurrentIndex(0)
         self._viscosity.setValue(0.001)
         self._temperature_c.setValue(25.0)
-        self._bead_diameter_um.setValue(1.0)
+        self._bead_diameter_um.setValue(2.0)
 
         # Settings Defaults
         self._trk_advanced.setChecked(False)
@@ -927,36 +961,32 @@ class PipelinePanel(QWidget):
         """Connect all interactive elements to emit value_changed."""
         def _emit(*args, **kwargs):
             self.value_changed.emit()
-            
-        # Hook up inputs (QDoubleSpinBox, QSpinBox)
+
+        def _connect_once(obj: QObject, mark: str, connect_fn) -> None:
+            if obj.property(mark):
+                return
+            connect_fn(_emit)
+            obj.setProperty(mark, True)
+
+        # Hook up inputs (QDoubleSpinBox, QSpinBox) without disconnecting unrelated handlers.
         for w in self.findChildren(QAbstractSpinBox):
             if hasattr(w, "valueChanged"):
-                try: w.valueChanged.disconnect() 
-                except: pass
-                w.valueChanged.connect(_emit)
-                
-        # Hook up checkboxes
+                _connect_once(w, "_ot_value_emit_connected", w.valueChanged.connect)
+
+        # Hook up checkboxes.
         for w in self.findChildren(QCheckBox):
             if hasattr(w, "toggled"):
-                try: w.toggled.disconnect()
-                except: pass
-                w.toggled.connect(_emit)
-                
-        # Hook up comboboxes
+                _connect_once(w, "_ot_toggled_emit_connected", w.toggled.connect)
+
+        # Hook up comboboxes.
         for w in self.findChildren(QComboBox):
             if hasattr(w, "currentIndexChanged"):
-                try: w.currentIndexChanged.disconnect()
-                except: pass
-                w.currentIndexChanged.connect(_emit)
+                _connect_once(w, "_ot_combo_emit_connected", w.currentIndexChanged.connect)
         # QLineEdit (baseline path, output root) — without this, per-item params stay stale
         # and OTRunWorker's MockPanel serves empty brownian_baseline_folder forever.
         for _le in (self._brownian_baseline_folder, self._run_output_root):
-            try:
-                _le.textChanged.disconnect()
-            except Exception:
-                pass
-            _le.textChanged.connect(_emit)
-        self._drag_manual_offset_cb.toggled.connect(_emit)
+            _connect_once(_le, "_ot_text_emit_connected", _le.textChanged.connect)
+        _connect_once(self._drag_manual_offset_cb, "_ot_drag_manual_emit_connected", self._drag_manual_offset_cb.toggled.connect)
 
     def dump_ot_params(self) -> dict:
         return {
@@ -1003,7 +1033,10 @@ class PipelinePanel(QWidget):
             self._drift_mode.setCurrentIndex(idx)
         self._drift_window_s.setValue(pp.get("drift_window_s", 1.0))
         self._temperature_c.setValue(pp.get("temperature_c", 25.0))
-        self._bead_diameter_um.setValue(pp.get("bead_diameter_um", 1.0))
+        self._bead_diameter_um.setValue(pp.get("bead_diameter_um", 2.0))
+        _mode = str(pp.get("calibration_mode", getattr(self, "_calibration_mode", "Brownian")))
+        _strategy = str(pp.get("strategy", "") or "")
+        self.set_calibration_mode(_mode, preferred_strategy=_strategy)
         
         if "stage_speed_um_s" in pp:
             self._stage_speed.setValue(pp.get("stage_speed_um_s", 0.0))
@@ -1041,9 +1074,9 @@ class PipelinePanel(QWidget):
         self._preview_gate_policy = gp
         self.btn_preview_gate.setText(f"Preview Gate ▹ {gp}")
 
+        self._apply_postprocess_advanced_visibility()
         self.blockSignals(was_blocked)
-        # Manually trigger a UI refresh event for parents
-        self.value_changed.emit()
+        self._refresh_compute_backend_status()
 
     # -------------------- Public panel API --------------------
 
@@ -1059,35 +1092,30 @@ class PipelinePanel(QWidget):
         return str(self._preview_gate_policy)
 
     def set_batch_running(self, running: bool) -> None:
-        """Toggle progress bar between indeterminate pulse and idle."""
+        """Toggle OT run controls and concise progress labels."""
         if running:
-            self.progress.setRange(0, 0)  # indeterminate pulse
-            self._progress_label.setText("Starting\u2026")
+            self._progress_label.setText("Batch progress: 0 / 0 completed (0%)")
+            self._current_file_progress_label.setText("Current file: starting…")
         else:
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
-            self._progress_label.setText("Ready")
-            
-        # Disable buttons that shouldn't be clicked during run
-        for b in [self.btn_save_scale]:
-            if hasattr(self, b): # Just in case
-                getattr(self, b).setEnabled(not running)
-            else:
-                # Direct access if known
-                self.btn_save_scale.setEnabled(not running)
+            self._progress_label.setText("Batch progress: 0 / 0 completed (0%)")
+            self._current_file_progress_label.setText("Current file: —")
+
+        run_enabled, stop_enabled = run_stop_enabled_state(running)
+        self.btn_save_scale.setEnabled(not running)
+        self.btn_run.setEnabled(run_enabled)
+        self.btn_stop.setEnabled(stop_enabled)
 
     def set_batch_progress(self, done: int, total: int, filename: str = "", pct: int = 0) -> None:
-        """Update file counter label and progress bar value (pct = 0..100 within current video)."""
+        """Show concise batch progress and current-file progress."""
         if total <= 0:
             return
-        label = f"File {done + 1} / {total}" if pct < 100 else f"File {done} / {total} ✅"
-        if filename:
-            label += f"  —  {filename}"
-        if pct < 100:
-            label += f"  ({pct}%)"
-        self._progress_label.setText(label)
+        batch_label, batch_pct = format_batch_progress(done, total)
+        self._progress_label.setText(batch_label)
+        self._current_file_progress_label.setText(format_current_file_progress(filename, pct))
         self.progress.setRange(0, 100)
-        self.progress.setValue(pct)
+        self.progress.setValue(batch_pct)
 
     def get_tracking_params(self) -> dict:
         # Tracking method selector is intentionally hidden; keep RS as fixed default.
@@ -1246,6 +1274,14 @@ class PipelinePanel(QWidget):
     def set_end_frame(self, end_frame: int) -> None:
         self._end_frame.setValue(int(end_frame))
 
+    def set_frame_range(self, start_frame: int, end_frame: int) -> None:
+        self._start_frame.setValue(int(start_frame))
+        self._end_frame.setValue(int(end_frame))
+
+    def set_editing_item(self, name: str) -> None:
+        label = name.strip() if name else "<none>"
+        self._editing_item_label.setText(f"Editing: {label}")
+
     def _set_row_visible(self, field: QWidget, visible: bool) -> None:
         field.setVisible(visible)
         # Check Tracking layout
@@ -1259,14 +1295,17 @@ class PipelinePanel(QWidget):
             if label:
                 label.setVisible(visible)
 
-    def _update_strategy_dropdown(self, mode: str) -> None:
+    def _update_strategy_dropdown(self, mode: str, preferred_strategy: str | None = None) -> None:
         current_data = str(self._strategy_selector.currentData()) if self._strategy_selector.currentData() else ""
 
         self._strategy_selector.blockSignals(True)
         self._strategy_selector.clear()
 
+        requested = preferred_strategy if preferred_strategy else current_data
+        requested = resolve_strategy_selection(mode, requested)
+
         def _restore_or_default(default_index: int, fallback_log: str) -> None:
-            idx = self._strategy_selector.findData(current_data)
+            idx = self._strategy_selector.findData(requested)
             if idx >= 0:
                 self._strategy_selector.setCurrentIndex(idx)
                 return
@@ -1303,9 +1342,12 @@ class PipelinePanel(QWidget):
                 
         self._strategy_selector.blockSignals(False)
 
-    def set_calibration_mode(self, mode: str) -> None:
+    def set_calibration_mode(self, mode: str, preferred_strategy: str | None = None) -> None:
         self._calibration_mode = str(mode)
-        self._update_strategy_dropdown(mode)
+        self._update_strategy_dropdown(mode, preferred_strategy=preferred_strategy)
+        vis_actions = drag_action_visibility(mode)
+        self.btn_add_baseline_roots.setVisible(vis_actions["add_baseline_roots"])
+        self.btn_auto_pair_baselines.setVisible(vis_actions["auto_pair_baselines"])
         
         if mode == "Brownian":
             self._set_row_visible(self._stage_speed, False)
@@ -1330,6 +1372,22 @@ class PipelinePanel(QWidget):
             self._set_row_visible(self._drag_onset_sigma, True)
             self._set_row_visible(self._drag_onset_min_hold, True)
             self._set_row_visible(self._drag_manual_offset_wrap, True)
+        self._apply_postprocess_advanced_visibility()
+
+    def _apply_postprocess_advanced_visibility(self) -> None:
+        vis = advanced_visibility(
+            getattr(self, "_calibration_mode", "Brownian"),
+            bool(self._pp_advanced.isChecked()),
+        )
+        self._set_row_visible(self._drift_window_s, vis["drift_window"])
+        # __init__ calls advanced toggle before baseline widgets are created.
+        if hasattr(self, "_brownian_baseline_folder"):
+            if hasattr(self, "_brownian_baseline_row_wrap"):
+                self._set_row_visible(self._brownian_baseline_row_wrap, vis["brownian_baseline"])
+            else:
+                self._set_row_visible(self._brownian_baseline_folder, vis["brownian_baseline"])
+        if hasattr(self, "_btn_browse_brownian"):
+            self._set_row_visible(self._btn_browse_brownian, vis["brownian_baseline"])
 
     def is_auto_roi_on_load(self) -> bool:
         return self.auto_roi_on_load_cb.isChecked()
