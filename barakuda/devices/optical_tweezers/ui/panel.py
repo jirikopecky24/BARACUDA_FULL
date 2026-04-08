@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import pyqtSignal, Qt, QObject, QEvent, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QObject, QEvent, QTimer, QMimeData, QByteArray
+from PyQt6.QtGui import QDrag
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar,
     QFormLayout, QDoubleSpinBox, QCheckBox, QSpinBox, QLineEdit,
@@ -28,9 +29,17 @@ class PairingTreeWidget(QTreeWidget):
     Top-level items are Brownian baseline folders.
     Child items are Drag runs assigned to that baseline.
     A dedicated "(Unpaired)" root collects Drag runs with no baseline.
+
+    Supports drag & drop: Drag child items can be moved between baseline
+    roots or to the (Unpaired) section by dragging them with the mouse.
+    Emits ``drag_drop_reassign_requested(drag_path, baseline_folder)``
+    (empty baseline_folder means "move to unpaired").
     """
 
     drag_item_selected = pyqtSignal(str, list)  # drag_path_str, available_baseline_folders
+    drag_drop_reassign_requested = pyqtSignal(str, str)  # drag_path, baseline_folder (""=unpair)
+
+    _MIME_TYPE = "application/x-barakuda-pairing-drag"
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -42,6 +51,11 @@ class PairingTreeWidget(QTreeWidget):
         self.setMinimumHeight(150)
         self._available_baselines: list[str] = []
         self.itemSelectionChanged.connect(self._on_selection_changed)
+        # Enable drag & drop — only drag child items are draggable (enforced in startDrag).
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
 
     def _on_selection_changed(self) -> None:
         items = self.selectedItems()
@@ -53,6 +67,85 @@ class PairingTreeWidget(QTreeWidget):
             self.drag_item_selected.emit(raw[5:], list(self._available_baselines))
         else:
             self.drag_item_selected.emit("", [])
+
+    # ── Drag & drop ──────────────────────────────────────────────────────────
+
+    def startDrag(self, supported_actions: Qt.DropAction) -> None:
+        """Only allow dragging of Drag child items (role starts with 'drag:')."""
+        items = self.selectedItems()
+        if not items:
+            return
+        raw = items[0].data(0, Qt.ItemDataRole.UserRole) or ""
+        if not (isinstance(raw, str) and raw.startswith("drag:")):
+            return
+        drag_path = raw[5:]
+        mime = QMimeData()
+        mime.setData(self._MIME_TYPE, QByteArray(drag_path.encode()))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(self._MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if not event.mimeData().hasFormat(self._MIME_TYPE):
+            event.ignore()
+            return
+        target = self._resolve_drop_target(self.itemAt(event.position().toPoint()))
+        if target is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        """
+        On valid drop: emit drag_drop_reassign_requested and accept the event.
+        The tree is refreshed by the handler — we do NOT move items internally.
+        """
+        if not event.mimeData().hasFormat(self._MIME_TYPE):
+            event.ignore()
+            return
+        drag_path = bytes(event.mimeData().data(self._MIME_TYPE)).decode()
+        target = self._resolve_drop_target(self.itemAt(event.position().toPoint()))
+        if target is None:
+            event.ignore()
+            return
+        role = str(target.data(0, Qt.ItemDataRole.UserRole) or "")
+        if role.startswith("baseline:"):
+            baseline_folder = role[9:]
+        elif role == "section:unpaired":
+            baseline_folder = ""
+        else:
+            event.ignore()
+            return
+        self.drag_drop_reassign_requested.emit(drag_path, baseline_folder)
+        event.acceptProposedAction()
+
+    def _resolve_drop_target(self, item: QTreeWidgetItem | None) -> QTreeWidgetItem | None:
+        """
+        Return the closest valid drop target node (baseline root or unpaired section).
+
+        If the cursor lands directly on a drag child, the parent baseline is used.
+        Returns None for invalid drop zones.
+        """
+        if item is None:
+            return None
+        role = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+        if role.startswith("baseline:") or role == "section:unpaired":
+            return item
+        parent = item.parent()
+        if parent is None:
+            return None
+        parent_role = str(parent.data(0, Qt.ItemDataRole.UserRole) or "")
+        if parent_role.startswith("baseline:") or parent_role == "section:unpaired":
+            return parent
+        return None
+
+    # ── Tree population ───────────────────────────────────────────────────────
 
     def refresh_tree(self, tree_data: dict) -> None:
         phase = tree_data.get("phase", "pairing_result")
@@ -75,24 +168,39 @@ class PairingTreeWidget(QTreeWidget):
                 top = QTreeWidgetItem([bl["folder_name"], "available"])
                 top.setData(0, Qt.ItemDataRole.UserRole, f"baseline:{folder_str}")
                 top.setToolTip(0, folder_str)
-                top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                top.setFlags(
+                    top.flags()
+                    & ~Qt.ItemFlag.ItemIsSelectable
+                    & ~Qt.ItemFlag.ItemIsDragEnabled
+                )
                 self.addTopLevelItem(top)
             self.resizeColumnToContents(0)
             return
 
         # "pairing_result": full tree — baselines with drag children + unpaired section.
+        _drag_item_flags = (
+            Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsDragEnabled
+        )
+        _root_flags = (
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsDropEnabled
+        )
+
         for bl in tree_data.get("baselines", []):
             folder_str = bl["folder"]
             top = QTreeWidgetItem([bl["folder_name"], ""])
             top.setData(0, Qt.ItemDataRole.UserRole, f"baseline:{folder_str}")
             top.setToolTip(0, folder_str)
-            top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            top.setFlags(_root_flags)
             for d in bl.get("drags", []):
                 origin = d.get("origin", "unset")
                 origin_tag = " [M]" if origin == "manual" else " [A]" if origin == "auto" else ""
                 child = QTreeWidgetItem([d["name"] + origin_tag, d["status"]])
                 child.setData(0, Qt.ItemDataRole.UserRole, f"drag:{d['path']}")
-                child.setToolTip(0, d["path"])
+                child.setToolTip(0, f"{d['path']}\n(Drag to move to a different baseline)")
+                child.setFlags(_drag_item_flags)
                 top.addChild(child)
             self.addTopLevelItem(top)
             key = f"baseline:{folder_str}"
@@ -102,11 +210,12 @@ class PairingTreeWidget(QTreeWidget):
         if unpaired:
             top_u = QTreeWidgetItem(["(Unpaired)", ""])
             top_u.setData(0, Qt.ItemDataRole.UserRole, "section:unpaired")
-            top_u.setFlags(top_u.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            top_u.setFlags(_root_flags)
             for d in unpaired:
                 child = QTreeWidgetItem([d["name"], d["status"]])
                 child.setData(0, Qt.ItemDataRole.UserRole, f"drag:{d['path']}")
-                child.setToolTip(0, d["path"])
+                child.setToolTip(0, f"{d['path']}\n(Drag to move to a different baseline)")
+                child.setFlags(_drag_item_flags)
                 top_u.addChild(child)
             self.addTopLevelItem(top_u)
             top_u.setExpanded(True)
@@ -910,7 +1019,9 @@ class PipelinePanel(QWidget):
         )
         self.btn_auto_pair_baselines_pair = QPushButton("Auto-pair Brownian baselines")
         self.btn_auto_pair_baselines_pair.setToolTip(
-            "Auto-link checked Drag items to discovered Brownian baseline folders using family key matching."
+            "Auto-link checked Drag items to discovered Brownian baseline folders using family key matching.\n"
+            "Works on checked items only. Re-running overwrites previous auto-pairing;\n"
+            "if no match is found for a manually-assigned item, the manual assignment is preserved."
         )
         self.btn_add_baseline_roots_pair.clicked.connect(self.add_baseline_roots_clicked.emit)
         self.btn_auto_pair_baselines_pair.clicked.connect(self.auto_pair_baselines_clicked.emit)
@@ -927,14 +1038,21 @@ class PipelinePanel(QWidget):
         tab_pairing_layout.addWidget(self._pairing_tree_label)
 
         self._pairing_tree = PairingTreeWidget()
+        self._pairing_tree.setToolTip(
+            "Drag items can be moved between Brownian baselines or to (Unpaired) by dragging them."
+        )
         tab_pairing_layout.addWidget(self._pairing_tree, stretch=1)
+
+        _dnd_hint = QLabel("Drag items can be moved between baselines or to (Unpaired).")
+        _dnd_hint.setStyleSheet("color: #999; font-size: 10px;")
+        tab_pairing_layout.addWidget(_dnd_hint)
 
         _sep_pair2 = QFrame()
         _sep_pair2.setFrameShape(QFrame.Shape.HLine)
         _sep_pair2.setStyleSheet("color: #ddd;")
         tab_pairing_layout.addWidget(_sep_pair2)
 
-        _reassign_lbl = QLabel("Manual reassign:")
+        _reassign_lbl = QLabel("Manual reassign (combo fallback):")
         _reassign_lbl.setStyleSheet("color: #555;")
         tab_pairing_layout.addWidget(_reassign_lbl)
 
@@ -961,6 +1079,10 @@ class PipelinePanel(QWidget):
         tab_pairing_layout.addWidget(self._pairing_assign_btn)
 
         self._pairing_tree.drag_item_selected.connect(self._on_pairing_drag_selected)
+        # D&D reassign reuses the same handler as combo-box manual assign.
+        self._pairing_tree.drag_drop_reassign_requested.connect(
+            self.pairing_manual_assign_requested.emit
+        )
 
         self.tabs.addTab(tab_run, "Run")
         self.tabs.addTab(tab_tracking, "Tracking")
