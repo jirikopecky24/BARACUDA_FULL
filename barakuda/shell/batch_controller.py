@@ -105,6 +105,13 @@ class BatchController:
         self.last_ot_overlay_video_path: str | None = None
         self.last_ot_overlay_trajectory_path: str | None = None
 
+        # Pending batch PDF summary stored here by run_batch() so that the caller
+        # (OTRunWorker / MainWindow) can defer the actual PDF generation to a
+        # separate background thread.  Generating the PDF inline in run_batch()
+        # caused a hard UI freeze because matplotlib's C extensions hold the Python
+        # GIL during rendering, starving the Qt main-thread event loop.
+        self._pending_ot_batch_pdf_summary: dict | None = None
+
     def _resolve_ot_runtime(self, tracking_params: Optional[dict] = None) -> dict[str, Any]:
         params = tracking_params or {}
         profile = str(params.get("compute_profile", "cpu"))
@@ -2459,20 +2466,20 @@ class BatchController:
             done += 1
             progress_fn(done, len(ok_inputs), file_path.name, 100)
 
+        # Store the batch summary for deferred PDF generation.
+        # The actual export_ot_batch_pdf call happens in a separate QThread started
+        # by OTRunWorker/MainWindow AFTER finished.emit() so the UI event loop is
+        # never blocked by matplotlib's GIL-holding PDF rendering.
         if _ot_mirror_root is not None and _ot_report_items:
-            try:
-                _ot_mirror_root.mkdir(parents=True, exist_ok=True)
-                export_ot_batch_pdf(
-                    _ot_mirror_root / "batch_summary.pdf",
-                    {
-                        "batch_id": _ot_batch_id,
-                        "output_root": str(_ot_output_root) if _ot_output_root is not None else "",
-                        "batch_root": str(_ot_mirror_root),
-                        "items": _ot_report_items,
-                    },
-                )
-            except Exception as e:
-                self._log(f"WARN: batch PDF export failed: {e!r}")
+            self._pending_ot_batch_pdf_summary = {
+                "batch_id": _ot_batch_id,
+                "output_root": str(_ot_output_root) if _ot_output_root is not None else "",
+                "batch_root": str(_ot_mirror_root),
+                "items": _ot_report_items,
+                "_pdf_path": str(_ot_mirror_root / "batch_summary.pdf"),
+            }
+        else:
+            self._pending_ot_batch_pdf_summary = None
 
         self._log("Run Batch done ✅")
 

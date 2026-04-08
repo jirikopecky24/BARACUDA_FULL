@@ -78,6 +78,14 @@ class ShellMainWindow(QMainWindow):
         self._ot_last_done_seen: int = -1
         self._ot_overlay_last_applied_done: int = -1
 
+        # Deferred OT batch PDF generation — runs in a background thread so the
+        # UI event loop is never blocked by matplotlib's GIL-holding rendering.
+        self._ot_pdf_thread = None
+        self._ot_pdf_worker = None
+        # Stores the batch summary dict delivered by OTRunWorker.batch_summary_ready
+        # and consumed by _start_ot_pdf_generation() after finished fires.
+        self._ot_pending_pdf_summary: dict | None = None
+
         runs_folder = Path(__file__).resolve().parents[2] / "runs"
         self.batch = BatchController(runs_folder=runs_folder, log_fn=self.log_panel.log)
 
@@ -1498,6 +1506,10 @@ class ShellMainWindow(QMainWindow):
             self._ot_run_worker.log_msg.connect(self.log_panel.log)
             self._ot_run_worker.status_update.connect(self.dataset.set_status)
 
+            # Stash the deferred PDF summary delivered by the worker BEFORE finished.
+            def _on_ot_batch_summary_ready(summary: object) -> None:
+                self._ot_pending_pdf_summary = summary if isinstance(summary, dict) and summary else None
+
             def _on_ot_done():
                 if hasattr(self._device_panel, 'btn_run'):
                     self._device_panel.btn_run.setEnabled(True)
@@ -1514,6 +1526,11 @@ class ShellMainWindow(QMainWindow):
                     except Exception:
                         pass
                 self._ot_run_thread.quit()
+                # Kick off deferred PDF generation now that the UI is unblocked.
+                # This runs in a separate thread so matplotlib never blocks the event loop.
+                if self._ot_pending_pdf_summary:
+                    self._start_ot_pdf_generation(dict(self._ot_pending_pdf_summary))
+                    self._ot_pending_pdf_summary = None
 
             def _on_ot_err(err: str):
                 self.log_panel.log(f"OT RUN ERROR: {err}")
@@ -1521,8 +1538,10 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.btn_run.setEnabled(True)
                 if hasattr(self._device_panel, "set_batch_running"):
                     self._device_panel.set_batch_running(False)
+                self._ot_pending_pdf_summary = None
                 self._ot_run_thread.quit()
 
+            self._ot_run_worker.batch_summary_ready.connect(_on_ot_batch_summary_ready)
             self._ot_run_worker.finished.connect(_on_ot_done)
             self._ot_run_worker.error.connect(_on_ot_err)
 
@@ -1827,4 +1846,76 @@ class ShellMainWindow(QMainWindow):
                 pass
             self._afm_run_thread = None
             self._afm_run_worker = None
+
+    # ── Deferred OT batch PDF generation ─────────────────────────────────────
+
+    def _start_ot_pdf_generation(self, summary: dict) -> None:
+        """Start background PDF export so matplotlib never blocks the UI event loop.
+
+        The PDF was previously generated inline inside run_batch() which caused
+        the application to enter "Not Responding" state on Windows because
+        matplotlib's C-extension rendering holds the Python GIL for many seconds,
+        starving the Qt main-thread event loop of CPU time.
+
+        Here we offload the work to a dedicated QThread.  The thread is
+        fire-and-forget: the user can continue working while the PDF is written.
+        """
+        from PyQt6.QtCore import QThread, QObject, pyqtSignal as _Signal
+
+        if self._ot_pdf_thread is not None:
+            try:
+                if self._ot_pdf_thread.isRunning():
+                    self.log_panel.log("OT PDF: previous export still running, skipping new request.")
+                    return
+            except RuntimeError:
+                pass
+            self._ot_pdf_thread = None
+            self._ot_pdf_worker = None
+
+        pdf_path = summary.get("_pdf_path")
+        if not pdf_path:
+            return
+
+        log_fn = self.log_panel.log
+
+        class _OTPdfWorker(QObject):
+            finished = _Signal()
+            error = _Signal(str)
+
+            def __init__(self, _summary: dict) -> None:
+                super().__init__()
+                self._summary = _summary
+
+            def run(self) -> None:
+                try:
+                    from pathlib import Path as _Path
+                    from barakuda.core.ot_report import export_ot_batch_pdf
+                    _report_summary = {k: v for k, v in self._summary.items() if k != "_pdf_path"}
+                    _pdf_out = _Path(self._summary["_pdf_path"])
+                    _pdf_out.parent.mkdir(parents=True, exist_ok=True)
+                    export_ot_batch_pdf(_pdf_out, _report_summary)
+                    self.finished.emit()
+                except Exception as _exc:
+                    self.error.emit(repr(_exc))
+
+        self._ot_pdf_thread = QThread()
+        self._ot_pdf_worker = _OTPdfWorker(summary)
+        self._ot_pdf_worker.moveToThread(self._ot_pdf_thread)
+        self._ot_pdf_thread.started.connect(self._ot_pdf_worker.run)
+
+        def _on_pdf_done() -> None:
+            log_fn("OT PDF: batch_summary.pdf exported ✅")
+            self._ot_pdf_thread.quit()
+
+        def _on_pdf_err(msg: str) -> None:
+            log_fn(f"OT PDF: export failed: {msg}")
+            self._ot_pdf_thread.quit()
+
+        self._ot_pdf_worker.finished.connect(_on_pdf_done)
+        self._ot_pdf_worker.error.connect(_on_pdf_err)
+        self._ot_pdf_thread.finished.connect(self._ot_pdf_worker.deleteLater)
+        self._ot_pdf_thread.finished.connect(lambda: setattr(self, "_ot_pdf_thread", None))
+
+        self.log_panel.log("OT PDF: starting background export of batch_summary.pdf…")
+        self._ot_pdf_thread.start()
 
