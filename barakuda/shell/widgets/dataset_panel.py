@@ -794,7 +794,14 @@ class DatasetPanel(QWidget):
         status = self._item_status.get(key, "idle")
         pairing_status = self._item_pairing_status.get(key)
         sidecar_status = self._item_sidecar_status.get(key)
-        item.setText(self._format_label(name, status, pairing_status, sidecar_status))
+        # Block list signals while updating text so itemChanged is not emitted,
+        # preventing _on_item_changed → _sync_master_checkbox_state() from
+        # running redundantly (it is called explicitly below).
+        self._list.blockSignals(True)
+        try:
+            item.setText(self._format_label(name, status, pairing_status, sidecar_status))
+        finally:
+            self._list.blockSignals(False)
         self._sync_master_checkbox_state()
 
     def _on_master_checked_changed(self, state: int) -> None:

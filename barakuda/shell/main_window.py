@@ -1518,13 +1518,22 @@ class ShellMainWindow(QMainWindow):
                 overlay_video_path = getattr(self.batch, "last_ot_overlay_video_path", None)
                 overlay_trajectory_path = getattr(self.batch, "last_ot_overlay_trajectory_path", None)
                 if overlay_video_path and overlay_trajectory_path:
-                    try:
-                        self._ot_preview.set_ot_live_overlay(
-                            overlay_trajectory_path,
-                            video_path=overlay_video_path,
-                        )
-                    except Exception:
-                        pass
+                    # Skip if the overlay was already applied progressively during the run
+                    # (_on_ot_prog handles per-item live overlay updates).  Re-applying the
+                    # same overlay re-reads the CSV on the UI thread, which is wasteful.
+                    already_applied = (
+                        getattr(self._ot_preview, "_ot_live_overlay_enabled", False)
+                        and str(getattr(self._ot_preview, "_ot_live_trajectory_path", ""))
+                        == str(overlay_trajectory_path)
+                    )
+                    if not already_applied:
+                        try:
+                            self._ot_preview.set_ot_live_overlay(
+                                overlay_trajectory_path,
+                                video_path=overlay_video_path,
+                            )
+                        except Exception:
+                            pass
                 self._ot_run_thread.quit()
                 # Kick off deferred PDF generation now that the UI is unblocked.
                 # This runs in a separate thread so matplotlib never blocks the event loop.
@@ -1860,7 +1869,8 @@ class ShellMainWindow(QMainWindow):
         Here we offload the work to a dedicated QThread.  The thread is
         fire-and-forget: the user can continue working while the PDF is written.
         """
-        from PyQt6.QtCore import QThread, QObject, pyqtSignal as _Signal
+        from PyQt6.QtCore import QThread
+        from barakuda.shell.workers.ot_pdf_worker import OTPdfWorker
 
         if self._ot_pdf_thread is not None:
             try:
@@ -1872,44 +1882,23 @@ class ShellMainWindow(QMainWindow):
             self._ot_pdf_thread = None
             self._ot_pdf_worker = None
 
-        pdf_path = summary.get("_pdf_path")
-        if not pdf_path:
+        if not summary.get("_pdf_path"):
             return
 
-        log_fn = self.log_panel.log
-
-        class _OTPdfWorker(QObject):
-            finished = _Signal()
-            error = _Signal(str)
-
-            def __init__(self, _summary: dict) -> None:
-                super().__init__()
-                self._summary = _summary
-
-            def run(self) -> None:
-                try:
-                    from pathlib import Path as _Path
-                    from barakuda.core.ot_report import export_ot_batch_pdf
-                    _report_summary = {k: v for k, v in self._summary.items() if k != "_pdf_path"}
-                    _pdf_out = _Path(self._summary["_pdf_path"])
-                    _pdf_out.parent.mkdir(parents=True, exist_ok=True)
-                    export_ot_batch_pdf(_pdf_out, _report_summary)
-                    self.finished.emit()
-                except Exception as _exc:
-                    self.error.emit(repr(_exc))
-
         self._ot_pdf_thread = QThread()
-        self._ot_pdf_worker = _OTPdfWorker(summary)
+        self._ot_pdf_worker = OTPdfWorker(summary)
         self._ot_pdf_worker.moveToThread(self._ot_pdf_thread)
         self._ot_pdf_thread.started.connect(self._ot_pdf_worker.run)
 
         def _on_pdf_done() -> None:
-            log_fn("OT PDF: batch_summary.pdf exported ✅")
-            self._ot_pdf_thread.quit()
+            self.log_panel.log("OT PDF: batch_summary.pdf exported ✅")
+            if self._ot_pdf_thread is not None:
+                self._ot_pdf_thread.quit()
 
         def _on_pdf_err(msg: str) -> None:
-            log_fn(f"OT PDF: export failed: {msg}")
-            self._ot_pdf_thread.quit()
+            self.log_panel.log(f"OT PDF: export failed:\n{msg}")
+            if self._ot_pdf_thread is not None:
+                self._ot_pdf_thread.quit()
 
         self._ot_pdf_worker.finished.connect(_on_pdf_done)
         self._ot_pdf_worker.error.connect(_on_pdf_err)
