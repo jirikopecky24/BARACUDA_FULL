@@ -132,7 +132,7 @@ def _fmt_measure(value: Any, unit: str = "") -> str:
 
 
 def _fmt_scientific_text(value: float, sig_figs: int = 3) -> str:
-    """Format number as 'X.XX x 10^n' with Unicode superscript for plain text contexts."""
+    """Format number as 'X.XX × 10ⁿ' with Unicode superscript."""
     try:
         if value == 0 or not math.isfinite(value):
             return "0" if value == 0 else "n/a"
@@ -144,7 +144,7 @@ def _fmt_scientific_text(value: float, sig_figs: int = 3) -> str:
         mantissa = value / (10 ** exp)
         # Superscript digits for plain text
         sup = str(exp).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
-        return f"{mantissa:.{sig_figs-1}f} x 10{sup}"
+        return f"{mantissa:.{sig_figs-1}f} × 10{sup}"
     except Exception:
         return f"{value:.{sig_figs}g}"
 
@@ -161,13 +161,39 @@ def _fmt_scientific_mathtext(value: float, sig_figs: int = 3) -> str:
         exp = int(math.floor(math.log10(abs_val)))
         mantissa = value / (10 ** exp)
         # Mathtext format for rendering in matplotlib
-        return f"${mantissa:.{sig_figs-1}f} \\times 10^{{{exp}}}$"
+        return f"${mantissa:.{sig_figs-1}f}\\times10^{{{exp}}}$"
     except Exception:
         return f"{value:.{sig_figs}g}"
 
 
+def _unicode_exp_superscript(exp: int) -> str:
+    return str(exp).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
+
+
+def _fmt_pm_scientific_uncertainty(val: float, unc: float, unit: str = "", *, mantissa_decimals: int = 3) -> str:
+    """
+    (m ± u) × 10ⁿ with a single shared exponent (from |val|), Unicode × and superscripts.
+    """
+    if not math.isfinite(val) or not math.isfinite(unc) or unc <= 0:
+        return _fmt_measure(val, unit)
+    av = abs(val)
+    if av == 0:
+        return _fmt_measure(val, unit)
+    exp_v = int(math.floor(math.log10(av)))
+    scale = 10.0**exp_v
+    mv = val / scale
+    mu = unc / scale
+    v_str = f"{mv:.{mantissa_decimals}f}".rstrip("0").rstrip(".")
+    u_str = f"{mu:.2g}"
+    sup = _unicode_exp_superscript(exp_v)
+    core = f"({v_str} ± {u_str}) × 10{sup}"
+    if unit:
+        return f"{core} {_fmt_unit(unit)}"
+    return core
+
+
 def _fmt_measure_with_uncertainty(value: Any, uncertainty: Any, unit: str = "") -> str:
-    """Format a measurement value with uncertainty, rounded according to uncertainty magnitude."""
+    """Format value ± uncertainty; scientific form uses Unicode × and superscript exponents."""
     if value is None:
         return "n/a"
     try:
@@ -186,7 +212,6 @@ def _fmt_measure_with_uncertainty(value: Any, uncertainty: Any, unit: str = "") 
         unc = None
 
     if unc is None or unc == 0:
-        # No uncertainty - use scientific notation for very small/large values
         abs_val = abs(val)
         if abs_val > 0 and (abs_val < 0.01 or abs_val >= 1000):
             formatted = _fmt_scientific_text(val, sig_figs=3)
@@ -195,48 +220,33 @@ def _fmt_measure_with_uncertainty(value: Any, uncertainty: Any, unit: str = "") 
             return formatted
         return _fmt_measure(val, unit)
 
-    # Find decimal precision based on uncertainty
-    # Round uncertainty to 1-2 significant figures
     try:
         unc_exp = int(math.floor(math.log10(abs(unc))))
-        precision = max(0, min(10, -unc_exp + 1))  # Cap precision at 10 decimals
+        precision = max(0, min(10, -unc_exp + 1))
     except (ValueError, OverflowError):
         precision = 2
-    
-    # Round both values to the same precision
-    val_rounded = round(val, precision)
-    unc_rounded = round(unc, precision)
-    
-    # Check if we need scientific notation (very small or large values)
-    abs_val_rounded = abs(val_rounded)
-    if abs_val_rounded > 0 and (abs_val_rounded < 0.01 or abs_val_rounded >= 1000):
+
+    # Decide scientific form from the true magnitude; rounding tiny values first can yield 0.0 (e.g. round(1e-13,10)==0).
+    abs_val = abs(val)
+    if abs_val > 0 and (abs_val < 0.01 or abs_val >= 1000):
         try:
-            # Scientific notation with uncertainty
-            val_exp = int(math.floor(math.log10(abs_val_rounded)))
-            val_mantissa = val_rounded / (10 ** val_exp)
-            unc_mantissa = unc_rounded / (10 ** val_exp)
-            
-            # Format mantissas with appropriate precision
-            mant_precision = max(1, min(6, precision + val_exp))
-            val_str = f"{val_mantissa:.{mant_precision}f}"
-            unc_str = f"{unc_mantissa:.{mant_precision}f}"
-            
-            # Unicode superscript for exponent
-            sup = str(val_exp).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
-            
-            if unit:
-                return f"({val_str} +/- {unc_str}) x 10{sup} {_fmt_unit(unit)}"
-            return f"({val_str} +/- {unc_str}) x 10{sup}"
+            return _fmt_pm_scientific_uncertainty(val, unc, unit, mantissa_decimals=min(4, precision + 2))
         except (ValueError, OverflowError):
             pass
-    
-    # Normal range - format with appropriate decimal places
+
+    val_rounded = round(val, precision)
+    unc_rounded = round(unc, precision)
+    if abs(val) > 0 and val_rounded == 0.0:
+        try:
+            return _fmt_pm_scientific_uncertainty(val, unc, unit, mantissa_decimals=4)
+        except (ValueError, OverflowError):
+            pass
+
     val_str = f"{val_rounded:.{precision}f}"
     unc_str = f"{unc_rounded:.{precision}f}"
-
     if unit:
-        return f"{val_str} +/- {unc_str} {_fmt_unit(unit)}"
-    return f"{val_str} +/- {unc_str}"
+        return f"{val_str} ± {unc_str} {_fmt_unit(unit)}"
+    return f"{val_str} ± {unc_str}"
 
 
 def _fmt_status(value: Any) -> str:
@@ -264,6 +274,19 @@ def _wrap(value: Any, width: int = 64) -> str:
     return textwrap.fill(text, width=width, break_long_words=False, break_on_hyphens=False)
 
 
+def _cover_cell_text(value: Any, *, max_chars: int = 44) -> str:
+    """Single-line or gently wrapped text for cover tables; avoids over-wrapping short fields."""
+    if value is None:
+        return "n/a"
+    text = str(value).strip()
+    if not text:
+        return "n/a"
+    if len(text) <= max_chars:
+        return text
+    w = max(28, min(max_chars, 52))
+    return textwrap.fill(text, width=w, break_long_words=False, break_on_hyphens=False)
+
+
 def _is_drag_report(summary: dict[str, Any]) -> bool:
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
@@ -271,6 +294,171 @@ def _is_drag_report(summary: dict[str, Any]) -> bool:
     analysis_type = str(diagnostics.get("analysis_type") or "").strip().lower()
     mode = str(metrics.get("mode") or "").strip().lower()
     return source_kind == "drag_summary" or analysis_type == "drag" or mode in {"drag", "dragging"}
+
+
+def _relaxation_time_from_fc_hz(
+    fc_hz: Any,
+    fc_hz_se: Any = None,
+) -> tuple[float | None, float | None]:
+    """Relaxation time τ = 1/(2π f_c); σ_τ = σ_fc / (2π f_c²) for small σ_fc."""
+    fc = _parse_float(fc_hz)
+    if fc is None or fc <= 0:
+        return None, None
+    tau = 1.0 / (2.0 * math.pi * fc)
+    sfc = _parse_float(fc_hz_se)
+    if sfc is None or sfc < 0:
+        return tau, None
+    sigma_tau = sfc / (2.0 * math.pi * fc * fc)
+    return tau, sigma_tau
+
+
+def _relative_lorentz_rmse(fit_block: dict[str, Any]) -> float | None:
+    """Dimensionless Lorentz-fit quality: RMSE / |A| from PSD fit parameters."""
+    rmse = _parse_float(fit_block.get("rmse"))
+    A = _parse_float(fit_block.get("A"))
+    if rmse is None or A is None or abs(A) < 1e-30:
+        return None
+    return abs(rmse / A)
+
+
+def _ingest_brownian_psd_lorentz_metrics(
+    post_json: dict[str, Any] | None,
+    psd_fit_disk: dict[str, Any] | None,
+    diagnostics: dict[str, Any],
+) -> None:
+    """Populate relative PSD Lorentz RMSE metrics from postprocess and/or *_psd_fit.json."""
+    lx: dict[str, Any] = {}
+    ly: dict[str, Any] = {}
+    if post_json:
+        phys = ((post_json.get("summary") or {}).get("physics") or {})
+        lor = phys.get("lorentz_fit") or {}
+        lx = lor.get("x") or {}
+        ly = lor.get("y") or {}
+    if psd_fit_disk:
+        if not lx:
+            lx = psd_fit_disk.get("fit_x") or {}
+        if not ly:
+            ly = psd_fit_disk.get("fit_y") or {}
+    rx = _relative_lorentz_rmse(lx)
+    ry = _relative_lorentz_rmse(ly)
+    if rx is not None:
+        diagnostics["psd_lorentz_rel_rmse_x"] = rx
+    if ry is not None:
+        diagnostics["psd_lorentz_rel_rmse_y"] = ry
+
+
+def _compute_brownian_qc_verdicts(summary: dict[str, Any]) -> dict[str, Any]:
+    """
+    Conservative Brownian QC labels derived only from pipeline outputs.
+    Thresholds are explicit and documented in the returned notes string.
+    """
+    diagnostics = summary.get("diagnostics") or {}
+    status_l = str(summary.get("status") or "").strip().lower()
+    hard_fail_status = status_l in ("error", "failed", "fail", "stopped", "cancelled")
+
+    tvp = diagnostics.get("timestamp_validation_pass")
+    if tvp is True:
+        timing = "pass"
+    elif tvp is False:
+        timing = "fail"
+    else:
+        timing = "warning"
+
+    lf = _parse_float(diagnostics.get("lost_fraction"))
+    if lf is None:
+        tracking = "warning"
+    elif lf <= 0.01:
+        tracking = "pass"
+    elif lf <= 0.05:
+        tracking = "warning"
+    else:
+        tracking = "fail"
+
+    rmx = diagnostics.get("psd_lorentz_rel_rmse_x")
+    rmy = diagnostics.get("psd_lorentz_rel_rmse_y")
+    kappa_unit_ok = diagnostics.get("kappa_unit_check_pass")
+
+    if kappa_unit_ok is False:
+        psd_fit = "fail"
+    elif rmx is not None and rmy is not None:
+        m = max(float(rmx), float(rmy))
+        if m <= 0.02:
+            psd_fit = "pass"
+        elif m <= 0.08:
+            psd_fit = "warning"
+        else:
+            psd_fit = "fail"
+    else:
+        psd_fit = "warning"
+
+    notes = (
+        "Timing: timestamp_validation_pass. "
+        "Tracking: lost_fraction (≤1% pass, ≤5% warn). "
+        "PSD: Lorentz RMSE/|A| tiers 2%/8%; fail if κ unit check fails. "
+        "Missing Lorentz metrics → PSD warning."
+    )
+
+    if summary.get("error") or hard_fail_status:
+        overall = "reject"
+    elif "fail" in (timing, tracking, psd_fit):
+        overall = "reject"
+    elif "warning" in (timing, tracking, psd_fit):
+        overall = "caution"
+    else:
+        overall = "usable"
+
+    if diagnostics.get("anisotropy_eta_pass") is False and overall == "usable":
+        overall = "caution"
+    if summary.get("warnings") and overall == "usable":
+        overall = "caution"
+
+    return {
+        "timing": timing,
+        "tracking": tracking,
+        "psd_fit": psd_fit,
+        "overall": overall,
+        "notes": notes,
+    }
+
+
+def _finalize_brownian_report_augmentation(summary: dict[str, Any]) -> None:
+    if _is_drag_report(summary):
+        return
+    diagnostics = summary.setdefault("diagnostics", {})
+    metrics = summary.get("metrics") or {}
+
+    tx, stx = _relaxation_time_from_fc_hz(diagnostics.get("fc_x_hz"), diagnostics.get("fc_x_hz_se"))
+    ty, sty = _relaxation_time_from_fc_hz(diagnostics.get("fc_y_hz"), diagnostics.get("fc_y_hz_se"))
+    diagnostics["tau_x_s"] = tx
+    diagnostics["tau_y_s"] = ty
+    diagnostics["tau_x_s_se"] = stx
+    diagnostics["tau_y_s_se"] = sty
+
+    kx = _parse_float(metrics.get("kappa_x_pn_per_um"))
+    ky = _parse_float(metrics.get("kappa_y_pn_per_um"))
+    if kx is not None and ky is not None and ky != 0:
+        diagnostics["trap_kappa_ratio_xy"] = kx / ky
+
+    fcx = _parse_float(diagnostics.get("fc_x_hz"))
+    fcy = _parse_float(diagnostics.get("fc_y_hz"))
+    if fcx is not None and fcy is not None and fcy != 0:
+        diagnostics["trap_fc_ratio_xy"] = fcx / fcy
+
+    diagnostics["brownian_qc"] = _compute_brownian_qc_verdicts(summary)
+
+
+def _fmt_brownian_value_pm_se(value: Any, se: Any, unit: str, sig_figs: int = 3) -> str:
+    """Format primary Brownian result with pipeline SE when present; never fabricates uncertainty."""
+    v = _parse_float(value)
+    if v is None:
+        return "n/a"
+    u = _parse_float(se)
+    if u is None:
+        # Diffusion (m²/s) and similar: always compact scientific on cover when tiny/large.
+        if unit == "m^2/s" and abs(v) > 0 and (abs(v) < 1e-6 or abs(v) >= 1000):
+            return f"{_fmt_scientific_text(v, sig_figs=sig_figs)} {_fmt_unit(unit)}"
+        return _fmt_key_result(v, unit, sig_figs=sig_figs)
+    return _fmt_measure_with_uncertainty(v, u, unit)
 
 
 def _display_path(path_value: Any, width: int = 72) -> str:
@@ -478,6 +666,7 @@ def build_ot_item_summary(
         )
     )
     post_json = _load_json(dir_audit / f"{base_name}_postprocess.json" if dir_audit else None)
+    psd_fit_json = _load_json(dir_audit / f"{base_name}_psd_fit.json" if dir_audit else None)
     calibration_json = _load_json(dir_audit / f"{base_name}_calibration.json" if dir_audit else None)
     drag_summary_json = _load_json(dir_audit / f"{base_name}_drag_summary.json" if dir_audit else None)
     drag_alignment_json = _load_json(
@@ -589,6 +778,9 @@ def build_ot_item_summary(
         diagnostics["n_used"] = _parse_float(diag.get("n_used"))
         diagnostics["eta_primary_pa_s"] = _parse_float(anisotropy.get("eta_primary_pa_s"))
         diagnostics["eta_primary_axis"] = anisotropy.get("eta_primary_axis")
+        kuc = calibration_json.get("kappa_unit_check") or {}
+        diagnostics["kappa_unit_check_pass"] = kuc.get("pass")
+        diagnostics["anisotropy_eta_pass"] = anisotropy.get("pass")
 
     for key in (
         "kappa_x_n_per_m",
@@ -895,6 +1087,8 @@ def build_ot_item_summary(
         diagnostics["tracking_lost_frames"] = _parse_float(qc.get("lost_frames"))
         diagnostics["lost_fraction"] = _parse_float(qc.get("lost_fraction"))
 
+    _ingest_brownian_psd_lorentz_metrics(post_json, psd_fit_json, diagnostics)
+
     for warning in (post_json or {}).get("summary", {}).get("warnings", []):
         warnings.append(str(warning))
     diagnostics["warning_count"] = len(warnings)
@@ -946,7 +1140,7 @@ def build_ot_item_summary(
         "preview_grid_pngs": preview_grid_pngs,
     }
 
-    return {
+    summary_out: dict[str, Any] = {
         "item_id": item_id or base_name,
         "base_name": base_name,
         "file_name": file_name or base_name,
@@ -965,6 +1159,8 @@ def build_ot_item_summary(
         "warnings": warnings,
         "artifacts": artifacts,
     }
+    _finalize_brownian_report_augmentation(summary_out)
+    return summary_out
 
 
 def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, str, str]]:
@@ -1136,13 +1332,53 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
 
 
 def _identity_rows(summary: dict[str, Any]) -> list[list[str]]:
+    def _parse_iso(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    def _resolve_acquisition_dt() -> tuple[str, str]:
+        analysis_dir = summary.get("analysis_dir")
+        if analysis_dir:
+            item_root = Path(str(analysis_dir)).parent
+            meta_path = item_root / "raw" / "video_meta.json"
+            if meta_path.is_file():
+                try:
+                    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+                    ts = _parse_iso(payload.get("timestamp"))
+                    if ts is not None:
+                        return ts.isoformat(timespec="seconds"), "video_meta.timestamp"
+                except Exception:
+                    pass
+                try:
+                    ts = datetime.fromtimestamp(meta_path.stat().st_mtime)
+                    return ts.isoformat(timespec="seconds"), "video_meta.mtime_fallback"
+                except Exception:
+                    pass
+            try:
+                raw_name = Path(str(summary.get("source_input_path") or "")).name
+                raw_local = (item_root / "raw" / raw_name) if raw_name else None
+                if raw_local is not None and raw_local.is_file():
+                    ts = datetime.fromtimestamp(raw_local.stat().st_mtime)
+                    return ts.isoformat(timespec="seconds"), "raw_file.mtime_fallback"
+            except Exception:
+                pass
+        return "n/a", "not_available"
+
+    acq_dt, acq_src = _resolve_acquisition_dt()
+    processed_raw = summary.get("created_at") or datetime.now().isoformat(timespec="seconds")
     return [
-        ["Item", _wrap(summary.get("item_id"), 56)],
+        ["Item", _cover_cell_text(summary.get("item_id"), max_chars=40)],
         ["Status", _fmt_status(summary.get("status"))],
-        ["Run ID", _wrap(summary.get("run_id"), 56)],
-        ["Batch ID", _wrap(summary.get("batch_id"), 56)],
-        ["Generated", _wrap(summary.get("created_at") or datetime.now().isoformat(timespec="seconds"), 56)],
-        ["Source file", _wrap(Path(str(summary.get("source_input_path") or "")).name if summary.get("source_input_path") else "n/a", 56)],
+        ["Acquisition date/time", _cover_cell_text(acq_dt, max_chars=44)],
+        ["Acquisition source", _cover_cell_text(acq_src, max_chars=44)],
+        ["Processed / report generated", _cover_cell_text(processed_raw, max_chars=44)],
     ]
 
 
@@ -1186,16 +1422,100 @@ def _path_entries_for_item(summary: dict[str, Any]) -> list[tuple[str, list[str]
 
 
 def _key_result_rows(summary: dict[str, Any]) -> list[list[str]]:
+    if _is_drag_report(summary):
+        metrics = summary.get("metrics") or {}
+        diagnostics = summary.get("diagnostics") or {}
+        return [
+            ["Mean viscosity", _fmt_key_result(metrics.get("eta_mean_pa_s"), "Pa*s")],
+            ["Diffusion coefficient", _fmt_key_result(metrics.get("D_m2_s"), "m^2/s")],
+            ["Trap stiffness X", _fmt_key_result(metrics.get("kappa_x_pn_per_um"), "pN/um")],
+            ["Trap stiffness Y", _fmt_key_result(metrics.get("kappa_y_pn_per_um"), "pN/um")],
+            ["Corner frequency X", _fmt_key_result(diagnostics.get("fc_x_hz"), "Hz")],
+            ["Corner frequency Y", _fmt_key_result(diagnostics.get("fc_y_hz"), "Hz")],
+        ]
+
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
-    return [
-        ["Mean viscosity", _fmt_key_result(metrics.get("eta_mean_pa_s"), "Pa*s")],
-        ["Diffusion coefficient", _fmt_key_result(metrics.get("D_m2_s"), "m^2/s")],
-        ["Trap stiffness X", _fmt_key_result(metrics.get("kappa_x_pn_per_um"), "pN/um")],
-        ["Trap stiffness Y", _fmt_key_result(metrics.get("kappa_y_pn_per_um"), "pN/um")],
-        ["Corner frequency X", _fmt_key_result(diagnostics.get("fc_x_hz"), "Hz")],
-        ["Corner frequency Y", _fmt_key_result(diagnostics.get("fc_y_hz"), "Hz")],
+    rows: list[list[str]] = [
+        [
+            "Mean viscosity",
+            _fmt_brownian_value_pm_se(
+                metrics.get("eta_mean_pa_s"),
+                metrics.get("eta_mean_pa_s_se"),
+                "Pa*s",
+            ),
+        ],
+        [
+            "Diffusion coefficient",
+            _fmt_brownian_value_pm_se(metrics.get("D_m2_s"), metrics.get("D_m2_s_se"), "m^2/s"),
+        ],
+        [
+            "Trap stiffness X",
+            _fmt_brownian_value_pm_se(
+                metrics.get("kappa_x_pn_per_um"),
+                metrics.get("kappa_x_pn_per_um_se"),
+                "pN/um",
+            ),
+        ],
+        [
+            "Trap stiffness Y",
+            _fmt_brownian_value_pm_se(
+                metrics.get("kappa_y_pn_per_um"),
+                metrics.get("kappa_y_pn_per_um_se"),
+                "pN/um",
+            ),
+        ],
+        [
+            "Corner frequency X",
+            _fmt_brownian_value_pm_se(
+                diagnostics.get("fc_x_hz"),
+                diagnostics.get("fc_x_hz_se"),
+                "Hz",
+            ),
+        ],
+        [
+            "Corner frequency Y",
+            _fmt_brownian_value_pm_se(
+                diagnostics.get("fc_y_hz"),
+                diagnostics.get("fc_y_hz_se"),
+                "Hz",
+            ),
+        ],
+        [
+            "Relaxation time X",
+            _fmt_brownian_value_pm_se(
+                diagnostics.get("tau_x_s"),
+                diagnostics.get("tau_x_s_se"),
+                "s",
+            ),
+        ],
+        [
+            "Relaxation time Y",
+            _fmt_brownian_value_pm_se(
+                diagnostics.get("tau_y_s"),
+                diagnostics.get("tau_y_s_se"),
+                "s",
+            ),
+        ],
     ]
+    kr = diagnostics.get("trap_kappa_ratio_xy")
+    if kr is not None and math.isfinite(float(kr)):
+        rows.append(["Trap anisotropy (\u03bax/\u03bay)", _fmt_value(float(kr))])
+    fr = diagnostics.get("trap_fc_ratio_xy")
+    if fr is not None and math.isfinite(float(fr)):
+        rows.append(["Corner-frequency ratio (fc,x/fc,y)", _fmt_value(float(fr))])
+
+    bqc = diagnostics.get("brownian_qc") or {}
+    if bqc:
+        rows.extend(
+            [
+                ["QC: timing", str(bqc.get("timing") or "n/a")],
+                ["QC: tracking", str(bqc.get("tracking") or "n/a")],
+                ["QC: PSD fit", str(bqc.get("psd_fit") or "n/a")],
+                ["Overall Brownian QC", str(bqc.get("overall") or "n/a")],
+            ]
+        )
+    return rows
 
 
 def _fmt_key_result(value: Any, unit: str, sig_figs: int = 3) -> str:
@@ -1217,7 +1537,7 @@ def _fmt_key_result(value: Any, unit: str, sig_figs: int = 3) -> str:
 def _conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
-    return [
+    rows = [
         ["Analysis mode", _wrap(metrics.get("mode"), 50)],
         ["Frame rate", _fmt_measure(metrics.get("fps"), "Hz")],
         ["Effective fps", _fmt_measure(diagnostics.get("effective_fps"), "Hz")],
@@ -1229,14 +1549,16 @@ def _conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Bead diameter", _fmt_measure(metrics.get("bead_diameter_um"), "um")],
         ["Bead radius", _fmt_measure(metrics.get("bead_radius_um"), "um")],
         ["Bead source", _wrap(metrics.get("bead_source"), 50)],
-        ["Current drag input", _wrap(diagnostics.get("current_drag_input_path"), 50)],
-        ["Brownian baseline folder", _wrap(diagnostics.get("brownian_baseline_folder"), 50)],
-        ["Selected calibration source", _wrap(diagnostics.get("selected_calibration_path"), 50)],
-        ["Selected trajectory source", _wrap(diagnostics.get("selected_trajectory_path"), 50)],
-        ["Selected timestamps source", _wrap(diagnostics.get("selected_timestamps_path"), 50)],
-        ["Report source kind", _wrap(diagnostics.get("report_source_kind"), 50)],
-        ["Report source path", _wrap(diagnostics.get("report_source_path"), 50)],
     ]
+    for label, key in (
+        ("Selected calibration source", "selected_calibration_path"),
+        ("Selected trajectory source", "selected_trajectory_path"),
+        ("Selected timestamps source", "selected_timestamps_path"),
+    ):
+        val = diagnostics.get(key)
+        if val is not None and str(val).strip() and str(val).strip().lower() != "n/a":
+            rows.append([label, _wrap(val, 50)])
+    return rows
 
 
 def _drag_conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
@@ -1401,6 +1723,16 @@ def _drag_alignment_rows(summary: dict[str, Any]) -> list[list[str]]:
 def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
     diagnostics = summary.get("diagnostics") or {}
     warnings = summary.get("warnings") or []
+    head: list[list[str]] = []
+    bqc = diagnostics.get("brownian_qc") or {}
+    if bqc and not _is_drag_report(summary):
+        head = [
+            ["QC: timing", _wrap(bqc.get("timing"), 52)],
+            ["QC: tracking", _wrap(bqc.get("tracking"), 52)],
+            ["QC: PSD fit", _wrap(bqc.get("psd_fit"), 52)],
+            ["Overall Brownian QC", _wrap(bqc.get("overall"), 52)],
+            ["QC rules (summary)", _wrap(bqc.get("notes"), 52)],
+        ]
     rows = [
         ["Lost tracking fraction", _fmt_value(diagnostics.get("lost_fraction"))],
         ["Camera dropped frames", _fmt_value(diagnostics.get("camera_dropped_frames"))],
@@ -1408,47 +1740,12 @@ def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Timestamp validation pass", _fmt_value(diagnostics.get("timestamp_validation_pass"))],
         ["Timestamp validation message", _wrap(diagnostics.get("timestamp_validation_message"), 52)],
         ["Warnings", _fmt_value(diagnostics.get("warning_count"))],
-        ["Alignment status", _wrap(diagnostics.get("alignment_status"), 52)],
-        ["Alignment message", _wrap(diagnostics.get("alignment_message"), 52)],
-        ["Baseline window [s]", _wrap(f"{diagnostics.get('baseline_start_s')} -> {diagnostics.get('baseline_end_s')}", 52)],
-        ["Steady window [s]", _wrap(f"{diagnostics.get('steady_start_s')} -> {diagnostics.get('steady_end_s')}", 52)],
-        ["Motion start stage [s]", _fmt_value(diagnostics.get("motion_start_stage_s"))],
-        ["Motion start video [s]", _fmt_value(diagnostics.get("motion_start_video_s_detected"))],
-        ["Motion stop stage-aligned video [s]", _fmt_value(diagnostics.get("motion_stop_video_s_stage_aligned"))],
-        ["Alignment offset [s]", _fmt_value(diagnostics.get("alignment_offset_s"))],
-        ["Drag force [N]", _fmt_value(diagnostics.get("drag_force_n"))],
-        ["Offset [um]", _fmt_value(diagnostics.get("offset_um"))],
-        ["Drag stiffness [pN/um]", _fmt_value((summary.get("metrics") or {}).get("kappa_drag_pn_per_um"))],
-        ["Viscosity [Pa*s]", _fmt_value(diagnostics.get("eta_pa_s"))],
-        ["Actual speed [um/s]", _fmt_value(diagnostics.get("actual_speed_um_s"))],
-        ["Speed stage json [um/s]", _fmt_value(diagnostics.get("speed_stage_json"))],
-        ["Speed trace derived [um/s]", _fmt_value(diagnostics.get("speed_trace_derived"))],
-        ["Speed used for physics [um/s]", _fmt_value(diagnostics.get("speed_used_for_physics"))],
-        ["Speed consistency error [%]", _fmt_value(diagnostics.get("speed_consistency_error_pct"))],
-        ["Stage speed from trace [um/s]", _fmt_value(diagnostics.get("stage_speed_from_trace_um_s"))],
-        ["Stage speed relative diff", _fmt_value(diagnostics.get("stage_speed_relative_diff"))],
-        ["Stage speed consistent", _fmt_value(diagnostics.get("stage_speed_consistent"))],
-        ["Offset current windows [um]", _fmt_value(diagnostics.get("offset_current_windows_um"))],
-        ["Offset alt baseline [um]", _fmt_value(diagnostics.get("offset_alt_baseline_um"))],
-        ["Eta current windows [Pa*s]", _fmt_value(diagnostics.get("eta_current_windows"))],
-        ["Eta alt baseline [Pa*s]", _fmt_value(diagnostics.get("eta_alt_baseline"))],
-        ["Baseline robustness flag", _fmt_value(diagnostics.get("baseline_robustness_flag"))],
-        ["Onset robustness flag", _fmt_value(diagnostics.get("onset_robustness_flag"))],
-        ["Kinematics robustness flag", _fmt_value(diagnostics.get("kinematics_robustness_flag"))],
-        ["Onset confidence class", _fmt_value(diagnostics.get("onset_confidence_class"))],
-        ["Onset candidate density", _fmt_value(diagnostics.get("onset_candidate_density"))],
-        ["Competing durable candidates", _fmt_value(diagnostics.get("competing_durable_candidates_count"))],
-        ["Baseline strategy difference ratio", _fmt_value(diagnostics.get("baseline_strategy_difference_ratio"))],
-        ["Window clipping applied", _fmt_value(diagnostics.get("window_clipping_applied"))],
-        ["Window clipping message", _wrap(diagnostics.get("window_clipping_message"), 52)],
-        ["Analysis status", _fmt_value(diagnostics.get("analysis_status"))],
-        ["Physics status", _fmt_value(diagnostics.get("physics_status"))],
     ]
     if summary.get("error"):
         rows.append(["Failure reason", _wrap(summary.get("error"), 52)])
     if warnings:
         rows.append(["Warnings detail", _wrap(" | ".join(str(w) for w in warnings), 52)])
-    return rows
+    return head + rows
 
 
 def _batch_overview_rows(batch_summary: dict[str, Any], items: list[dict[str, Any]], successes: list[dict[str, Any]], failures: list[dict[str, Any]]) -> list[list[str]]:
@@ -1629,21 +1926,33 @@ def _render_cover_card(
     value_wrap: int,
     min_label_fraction: float = 0.30,
     max_label_fraction: float = 0.46,
+    label_col_fraction: float | None = None,
 ) -> None:
     x, y, width, height = bounds
     _add_panel(fig, bounds, facecolor=facecolor)
     fig.text(x + (width * 0.5), y + height - 0.035, title, fontsize=12.5, fontweight="bold", color=TEXT_COLOR, ha="center")
 
+    def _cell(text: str, wrap_w: int) -> str:
+        s = str(text or "").strip()
+        if not s:
+            return "n/a"
+        if len(s) <= wrap_w and "\n" not in s:
+            return s
+        return textwrap.fill(s, width=wrap_w, break_long_words=False, break_on_hyphens=False)
+
     wrapped_rows = [
         [
-            _wrap(str(row[0] if len(row) > 0 else ""), width=label_wrap),
-            _wrap(str(row[1] if len(row) > 1 else ""), width=value_wrap),
+            _cell(str(row[0] if len(row) > 0 else ""), label_wrap),
+            _cell(str(row[1] if len(row) > 1 else ""), value_wrap),
         ]
         for row in rows
     ]
-    label_width = _cover_table_col_width(wrapped_rows, min_fraction=min_label_fraction, max_fraction=max_label_fraction)
+    if label_col_fraction is not None:
+        label_width = float(label_col_fraction)
+    else:
+        label_width = _cover_table_col_width(wrapped_rows, min_fraction=min_label_fraction, max_fraction=max_label_fraction)
 
-    ax = fig.add_axes([x + 0.018, y + 0.028, width - 0.036, height - 0.095])
+    ax = fig.add_axes([x + 0.016, y + 0.024, width - 0.032, height - 0.090])
     ax.axis("off")
     table = ax.table(
         cellText=wrapped_rows,
@@ -1657,7 +1966,7 @@ def _render_cover_card(
     row_line_counts: dict[int, int] = {}
     for (row_idx, col_idx), cell in table.get_celld().items():
         text_obj = cell.get_text()
-        cell.PAD = 0.12
+        cell.PAD = 0.14
         text_obj.set_wrap(True)
         text_obj.set_ha("left")
         text_obj.set_va("center")
@@ -1673,11 +1982,12 @@ def _render_cover_card(
         else:
             cell.set_facecolor(PANEL_BG if row_idx % 2 == 0 else CARD_BG)
             text_obj.set_color(TEXT_COLOR)
-            text_obj.set_fontsize(9.2)
+            fs = 8.9 if col_idx == 1 else 9.1
+            text_obj.set_fontsize(fs)
             if col_idx == 0:
                 text_obj.set_fontweight("bold")
     for (row_idx, _col_idx), cell in table.get_celld().items():
-        base_height = 0.088 if row_idx == 0 else 0.078
+        base_height = 0.085 if row_idx == 0 else 0.072
         cell.set_height(base_height * row_line_counts.get(row_idx, 1))
 
 
@@ -1785,27 +2095,29 @@ def _render_cover_page(
 
     _render_cover_card(
         fig,
-        (0.05, 0.225, 0.43, 0.37),
+        (0.05, 0.19, 0.43, 0.44),
         "Report details",
         left_rows,
         facecolor=CARD_BG,
         header_label="Report detail",
-        label_wrap=16,
-        value_wrap=34,
+        label_wrap=20,
+        value_wrap=38,
         min_label_fraction=0.31,
         max_label_fraction=0.40,
+        label_col_fraction=0.36,
     )
     _render_cover_card(
         fig,
-        (0.52, 0.225, 0.43, 0.37),
+        (0.52, 0.19, 0.43, 0.44),
         "Key results",
         _cover_key_result_rows(right_rows),
         facecolor=PANEL_BG,
         header_label="Key result",
-        label_wrap=22,
-        value_wrap=22,
+        label_wrap=26,
+        value_wrap=48,
         min_label_fraction=0.40,
         max_label_fraction=0.52,
+        label_col_fraction=0.44,
     )
 
     fig.text(
@@ -1931,7 +2243,7 @@ def _render_theory_page(
     ax.text(
         0.0,
         y,
-        "where $k_{\mathrm{B}}$ is the Boltzmann constant, $T$ is temperature, and $\\langle x^2 \\rangle$ is the",
+        r"where $k_{\mathrm{B}}$ is the Boltzmann constant, $T$ is temperature, and $\langle x^2 \rangle$ is the",
         fontsize=FONT_SIZE_SMALL,
         color=TEXT_COLOR,
         fontstyle="italic",
@@ -1980,7 +2292,7 @@ def _render_theory_page(
     ax.text(
         0.5,
         y,
-        r"$P(f) = \frac{A}{f_{\mathrm{c}}^{2} + f^{2}} + B$",
+        r"$S_{xx}(f)=\frac{A}{1+(f/f_{\mathrm{c}})^2}+B$",
         fontsize=14,
         color=TEXT_COLOR,
         transform=ax.transAxes,
@@ -2023,7 +2335,7 @@ def _render_theory_page(
     ax.text(
         0.0,
         y,
-        "with dynamic viscosity $\\eta$.",
+        r"with dynamic viscosity $\eta$.",
         fontsize=FONT_SIZE_SMALL,
         color=TEXT_COLOR,
         fontstyle="italic",
@@ -2130,7 +2442,7 @@ def _render_theory_page(
     ax.text(
         0.0,
         y,
-        r"- Position variance standard error, with $\mathrm{SE}(\sigma^{2}) = \sigma^{2} \sqrt{\frac{2}{n-1}}$",
+        r"• Stiffness from variance: $\mathrm{SE}(\sigma^{2}) \approx \sigma^{2}\sqrt{2/(n-1)}$ (Gaussian).",
         fontsize=FONT_SIZE_SMALL,
         color=TEXT_COLOR,
         fontstyle="italic",
@@ -2142,7 +2454,7 @@ def _render_theory_page(
     ax.text(
         0.0,
         y,
-        "- PSD fitting uncertainty for the corner frequency $f_{\mathrm{c}}$, obtained from the Lorentzian fit.",
+        r"• Corner frequency $f_{\mathrm{c}}$: uncertainty from the Lorentzian PSD fit (reported SE).",
         fontsize=FONT_SIZE_SMALL,
         color=TEXT_COLOR,
         fontstyle="italic",
@@ -2639,6 +2951,15 @@ def _render_preview_grid_page(
     plt.close(fig)
 
 
+def _select_representative_preview_paths(image_paths: list[Path], max_images: int = 6) -> list[Path]:
+    paths = [Path(p) for p in image_paths]
+    if len(paths) <= max_images:
+        return paths
+    n = len(paths)
+    idxs = {int(round(i * (n - 1) / float(max_images - 1))) for i in range(max_images)}
+    return [paths[i] for i in sorted(idxs)]
+
+
 def _render_drag_windows_table_page(
     pdf,
     windows_csv: Path,
@@ -2813,6 +3134,8 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
     artifacts = summary.get("artifacts") or {}
     preview_paths = [Path(p) for p in (artifacts.get("preview_grid_pngs") or []) if p]
     drag_mode = _is_drag_report(summary)
+    if not drag_mode:
+        preview_paths = _select_representative_preview_paths(preview_paths, max_images=6)
 
     psd_entries = [
         entry
@@ -2953,15 +3276,15 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
             if psd_entries:
                 _render_plot_pages(pdf, "Power Spectral Density", psd_entries,
                                   layout="vertical", items_per_page=2, page_counter=page_counter)
-            if hist_curve_entries_xy:
-                _render_plot_pages(pdf, "Histogram Curves", hist_curve_entries_xy,
-                                  layout="vertical", items_per_page=2, page_counter=page_counter)
-            _render_histogram_r_and_msd_page(
-                pdf,
-                artifacts.get("hist_r_csv"),
-                artifacts.get("msd_csv"),
-                page_counter=page_counter,
-            )
+            hist_r = artifacts.get("hist_r_csv")
+            msd = artifacts.get("msd_csv")
+            if hist_r or msd:
+                _render_histogram_r_and_msd_page(
+                    pdf,
+                    hist_r,
+                    msd,
+                    page_counter=page_counter,
+                )
         # Artifact appendix removed - file structure is consistent across analyses
         # and documented in the user manual
     return report_path
