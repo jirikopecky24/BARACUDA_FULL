@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 import re
@@ -8,10 +9,11 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QComboBox,
-    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy, QMessageBox, QFileDialog
+    QHBoxLayout, QDockWidget, QStackedWidget, QSplitter, QSizePolicy, QMessageBox, QFileDialog,
+    QDialog,
 )
 
-from barakuda.shell.widgets.dataset_panel import DatasetPanel
+from barakuda.shell.widgets.dataset_panel import DatasetPanel, HierarchicalFolderImportDialog
 from barakuda.shell.widgets.preview_panel import PreviewPanel
 from barakuda.shell.widgets.log_panel import LogPanel
 from barakuda.devices.registry import list_devices
@@ -26,10 +28,11 @@ from barakuda.devices.optical_tweezers.drag.calibration_import import load_brown
 from barakuda.devices.optical_tweezers.ui.batch_tools import (
     PairingCandidate,
     auto_pair_drag_items,
+    collect_brownian_baseline_candidates_from_roots,
+    format_baseline_link_status,
     parse_ot_progress_message,
     resolve_frame_range_for_item,
     merge_ot_params_for_checked,
-    make_pair_key,
     resolve_ot_item_params_for_load,
     validate_drag_baseline_batch,
 )
@@ -967,6 +970,7 @@ class ShellMainWindow(QMainWindow):
 
     def _refresh_drag_pairing_statuses(self) -> None:
         all_items = self.dataset.get_all_items()
+        linked: list[tuple[Path, str]] = []
         for entry in all_items:
             p = Path(str(entry.get("path") or ""))
             if not p:
@@ -984,7 +988,15 @@ class ShellMainWindow(QMainWindow):
                 self.dataset.set_pairing_status(p, "baseline missing")
                 continue
             ok, status = self._validate_brownian_folder(Path(baseline))
-            self.dataset.set_pairing_status(p, "baseline linked" if ok else status)
+            if not ok:
+                self.dataset.set_pairing_status(p, status)
+                continue
+            linked.append((p, baseline))
+        share_counts = Counter(b for _, b in linked)
+        for p, baseline in linked:
+            self.dataset.set_pairing_status(
+                p, format_baseline_link_status(baseline, share_counts[baseline])
+            )
 
     def _on_ot_apply_to_checked(self) -> None:
         if self._active_device_id != "optical_tweezers" or self._device_panel is None:
@@ -1013,23 +1025,25 @@ class ShellMainWindow(QMainWindow):
     def _on_ot_add_baseline_roots(self) -> None:
         if self._active_device_id != "optical_tweezers":
             return
-        dialog = QFileDialog(self, "Select baseline root folders")
-        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        if dialog.exec() != int(QFileDialog.DialogCode.Accepted):
+        parent_folder = QFileDialog.getExistingDirectory(
+            self, "Select day or Brownian baseline root folder", ""
+        )
+        if not parent_folder:
             return
-        selected_roots = [Path(p) for p in dialog.selectedFiles() if Path(p).is_dir()]
+        parent_path = Path(parent_folder)
+        dlg = HierarchicalFolderImportDialog(parent_path, self)
+        dlg.setWindowTitle(f"Brownian baselines — folder tree under {parent_path.name}")
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        selected_roots = dlg.selected_folder_paths()
+        if not selected_roots:
+            return
         candidates: dict[str, PairingCandidate] = {str(c.folder): c for c in self._ot_baseline_candidates}
-        for root in selected_roots:
-            for audit_dir in root.rglob("audit"):
-                folder = audit_dir.parent
-                try:
-                    load_brownian_calibration_from_folder(folder)
-                except Exception:
-                    continue
-                key = make_pair_key(folder)
-                candidates[str(folder)] = PairingCandidate(key=key, folder=folder)
+        for c in collect_brownian_baseline_candidates_from_roots(
+            selected_roots,
+            validate_folder=load_brownian_calibration_from_folder,
+        ):
+            candidates[str(c.folder)] = c
         self._ot_baseline_candidates = sorted(candidates.values(), key=lambda c: str(c.folder).lower())
         self.log_panel.log(f"Baseline candidates loaded: {len(self._ot_baseline_candidates)}")
 
@@ -1044,7 +1058,7 @@ class ShellMainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Auto-pair baselines",
-                "No baseline candidates loaded. Use 'Add baseline roots…' first.",
+                "No baseline candidates loaded. Use 'Add baseline roots from folder tree…' first.",
             )
             return
         params_map = self._build_dataset_params_map()
@@ -1062,7 +1076,11 @@ class ShellMainWindow(QMainWindow):
                 pp["brownian_baseline_folder"] = linked
             payload["postprocess"] = pp
             self.dataset.set_item_params(p, payload)
-            self.dataset.set_pairing_status(p, status_map.get(str(p), "baseline missing"))
+        self._refresh_drag_pairing_statuses()
+        for p in drag_paths:
+            st = status_map.get(str(p), "baseline missing")
+            if st in ("baseline ambiguous", "baseline missing"):
+                self.dataset.set_pairing_status(p, st)
         linked_count = sum(1 for s in status_map.values() if s == "baseline linked")
         amb_count = sum(1 for s in status_map.values() if s == "baseline ambiguous")
         miss_count = sum(1 for s in status_map.values() if s == "baseline missing")

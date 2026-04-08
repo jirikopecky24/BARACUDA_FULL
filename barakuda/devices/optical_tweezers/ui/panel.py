@@ -112,9 +112,10 @@ class PipelinePanel(QWidget):
         self.btn_auto_pair_baselines.setToolTip(
             "Auto-link checked Drag items to discovered Brownian baseline folders."
         )
-        self.btn_add_baseline_roots = QPushButton("Add baseline roots…")
+        self.btn_add_baseline_roots = QPushButton("Add baseline roots from folder tree…")
         self.btn_add_baseline_roots.setToolTip(
-            "Select one or more folders and recursively discover Brownian baseline candidates."
+            "Pick a day or experiment root folder, then check nested Brownian run folders in the tree. "
+            "Same pattern as dataset 'Add from folder tree…'. Candidates must contain valid audit/ + csv/ outputs."
         )
         self._editing_item_label = QLabel("Editing: <none>")
         self._editing_item_label.setStyleSheet("color: #555; font-weight: bold;")
