@@ -609,6 +609,8 @@ class ShellMainWindow(QMainWindow):
                     self._device_panel.add_baseline_roots_clicked.connect(self._on_ot_add_baseline_roots)
                 if hasattr(self._device_panel, "auto_pair_baselines_clicked"):
                     self._device_panel.auto_pair_baselines_clicked.connect(self._on_ot_auto_pair_baselines)
+                if hasattr(self._device_panel, "pairing_manual_assign_requested"):
+                    self._device_panel.pairing_manual_assign_requested.connect(self._on_ot_pairing_manual_assign)
                     
                 if hasattr(self._device_panel, "auto_roi_clicked"):
                     self._device_panel.auto_roi_clicked.connect(self._on_auto_roi)
@@ -1116,6 +1118,35 @@ class ShellMainWindow(QMainWindow):
         self.log_panel.log(
             f"Auto-pair baselines: linked={linked_count}, ambiguous={amb_count}, missing={miss_count}"
         )
+
+    def _on_ot_pairing_manual_assign(self, drag_path_str: str, baseline_folder_str: str) -> None:
+        """
+        Handle a manual pairing reassignment from the Pairing tab.
+
+        ``baseline_folder_str`` is "" to unpair the item.
+        Writes directly to stored params and marks origin as "manual".
+        """
+        if not drag_path_str:
+            return
+        p = Path(drag_path_str)
+        self._ot_pairing_origins[drag_path_str] = "manual"
+        payload = dict(self.dataset.get_item_params(p) or {})
+        pp = dict(payload.get("postprocess") or {})
+        pp["brownian_baseline_folder"] = baseline_folder_str
+        payload["postprocess"] = pp
+        self.dataset.set_item_params(p, payload)
+        # Keep panel in sync if this is the currently selected item.
+        current = self.dataset.get_current_path()
+        if (
+            current is not None
+            and str(current) == drag_path_str
+            and self._device_panel is not None
+            and hasattr(self._device_panel, "_brownian_baseline_folder")
+        ):
+            self._device_panel._brownian_baseline_folder.setText(baseline_folder_str)
+        self._refresh_drag_pairing_statuses()
+        dest = Path(baseline_folder_str).name if baseline_folder_str else "(unpaired)"
+        self.log_panel.log(f"Manual pairing: {p.name} → {dest}")
 
     # ---------------- preview gate ----------------
 
