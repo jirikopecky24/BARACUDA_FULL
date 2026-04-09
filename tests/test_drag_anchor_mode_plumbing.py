@@ -34,6 +34,7 @@ def test_auto_anchor_records_requested_auto_effective_stage_validated_when_valid
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.drag_anchor_mode_requested == "auto"
     assert result.drag_anchor_mode == "stage_validated"
@@ -64,6 +65,7 @@ def test_detected_onset_requested_forces_effective_detected_onset(tmp_path: Path
             bead_radius_um=0.5,
             drag_anchor_mode="detected_onset",
         ),
+        allow_discovered_trajectory=True,
     )
     assert result.drag_anchor_mode_requested == "detected_onset"
     assert result.drag_anchor_mode == "detected_onset"

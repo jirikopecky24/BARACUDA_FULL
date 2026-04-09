@@ -30,6 +30,7 @@ def test_baseline_comparison_and_eta_dual_outputs_exist(tmp_path: Path) -> None:
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.drag_anchor_mode == "stage_validated"
     assert result.primary_timing_source_for_windows == "expected_stage_start_stop"
@@ -57,6 +58,7 @@ def test_stage_validated_mode_uses_expected_stage_markers_for_primary_windows(tm
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.drag_anchor_mode == "stage_validated"
     assert result.expected_stage_start_video_s is not None
@@ -92,6 +94,7 @@ def test_detected_onset_inconsistency_keeps_stage_primary_windows(tmp_path: Path
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.drag_anchor_mode == "stage_validated"
     assert result.motion_timing_primary_source == "expected_stage_timing"
@@ -129,6 +132,7 @@ def test_speed_consistency_and_validation_gate_fail_on_kinematics_mismatch(tmp_p
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.speed_stage_json is not None
     assert result.speed_trace_derived is not None
@@ -152,6 +156,7 @@ def test_replay_audit_fixture_flags_baseline_sensitivity(tmp_path: Path) -> None
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.baseline_strategy_difference_ratio is not None
     assert result.baseline_strategy_difference_ratio > 1.0
@@ -173,6 +178,7 @@ def test_expected_stage_markers_follow_video_timing_truth(tmp_path: Path) -> Non
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.t_first_s is not None
     assert result.expected_stage_start_video_s == pytest.approx(result.t_first_s + result.motion_start_stage_s)
@@ -206,6 +212,7 @@ def test_impossible_aligned_stop_triggers_alignment_sanity_failure(tmp_path: Pat
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert result.alignment_sanity_flag is False
     assert result.physics_primary_gate == "fail"
@@ -235,6 +242,7 @@ def test_windows_outside_video_trigger_suspect_or_fail_gate(tmp_path: Path) -> N
             manual_offset_s=0.0,
             window_params=DragWindowParams(baseline_duration_s=4.0, baseline_guard_s=0.5, steady_start_delay_s=0.5, steady_end_guard_s=0.2),
         ),
+        allow_discovered_trajectory=True,
     )
     assert result.window_clipping_applied is True
     assert result.alignment_sanity_flag in {True, False}
@@ -256,6 +264,7 @@ def test_diagnostic_plot_uses_relative_time_primary_axis(tmp_path: Path, monkeyp
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     traj_t = []
     traj_x = []
@@ -313,6 +322,7 @@ def test_diagnostic_plot_title_is_short_and_status_in_textbox(tmp_path: Path, mo
     result = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     traj_t = []
     traj_x = []

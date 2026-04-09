@@ -127,7 +127,7 @@ def _patch_pipeline(monkeypatch, basename: str):
         _touch(p, "frame,t_s,x_px,y_px,quality\n0,0.0,1,1,1\n1,0.1,1.1,1.1,1\n")
         return p
 
-    def _fake_analyze(run_dir: Path, config: DragAnalysisConfig, trajectory_path: Path | None = None):
+    def _fake_analyze(run_dir: Path, config: DragAnalysisConfig, trajectory_path: Path | None = None, **_kwargs):
         return _fake_drag_result(basename, config)
 
     def _fake_plot(t_video_s, response_um, result, output_dir):
@@ -238,7 +238,7 @@ def test_provenance_paths_are_written_to_run_protocol(tmp_path: Path, monkeypatc
         current_drag_item_root=None,
         brownian_baseline_folder=str((tmp_path / "baseline").resolve()),
         baseline_selection_mode="explicit_ui_folder",
-        drag_preflight_status="ready_tracking_required_standalone",
+        drag_preflight_status="ready_drag_sidecars_standalone",
         drag_preflight_message="tracking required",
     )
     run_drag_from_raw(in_run, cfg, output_root=output_root)
@@ -299,7 +299,7 @@ def test_drag_summary_and_alignment_diagnostics_completeness(tmp_path: Path, mon
         kappa_n_per_m=1e-6,
         brownian_baseline_folder=str((tmp_path / "baseline").resolve()),
         current_drag_input_path=str((in_run / f"{basename}.raw").resolve()),
-        drag_preflight_status="ready_tracking_required_standalone",
+        drag_preflight_status="ready_drag_sidecars_standalone",
         drag_preflight_message="tracking required",
     )
     _, outputs = run_drag_from_raw(in_run, cfg, output_root=output_root)

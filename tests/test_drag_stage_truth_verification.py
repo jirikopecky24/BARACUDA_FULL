@@ -57,7 +57,7 @@ def test_stage_validated_windows_use_expected_stage_time_not_detected_onset(tmp_
         bead_radius_um=0.5,
         drag_anchor_mode="auto",
     )
-    r_stage = analyze_drag_run(run_dir, cfg)
+    r_stage = analyze_drag_run(run_dir, cfg, allow_discovered_trajectory=True)
     assert r_stage.drag_anchor_mode == "stage_validated"
     assert r_stage.primary_timing_source_for_windows == "expected_stage_start_stop"
     assert r_stage.motion_timing_primary_source == "expected_stage_timing"
@@ -81,6 +81,7 @@ def test_stage_validated_windows_use_expected_stage_time_not_detected_onset(tmp_
             bead_radius_um=0.5,
             drag_anchor_mode="detected_onset",
         ),
+        allow_discovered_trajectory=True,
     )
     assert r_det.drag_anchor_mode == "detected_onset"
     assert r_det.motion_timing_primary_source == "trajectory_detected_onset"
@@ -122,6 +123,7 @@ def test_stage_validated_onset_mismatch_is_qc_only_windows_unchanged(tmp_path: P
     r = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert r.drag_anchor_mode == "stage_validated"
     assert r.motion_start_video_s_detected == pytest.approx(4.0)
@@ -158,6 +160,7 @@ def test_no_motion_stop_degrades_to_detected_onset_honest_summary(tmp_path: Path
     r_auto = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert r_auto.drag_anchor_mode_requested == "auto"
     assert r_auto.drag_anchor_mode == "detected_onset"
@@ -173,6 +176,7 @@ def test_no_motion_stop_degrades_to_detected_onset_honest_summary(tmp_path: Path
             bead_radius_um=0.5,
             drag_anchor_mode="stage_validated",
         ),
+        allow_discovered_trajectory=True,
     )
     assert r_forced.drag_anchor_mode_requested == "stage_validated"
     assert r_forced.drag_anchor_mode == "detected_onset"
@@ -214,6 +218,7 @@ def test_physics_speed_uses_actual_metric_not_trace_derived(tmp_path: Path) -> N
     r = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert r.actual_speed_um_s == pytest.approx(1.234)
     assert r.speed_used_for_physics == pytest.approx(1.234)
@@ -255,6 +260,7 @@ def test_commanded_speed_is_provenance_only_not_physics_v(tmp_path: Path) -> Non
     r = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
     assert r.commanded_speed_user_s_ref == pytest.approx(999.0)
     assert r.speed_used_for_physics == pytest.approx(r.actual_speed_um_s)
@@ -294,6 +300,7 @@ def test_gates_remain_separate_from_numeric_physics_ready(tmp_path: Path, monkey
     r = analyze_drag_run(
         run_dir,
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
     )
 
     assert r.drag_anchor_mode == "stage_validated"

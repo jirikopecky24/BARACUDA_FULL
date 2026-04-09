@@ -33,9 +33,9 @@ def test_preflight_full_item_with_trajectory(tmp_path: Path) -> None:
         run_dir=drag_input.parent,
         brownian_baseline_folder=tmp_path / "brownian",
     )
-    assert res["drag_preflight_status"] == "ready_existing_trajectory"
+    assert res["drag_preflight_status"] == "ready_drag_sidecars_item"
     assert res["current_drag_item_root"] == str(item_root.resolve())
-    assert str(res["current_drag_trajectory_path"]).endswith("_trajectory.csv")
+    assert res["current_drag_trajectory_path"] is None
 
 
 def test_preflight_standalone_without_trajectory(tmp_path: Path) -> None:
@@ -46,10 +46,10 @@ def test_preflight_standalone_without_trajectory(tmp_path: Path) -> None:
         run_dir=drag_input.parent,
         brownian_baseline_folder=None,
     )
-    assert res["drag_preflight_status"] == "ready_tracking_required_standalone"
+    assert res["drag_preflight_status"] == "ready_drag_sidecars_standalone"
     assert res["current_drag_item_root"] is None
     assert res["current_drag_trajectory_path"] is None
-    assert "Tracking can generate trajectory" in res["drag_preflight_message"]
+    assert "Drag RAW and sidecars" in res["drag_preflight_message"]
 
 
 def test_preflight_standalone_with_trajectory_in_same_folder(tmp_path: Path) -> None:
@@ -61,8 +61,8 @@ def test_preflight_standalone_with_trajectory_in_same_folder(tmp_path: Path) -> 
         run_dir=drag_input.parent,
         brownian_baseline_folder=tmp_path / "brownian_ok",
     )
-    assert res["drag_preflight_status"] == "ready_existing_trajectory"
-    assert str(res["current_drag_trajectory_path"]).endswith("DragStandalone2_trajectory.csv")
+    assert res["drag_preflight_status"] == "ready_drag_sidecars_standalone"
+    assert res["current_drag_trajectory_path"] is None
 
 
 def test_preflight_baseline_loaded_but_drag_trajectory_missing(tmp_path: Path) -> None:
@@ -75,8 +75,8 @@ def test_preflight_baseline_loaded_but_drag_trajectory_missing(tmp_path: Path) -
         run_dir=drag_input.parent,
         brownian_baseline_folder=baseline,
     )
-    assert res["drag_preflight_status"] == "ready_tracking_required_standalone"
-    assert "Brownian baseline folder is loaded correctly but is unrelated" in res["drag_preflight_message"]
+    assert res["drag_preflight_status"] == "ready_drag_sidecars_standalone"
+    assert "Brownian" in res["drag_preflight_message"]
 
 
 def test_preflight_message_distinguishes_item_vs_standalone(tmp_path: Path) -> None:
@@ -89,6 +89,6 @@ def test_preflight_message_distinguishes_item_vs_standalone(tmp_path: Path) -> N
         run_dir=drag_input_item.parent,
         brownian_baseline_folder=tmp_path / "brownian",
     )
-    assert item_res["drag_preflight_status"] == "ready_tracking_required_item"
-    assert "Current drag item has no trajectory CSV yet" in item_res["drag_preflight_message"]
+    assert item_res["drag_preflight_status"] == "ready_drag_sidecars_item"
+    assert "Drag RAW and sidecars" in item_res["drag_preflight_message"]
 
