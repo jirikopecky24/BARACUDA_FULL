@@ -535,7 +535,6 @@ def _load_stage_meta(stage_meta_path: Path) -> DragStageMeta:
             "actual_motion_duration_s",
             "actual_speed_user_s",
             "actual_metric",
-            "commanded_metric",
             "raw_internal",
             "metric_schema_version",
             "metric_provenance",

@@ -250,6 +250,13 @@ def analyze_drag_run(
     qc = DragQCFlags()
     warnings: list[str] = []
 
+    if requested_anchor_mode == "stage_validated" and not stage_anchor_available:
+        warnings.append(
+            "PHYSICS_WARNING: drag_anchor_mode=stage_validated was requested but validated stage "
+            "start/stop in video time is unavailable (timestamps, trace, or finite expected window); "
+            "effective mode is detected_onset for windows."
+        )
+
     if used_relaxed_onset:
         warnings.append("Alignment used relaxed onset detection (lower threshold or shorter min_hold).")
 
