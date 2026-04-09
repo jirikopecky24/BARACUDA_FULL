@@ -656,6 +656,17 @@ class PipelinePanel(QWidget):
             "Use the axis aligned with stage motion and Stage Metadata."
         )
 
+        self._drag_anchor_mode = QComboBox()
+        self._drag_anchor_mode.addItem("Auto (stage timing when valid)", "auto")
+        self._drag_anchor_mode.addItem("Stage-validated windows", "stage_validated")
+        self._drag_anchor_mode.addItem("Trajectory onset drives windows", "detected_onset")
+        self._drag_anchor_mode.setCurrentIndex(0)
+        self._drag_anchor_mode.setToolTip(
+            "Policy for mapping stage motion to video time for baseline and steady windows.\n"
+            "Auto uses validated stage start/stop when timestamps and stage anchors allow;\n"
+            "otherwise windows follow detected trajectory onset. Saved summaries record requested vs effective mode."
+        )
+
         self._viscosity = QDoubleSpinBox()
         self._viscosity.setRange(0.0, 10.0)
         self._viscosity.setDecimals(6)
@@ -775,6 +786,7 @@ class PipelinePanel(QWidget):
         self.post_box_layout.addRow("Temperature (°C)", self._temperature_c)
         self.post_box_layout.addRow("Stage speed (µm/s)", self._stage_speed)
         self.post_box_layout.addRow("Drag axis", self._drag_axis)
+        self.post_box_layout.addRow("Drag: anchor policy", self._drag_anchor_mode)
         self.post_box_layout.addRow("Viscosity η (Pa·s)", self._viscosity)
 
         # Brownian baseline folder (used only in Drag mode)
@@ -1187,6 +1199,7 @@ class PipelinePanel(QWidget):
         
         self._stage_speed.setValue(0.0)
         self._drag_axis.setCurrentIndex(0)
+        self._drag_anchor_mode.setCurrentIndex(0)
         self._viscosity.setValue(0.001)
         self._temperature_c.setValue(25.0)
         self._bead_diameter_um.setValue(2.0)
@@ -1331,6 +1344,11 @@ class PipelinePanel(QWidget):
         if "drag_axis" in pp:
             idx = self._drag_axis.findData(pp.get("drag_axis", "x"))
             if idx >= 0: self._drag_axis.setCurrentIndex(idx)
+        if "drag_anchor_mode" in pp:
+            _dam = str(pp.get("drag_anchor_mode", "auto")).strip().lower()
+            idx_am = self._drag_anchor_mode.findData(_dam)
+            if idx_am >= 0:
+                self._drag_anchor_mode.setCurrentIndex(idx_am)
         if "viscosity_pa_s" in pp:
             self._viscosity.setValue(pp.get("viscosity_pa_s", 0.001))
         self._brownian_baseline_folder.setText(str(pp.get("brownian_baseline_folder", "") or ""))
@@ -1499,6 +1517,7 @@ class PipelinePanel(QWidget):
             params.update({
                 "stage_speed_um_s": float(self._stage_speed.value()),
                 "drag_axis": str(self._drag_axis.currentData()),
+                "drag_anchor_mode": str(self._drag_anchor_mode.currentData()),
                 "viscosity_pa_s": float(self._viscosity.value()),
                 "brownian_baseline_folder": self._brownian_baseline_folder.text().strip(),
                 "drag_onset_threshold_sigma": float(self._drag_onset_sigma.value()),
@@ -1524,6 +1543,7 @@ class PipelinePanel(QWidget):
             params.update({
                 "stage_speed_um_s": float(self._stage_speed.value()),
                 "drag_axis": str(self._drag_axis.currentData()),
+                "drag_anchor_mode": str(self._drag_anchor_mode.currentData()),
                 "viscosity_pa_s": float(self._viscosity.value()),
             })
         return params
@@ -1644,6 +1664,7 @@ class PipelinePanel(QWidget):
         if mode == "Brownian":
             self._set_row_visible(self._stage_speed, False)
             self._set_row_visible(self._drag_axis, False)
+            self._set_row_visible(self._drag_anchor_mode, False)
             self._set_row_visible(self._viscosity, False)
             self._set_row_visible(self._bead_diameter_um, True)
             self._set_row_visible(self._brownian_baseline_folder, False)
@@ -1657,6 +1678,7 @@ class PipelinePanel(QWidget):
         elif mode == "Drag":
             self._set_row_visible(self._stage_speed, True)
             self._set_row_visible(self._drag_axis, True)
+            self._set_row_visible(self._drag_anchor_mode, True)
             self._set_row_visible(self._viscosity, True)
             self._set_row_visible(self._bead_diameter_um, True)
             self._set_row_visible(self._brownian_baseline_folder, True)

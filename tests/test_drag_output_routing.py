@@ -110,6 +110,8 @@ def _fake_drag_result(base: str, cfg: DragAnalysisConfig) -> DragAnalysisResult:
         motion_kinematics_source="actual_metric",
         timestamp_validation_pass=True,
         timestamp_validation_message="timestamps validated",
+        drag_anchor_mode_requested=str(cfg.drag_anchor_mode),
+        drag_anchor_mode="detected_onset",
     )
 
 
@@ -373,6 +375,8 @@ def test_drag_summary_and_alignment_diagnostics_completeness(tmp_path: Path, mon
         "kinematics_robustness_message",
         "drag_validation_gate",
         "drag_validation_reason",
+        "drag_anchor_mode_requested",
+        "drag_anchor_mode_effective",
         "drag_anchor_mode",
         "primary_timing_source_for_windows",
         "detected_onset_consistency_flag",

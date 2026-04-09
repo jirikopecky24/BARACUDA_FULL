@@ -8,6 +8,21 @@ from typing import Any, Iterable, Literal
 Axis = Literal["x", "y"]
 DragAnchorMode = Literal["auto", "stage_validated", "detected_onset"]
 
+_DRAG_ANCHOR_VALID = frozenset({"auto", "stage_validated", "detected_onset"})
+
+
+def parse_drag_anchor_mode_param(raw: Any) -> DragAnchorMode:
+    """Normalize postprocess/UI value for Drag anchor policy.
+
+    Unknown or empty values map to "auto" so legacy items keep prior behavior.
+    """
+    if raw is None:
+        return "auto"
+    s = str(raw).strip().lower()
+    if s in _DRAG_ANCHOR_VALID:
+        return s  # type: ignore[return-value]
+    return "auto"
+
 
 @dataclass(frozen=True)
 class DragRunPaths:
@@ -374,6 +389,9 @@ class DragAnalysisResult:
     steady_window_clipped_end_s: float | None = None
     window_clipping_applied: bool | None = None
     window_clipping_message: str | None = None
+    # Operator-selected policy (from UI/postprocess); always one of auto/stage_validated/detected_onset.
+    drag_anchor_mode_requested: str | None = None
+    # Resolved mode used for windows and reporting (stage_validated vs detected_onset).
     drag_anchor_mode: str | None = None
     primary_timing_source_for_windows: str | None = None
     detected_onset_consistency_flag: bool | None = None

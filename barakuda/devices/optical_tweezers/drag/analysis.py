@@ -1251,6 +1251,7 @@ def analyze_drag_run(
         steady_window_clipped_end_s=steady_window_clipped_end_s,
         window_clipping_applied=window_clipping_applied,
         window_clipping_message=window_clipping_message,
+        drag_anchor_mode_requested=str(requested_anchor_mode),
         drag_anchor_mode=drag_anchor_mode,
         primary_timing_source_for_windows=primary_timing_source_for_windows,
         detected_onset_consistency_flag=detected_onset_consistency_flag,

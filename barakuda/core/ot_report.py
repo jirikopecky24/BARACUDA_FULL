@@ -892,6 +892,10 @@ def build_ot_item_summary(
         diagnostics["alignment_sanity_flag"] = drag_summary_json.get("alignment_sanity_flag")
         diagnostics["alignment_sanity_message"] = drag_summary_json.get("alignment_sanity_message")
         diagnostics["drag_anchor_mode"] = drag_summary_json.get("drag_anchor_mode")
+        diagnostics["drag_anchor_mode_requested"] = drag_summary_json.get("drag_anchor_mode_requested")
+        diagnostics["drag_anchor_mode_effective"] = drag_summary_json.get(
+            "drag_anchor_mode_effective"
+        ) or drag_summary_json.get("drag_anchor_mode")
         diagnostics["primary_timing_source_for_windows"] = drag_summary_json.get(
             "primary_timing_source_for_windows"
         )
@@ -1188,6 +1192,20 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
             ("Drag", "Alignment sanity flag", diagnostics.get("alignment_sanity_flag"), "", "alignment_sanity_flag"),
             ("Drag", "Alignment sanity message", diagnostics.get("alignment_sanity_message"), "", "alignment_sanity_message"),
             ("Drag", "Drag anchor mode", diagnostics.get("drag_anchor_mode"), "", "drag_anchor_mode"),
+            (
+                "Drag",
+                "Drag anchor (requested)",
+                diagnostics.get("drag_anchor_mode_requested"),
+                "",
+                "drag_anchor_mode_requested",
+            ),
+            (
+                "Drag",
+                "Drag anchor (effective)",
+                diagnostics.get("drag_anchor_mode_effective"),
+                "",
+                "drag_anchor_mode_effective",
+            ),
             (
                 "Drag",
                 "Primary timing source for windows",

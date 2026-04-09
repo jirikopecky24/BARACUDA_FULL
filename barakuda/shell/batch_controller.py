@@ -1568,7 +1568,10 @@ class BatchController:
                                 else um_src
                             )
 
-                            from barakuda.devices.optical_tweezers.drag.schema import DragAnalysisConfig
+                            from barakuda.devices.optical_tweezers.drag.schema import (
+                                DragAnalysisConfig,
+                                parse_drag_anchor_mode_param,
+                            )
 
                             # stage_um_per_unit precedence for Drag:
                             # 1) UI/config (already resolved above as stage_um_per_unit)
@@ -1624,6 +1627,9 @@ class BatchController:
                                         _manual_off = _mf
                                 except (TypeError, ValueError):
                                     pass
+                            _drag_anchor_mode = parse_drag_anchor_mode_param(
+                                post_params.get("drag_anchor_mode")
+                            )
                             drag_cfg = DragAnalysisConfig(
                                 analysis_axis=axis,
                                 um_per_px=drag_um_per_px,
@@ -1652,7 +1658,9 @@ class BatchController:
                                 drag_preflight_status=str(preflight.get("drag_preflight_status")),
                                 drag_preflight_message=str(preflight.get("drag_preflight_message")),
                                 current_drag_output_root=str(Path(run_dir).resolve()),
+                                drag_anchor_mode=_drag_anchor_mode,
                             )
+                            self._log(f"[DRAG] drag_anchor_mode_requested={_drag_anchor_mode!r}")
 
                             # DRAG expects the acquisition/run folder where RAW + stage files live.
 

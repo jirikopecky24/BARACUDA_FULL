@@ -137,6 +137,8 @@ def drag_result_to_dict(result: DragAnalysisResult) -> dict[str, Any]:
         "steady_window_clipped_end_s": result.steady_window_clipped_end_s,
         "window_clipping_applied": result.window_clipping_applied,
         "window_clipping_message": result.window_clipping_message,
+        "drag_anchor_mode_requested": result.drag_anchor_mode_requested,
+        "drag_anchor_mode_effective": result.drag_anchor_mode,
         "drag_anchor_mode": result.drag_anchor_mode,
         "primary_timing_source_for_windows": result.primary_timing_source_for_windows,
         "detected_onset_consistency_flag": result.detected_onset_consistency_flag,
