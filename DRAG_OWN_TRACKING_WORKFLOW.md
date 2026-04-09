@@ -38,6 +38,8 @@ Previously, discovery could treat an **on-disk `*_trajectory.csv`** as the prima
 - **After** Drag-owned trajectory exists: batch code loads `load_brownian_calibration_from_folder`, builds `DragAnalysisConfig`, then calls `finalize_drag_run_from_trajectory`.
 - Brown remains **baseline / calibration context** (e.g. κ, `um_per_px` sourcing), not the source of the Drag trajectory for the default path.
 
+**Pairing / Auto-pair (OT shell):** `is_ot_drag_baseline_pairing_target` in `barakuda/devices/optical_tweezers/ui/batch_tools.py` treats a dataset path as a Drag↔Brown pairing target if either stored `postprocess.calibration_mode == "Drag"` or on-disk layout passes `evaluate_drag_preflight` (`ready_drag_sidecars_*`). Pairing assigns `brownian_baseline_folder` **before** batch tracking/postprocess; it does **not** imply Brown owns the Drag trajectory. Auto-pair normalizes stored postprocess to Drag mode when linking so batch Run uses the Drag pipeline.
+
 ## 5. Explicit reuse / debug fallback
 
 - `analyze_drag_run(..., allow_discovered_trajectory=True)` with `trajectory_path=None` reloads an on-disk trajectory via `load_drag_run(..., allow_discover_trajectory=True)`.

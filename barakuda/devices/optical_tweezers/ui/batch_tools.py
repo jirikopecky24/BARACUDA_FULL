@@ -286,6 +286,85 @@ def resolve_frame_range_for_item(
     return s, e
 
 
+def resolve_drag_preflight_pairing_context(path: Path) -> tuple[Path, Path] | None:
+    """Resolve ``(current_drag_input_path, run_dir)`` for Drag pairing / preflight checks.
+
+    - If ``path`` is a ``.raw`` file: run directory is its parent (matches batch_controller).
+    - If ``path`` is a directory: use Drag discovery (item root, acquisition folder, etc.)
+      to locate the single resolved RAW path and use ``path`` as ``run_dir`` when discovery
+      succeeds from that folder.
+    """
+    p = Path(path).resolve()
+    if p.is_file():
+        if p.suffix.lower() != ".raw":
+            return None
+        return (p, p.parent)
+    if not p.is_dir():
+        return None
+    from barakuda.devices.optical_tweezers.drag.io import discover_drag_run_paths
+
+    try:
+        drp = discover_drag_run_paths(
+            p,
+            trajectory_path=None,
+            require_trajectory=False,
+            include_trajectory_discovery=False,
+        )
+        return (drp.raw_path, p)
+    except Exception:
+        return None
+
+
+def is_ot_drag_baseline_pairing_target(path: Path, item_params: dict | None) -> bool:
+    """True if this dataset path should participate in Drag↔Brown baseline pairing.
+
+    Recognizes (1) stored ``postprocess.calibration_mode == "Drag"`` (legacy / explicit),
+    or (2) a valid Drag RAW + sidecar layout per ``evaluate_drag_preflight`` (thesis-safe
+    default workflow without requiring a pre-existing trajectory or stored mode).
+    """
+    payload = item_params or {}
+    pp = dict(payload.get("postprocess") or {})
+    if str(pp.get("calibration_mode") or "Brownian") == "Drag":
+        return True
+    ctx = resolve_drag_preflight_pairing_context(path)
+    if ctx is None:
+        return False
+    drag_input, run_dir = ctx
+    from barakuda.devices.optical_tweezers.drag.io import evaluate_drag_preflight
+
+    pre = evaluate_drag_preflight(
+        current_drag_input_path=drag_input,
+        run_dir=run_dir,
+        brownian_baseline_folder=None,
+    )
+    return str(pre.get("drag_preflight_status") or "").startswith("ready_drag_sidecars")
+
+
+def collect_ot_drag_baseline_pairing_paths(
+    checked_paths: list[Path],
+    params_by_path: dict[str, dict],
+) -> list[Path]:
+    """Filter ``checked_paths`` to Drag baseline pairing targets (stable order)."""
+    out: list[Path] = []
+    for p in checked_paths:
+        if is_ot_drag_baseline_pairing_target(p, params_by_path.get(str(p))):
+            out.append(p)
+    return out
+
+
+def merge_drag_auto_pair_postprocess(pp: dict) -> dict:
+    """Ensure postprocess is Drag-mode for items linked by auto-pair; fix Brownian strategy leftovers."""
+    out = dict(pp)
+    prior_mode = str(out.get("calibration_mode") or "Brownian")
+    out["calibration_mode"] = "Drag"
+    if prior_mode != "Drag":
+        strat = str(out.get("strategy") or "").strip()
+        brown = set(MODE_STRATEGIES.get("Brownian", []))
+        if not strat or strat in brown:
+            out["strategy"] = MODE_STRATEGIES["Drag"][0]
+    return out
+
+
 def auto_pair_drag_items(
     drag_paths: list[Path],
     candidates: list[PairingCandidate],
@@ -450,10 +529,9 @@ def validate_drag_baseline_batch(
     issues: dict[str, str] = {}
     for p in checked_paths:
         payload = params_by_path.get(str(p)) or {}
-        pp = dict(payload.get("postprocess") or {})
-        mode = str(pp.get("calibration_mode") or "Brownian")
-        if mode != "Drag":
+        if not is_ot_drag_baseline_pairing_target(p, payload):
             continue
+        pp = dict(payload.get("postprocess") or {})
         baseline = str(pp.get("brownian_baseline_folder") or "").strip()
         if not baseline:
             issues[str(p)] = "baseline missing"

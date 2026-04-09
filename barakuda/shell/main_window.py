@@ -31,8 +31,11 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     build_baseline_list_view_data,
     build_pairing_tree_data,
     collect_brownian_baseline_candidates_from_roots,
+    collect_ot_drag_baseline_pairing_paths,
     format_baseline_link_status,
     inherit_calibration_mode_for_new_item,
+    is_ot_drag_baseline_pairing_target,
+    merge_drag_auto_pair_postprocess,
     parse_ot_progress_message,
     resolve_frame_range_for_item,
     merge_ot_params_for_checked,
@@ -1001,10 +1004,10 @@ class ShellMainWindow(QMainWindow):
             if params is None:
                 self.dataset.set_pairing_status(p, None)
                 continue
-            pp = dict(params.get("postprocess") or {})
-            if str(pp.get("calibration_mode") or "Brownian") != "Drag":
+            if not is_ot_drag_baseline_pairing_target(p, params):
                 self.dataset.set_pairing_status(p, None)
                 continue
+            pp = dict(params.get("postprocess") or {})
             baseline = str(pp.get("brownian_baseline_folder") or "").strip()
             if not baseline:
                 self.dataset.set_pairing_status(p, "baseline missing")
@@ -1054,11 +1057,12 @@ class ShellMainWindow(QMainWindow):
             params = self.dataset.get_item_params(p)
             if params is None:
                 continue
+            if not is_ot_drag_baseline_pairing_target(p, params):
+                continue
             pp = dict(params.get("postprocess") or {})
-            if str(pp.get("calibration_mode") or "Brownian") == "Drag":
-                drag_paths.append(p)
-                baseline = str(pp.get("brownian_baseline_folder") or "").strip()
-                explicit_pairs[str(p)] = baseline or None
+            drag_paths.append(p)
+            baseline = str(pp.get("brownian_baseline_folder") or "").strip()
+            explicit_pairs[str(p)] = baseline or None
         tree_data = build_pairing_tree_data(
             drag_paths=drag_paths,
             candidates=self._ot_baseline_candidates,
@@ -1140,15 +1144,11 @@ class ShellMainWindow(QMainWindow):
             )
             return
         params_map = self._build_dataset_params_map()
-        drag_paths: list[Path] = []
-        for p in checked:
-            pp = dict((params_map.get(str(p), {}).get("postprocess") or {}))
-            if str(pp.get("calibration_mode") or "Brownian") == "Drag":
-                drag_paths.append(p)
+        drag_paths = collect_ot_drag_baseline_pairing_paths(checked, params_map)
         if not drag_paths:
             self.log_panel.log(
-                "Auto-pair: checked items contain no Drag-mode runs. "
-                "Check one or more Drag items in the dataset first."
+                "Auto-pair: no Drag baseline pairing targets among checked items "
+                "(set Calibration to Drag, or check valid Drag RAW files with sidecars)."
             )
             return
         # Transition to pairing_result phase — tree will now show full pairing map.
@@ -1156,7 +1156,7 @@ class ShellMainWindow(QMainWindow):
         baseline_map, status_map = auto_pair_drag_items(drag_paths, self._ot_baseline_candidates)
         for p in drag_paths:
             payload = dict(self.dataset.get_item_params(p) or {})
-            pp = dict(payload.get("postprocess") or {})
+            pp = merge_drag_auto_pair_postprocess(dict(payload.get("postprocess") or {}))
             linked = baseline_map.get(str(p))
             if linked:
                 pp["brownian_baseline_folder"] = linked
@@ -1189,7 +1189,10 @@ class ShellMainWindow(QMainWindow):
         p = Path(drag_path_str)
         self._ot_pairing_origins[drag_path_str] = "manual"
         payload = dict(self.dataset.get_item_params(p) or {})
-        pp = dict(payload.get("postprocess") or {})
+        if is_ot_drag_baseline_pairing_target(p, payload):
+            pp = merge_drag_auto_pair_postprocess(dict(payload.get("postprocess") or {}))
+        else:
+            pp = dict(payload.get("postprocess") or {})
         pp["brownian_baseline_folder"] = baseline_folder_str
         payload["postprocess"] = pp
         self.dataset.set_item_params(p, payload)

@@ -12,11 +12,13 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
     build_baseline_list_view_data,
     build_pairing_tree_data,
     collect_brownian_baseline_candidates_from_roots,
+    collect_ot_drag_baseline_pairing_paths,
     drag_action_visibility,
     format_baseline_link_status,
     format_batch_progress,
     format_current_file_progress,
     inherit_calibration_mode_for_new_item,
+    is_ot_drag_baseline_pairing_target,
     make_family_pair_key,
     make_pair_key,
     merge_ot_params_for_checked,
@@ -1257,18 +1259,73 @@ def test_autopair_uses_checked_items_not_current_item() -> None:
     mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
     # The handler must call get_checked_paths() — not get_current_path()
     assert "get_checked_paths()" in mw_src
-    # And filter those to Drag mode before pairing
-    assert 'calibration_mode' in mw_src
-    assert '"Drag"' in mw_src
+    # And filter checked paths to Drag pairing targets (mode and/or Drag RAW preflight)
+    assert "collect_ot_drag_baseline_pairing_paths" in mw_src
 
 
 def test_autopair_gives_clear_message_when_no_drag_among_checked() -> None:
     """
-    Auto-pair must log a clear message when checked items contain no Drag-mode runs,
+    Auto-pair must log a clear message when checked items contain no Drag pairing targets,
     rather than silently logging '0 linked, 0 ambiguous, 0 missing'.
     """
     mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
-    assert "no Drag-mode items among checked" in mw_src or "contain no Drag-mode" in mw_src
+    assert "no Drag baseline pairing targets among checked" in mw_src
+
+
+def test_collect_ot_drag_pairing_paths_accepts_preflight_ready_raw_with_default_brownian_params(
+    tmp_path: Path,
+) -> None:
+    """New Drag workflow: RAW + sidecars counts as a pairing target even if stored mode is Brownian."""
+    run = tmp_path / "acq"
+    run.mkdir()
+    bn = "Gly20_drag_rep01"
+    (run / f"{bn}.raw").write_bytes(b"x")
+    (run / f"{bn}_meta.json").write_text(
+        '{"fps":30,"frame_count":2,"width":8,"height":8}', encoding="utf-8"
+    )
+    (run / f"{bn}_timestamps.csv").write_text("frame,timestamp_s\n0,0\n1,0.033\n", encoding="utf-8")
+    (run / f"{bn}_stage.json").write_text(
+        '{"axis":"x","direction":"1","actual_travel_user":1,"actual_motion_duration_s":1,"actual_speed_user_s":1}',
+        encoding="utf-8",
+    )
+    (run / f"{bn}_stage_trace.csv").write_text("t_s,event\n0,motion_start\n1,motion_stop\n", encoding="utf-8")
+    drag_raw = run / f"{bn}.raw"
+    params = {str(drag_raw): {"postprocess": {"calibration_mode": "Brownian", "strategy": "PSD_Welch"}}}
+    assert collect_ot_drag_baseline_pairing_paths([drag_raw], params) == [drag_raw]
+    assert is_ot_drag_baseline_pairing_target(drag_raw, params[str(drag_raw)])
+
+
+def test_collect_ot_drag_pairing_paths_rejects_plain_raw_without_sidecars(tmp_path: Path) -> None:
+    loose = tmp_path / "only.raw"
+    loose.write_bytes(b"x")
+    params = {str(loose): {"postprocess": {"calibration_mode": "Brownian"}}}
+    assert collect_ot_drag_baseline_pairing_paths([loose], params) == []
+    assert not is_ot_drag_baseline_pairing_target(loose, params[str(loose)])
+
+
+def test_validate_drag_baseline_batch_treats_preflight_drag_as_drag(tmp_path: Path) -> None:
+    run = tmp_path / "acq2"
+    run.mkdir()
+    bn = "Gly20_drag_rep02"
+    (run / f"{bn}.raw").write_bytes(b"x")
+    (run / f"{bn}_meta.json").write_text(
+        '{"fps":30,"frame_count":2,"width":8,"height":8}', encoding="utf-8"
+    )
+    (run / f"{bn}_timestamps.csv").write_text("frame,timestamp_s\n0,0\n1,0.033\n", encoding="utf-8")
+    (run / f"{bn}_stage.json").write_text(
+        '{"axis":"x","direction":"1","actual_travel_user":1,"actual_motion_duration_s":1,"actual_speed_user_s":1}',
+        encoding="utf-8",
+    )
+    (run / f"{bn}_stage_trace.csv").write_text("t_s,event\n0,motion_start\n1,motion_stop\n", encoding="utf-8")
+    drag_raw = run / f"{bn}.raw"
+    params = {str(drag_raw): {"postprocess": {"calibration_mode": "Brownian"}}}
+
+    def _validate(_folder: Path) -> tuple[bool, str]:
+        return True, "baseline linked"
+
+    ok, issues = validate_drag_baseline_batch([drag_raw], params, _validate)
+    assert not ok
+    assert "baseline missing" in issues[str(drag_raw)]
 
 
 def test_autopair_only_affects_checked_drag_items() -> None:
