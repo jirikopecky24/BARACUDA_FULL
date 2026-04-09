@@ -328,6 +328,10 @@ def analyze_drag_run(
             diagnostics=alignment_diag,
         )
 
+    _raw_detected_onset_s = (
+        float(onset_video_s) if onset_video_s is not None and math.isfinite(float(onset_video_s)) else None
+    )
+
     if onset_video_s is None and use_stage_validated_anchor:
         alignment_status = "stage_validated_no_detected_onset"
     elif onset_video_s is None and config.manual_offset_s is not None:
@@ -337,15 +341,25 @@ def analyze_drag_run(
         alignment_status = "manual_offset"
     else:
         alignment_status = "detected"
-    detected_onset_for_alignment = (
-        float(onset_video_s)
-        if onset_video_s is not None and math.isfinite(float(onset_video_s))
-        else float(expected_stage_start_video_s)
-    )
+
+    if config.manual_offset_s is not None:
+        primary_video_anchor_s = float(config.manual_offset_s) + float(motion_start_stage_s)
+        motion_timing_primary_source = "manual_offset"
+    elif use_stage_validated_anchor and math.isfinite(expected_stage_start_video_s):
+        primary_video_anchor_s = float(expected_stage_start_video_s)
+        motion_timing_primary_source = "expected_stage_timing"
+    else:
+        primary_video_anchor_s = (
+            float(onset_video_s)
+            if onset_video_s is not None and math.isfinite(float(onset_video_s))
+            else float(expected_stage_start_video_s)
+        )
+        motion_timing_primary_source = "trajectory_detected_onset"
+
     alignment = build_alignment_result(
         motion_start_stage_s=motion_start_stage_s,
         motion_stop_stage_s=motion_stop_stage_s,
-        onset_video_s=detected_onset_for_alignment,
+        onset_video_s=primary_video_anchor_s,
         manual_offset_s=config.manual_offset_s,
     )
 
@@ -372,11 +386,30 @@ def analyze_drag_run(
         except Exception as e:  # noqa: BLE001
             warnings.append(f"alignment_debug_plot failed: {e!r}")
 
-    detected_stage_start_video_s = alignment.motion_start_video_s_detected
+    qc_motion_start_video_s = (
+        float(_raw_detected_onset_s)
+        if (
+            use_stage_validated_anchor
+            and _raw_detected_onset_s is not None
+            and math.isfinite(_raw_detected_onset_s)
+        )
+        else float(alignment.motion_start_video_s_detected)
+    )
+
+    detected_stage_start_for_export = (
+        _raw_detected_onset_s
+        if use_stage_validated_anchor
+        else float(alignment.motion_start_video_s_detected)
+    )
+
     detected_stage_stop_video_s = alignment.motion_stop_video_s_stage_aligned
     stage_video_start_delta_s = (
-        detected_stage_start_video_s - expected_stage_start_video_s
-        if (math.isfinite(detected_stage_start_video_s) and math.isfinite(expected_stage_start_video_s))
+        float(_raw_detected_onset_s) - float(expected_stage_start_video_s)
+        if (
+            _raw_detected_onset_s is not None
+            and math.isfinite(_raw_detected_onset_s)
+            and math.isfinite(expected_stage_start_video_s)
+        )
         else None
     )
     stage_video_stop_delta_s = (
@@ -392,7 +425,7 @@ def analyze_drag_run(
 
     stage_anchor_breaking_reasons: list[str] = []
     detected_qc_reasons: list[str] = []
-    if math.isfinite(t_first_s) and detected_stage_start_video_s < t_first_s:
+    if math.isfinite(t_first_s) and qc_motion_start_video_s < t_first_s:
         detected_qc_reasons.append("detected_start_before_video_start")
     if (
         math.isfinite(t_last_s)
@@ -403,15 +436,15 @@ def analyze_drag_run(
     if (
         detected_stage_stop_video_s is not None
         and math.isfinite(elapsed_time_s)
-        and (detected_stage_stop_video_s - detected_stage_start_video_s) > (elapsed_time_s + 1e-6)
+        and (detected_stage_stop_video_s - qc_motion_start_video_s) > (elapsed_time_s + 1e-6)
     ):
         detected_qc_reasons.append("aligned_motion_longer_than_video")
     if (
         stage_anchor_available
-        and detected_stage_start_video_s is not None
+        and math.isfinite(qc_motion_start_video_s)
         and math.isfinite(expected_stage_start_video_s)
     ):
-        start_delta_abs = abs(detected_stage_start_video_s - expected_stage_start_video_s)
+        start_delta_abs = abs(qc_motion_start_video_s - expected_stage_start_video_s)
     else:
         start_delta_abs = None
     if (
@@ -855,10 +888,12 @@ def analyze_drag_run(
         worst_delta = start_delta_abs
     else:
         worst_delta = stop_delta_abs
-    if onset_video_s is None:
+    if _raw_detected_onset_s is None:
         detected_onset_consistency_flag = False
         detected_onset_consistency_message = (
             "detected onset unavailable; stage timing used as primary anchor."
+            if use_stage_validated_anchor
+            else "trajectory onset unavailable; alignment uses expected stage timing fallback."
         )
     elif worst_delta is not None:
         if worst_delta > 2.0:
@@ -1242,7 +1277,7 @@ def analyze_drag_run(
         elapsed_time_s=elapsed_time_s if math.isfinite(elapsed_time_s) else None,
         expected_stage_start_video_s=expected_stage_start_video_s if math.isfinite(expected_stage_start_video_s) else None,
         expected_stage_stop_video_s=expected_stage_stop_video_s,
-        detected_stage_start_video_s=detected_stage_start_video_s,
+        detected_stage_start_video_s=detected_stage_start_for_export,
         detected_stage_stop_video_s=detected_stage_stop_video_s,
         stage_video_start_delta_s=stage_video_start_delta_s,
         stage_video_stop_delta_s=stage_video_stop_delta_s,
@@ -1261,6 +1296,9 @@ def analyze_drag_run(
         drag_anchor_mode_requested=str(requested_anchor_mode),
         drag_anchor_mode=drag_anchor_mode,
         primary_timing_source_for_windows=primary_timing_source_for_windows,
+        motion_timing_primary_source=motion_timing_primary_source,
+        detected_onset_video_s=_raw_detected_onset_s,
+        detected_onset_diagnostic_only=(drag_anchor_mode == "stage_validated"),
         detected_onset_consistency_flag=detected_onset_consistency_flag,
         detected_onset_consistency_message=detected_onset_consistency_message,
         stage_anchor_confidence=stage_anchor_confidence,

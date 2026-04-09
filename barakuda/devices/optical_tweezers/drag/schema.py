@@ -394,6 +394,12 @@ class DragAnalysisResult:
     # Resolved mode used for windows and reporting (stage_validated vs detected_onset).
     drag_anchor_mode: str | None = None
     primary_timing_source_for_windows: str | None = None
+    # Primary alignment / summary motion anchor in video time: stage-expected, manual, or trajectory onset.
+    motion_timing_primary_source: str | None = None
+    # Trajectory onset time (s) when detection ran; stage_validated uses this for QC only, not for windows/alignment.
+    detected_onset_video_s: float | None = None
+    # True when effective mode is stage_validated: trajectory onset must not be treated as co-primary timing.
+    detected_onset_diagnostic_only: bool | None = None
     detected_onset_consistency_flag: bool | None = None
     detected_onset_consistency_message: str | None = None
     stage_anchor_confidence: str | None = None

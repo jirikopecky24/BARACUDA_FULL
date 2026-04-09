@@ -60,9 +60,15 @@ def test_stage_validated_windows_use_expected_stage_time_not_detected_onset(tmp_
     r_stage = analyze_drag_run(run_dir, cfg)
     assert r_stage.drag_anchor_mode == "stage_validated"
     assert r_stage.primary_timing_source_for_windows == "expected_stage_start_stop"
+    assert r_stage.motion_timing_primary_source == "expected_stage_timing"
+    assert r_stage.detected_onset_diagnostic_only is True
     # Expected motion start in video time = t_first (0) + motion_start_stage (4.0)
     assert r_stage.expected_stage_start_video_s == pytest.approx(4.0)
-    assert r_stage.motion_start_video_s_detected > 4.2  # onset follows delayed video step (~4.5)
+    # Primary motion anchor in video time follows stage truth, not late trajectory onset.
+    assert r_stage.motion_start_video_s_detected == pytest.approx(4.0)
+    assert r_stage.detected_onset_video_s is not None
+    assert r_stage.detected_onset_video_s > 4.2  # raw onset follows delayed video step (~4.5)
+    assert r_stage.detected_stage_start_video_s == pytest.approx(r_stage.detected_onset_video_s)
     delay = float(cfg.window_params.steady_start_delay_s)
     assert r_stage.windows.steady_start_s == pytest.approx(4.0 + delay)
 
@@ -77,7 +83,55 @@ def test_stage_validated_windows_use_expected_stage_time_not_detected_onset(tmp_
         ),
     )
     assert r_det.drag_anchor_mode == "detected_onset"
+    assert r_det.motion_timing_primary_source == "trajectory_detected_onset"
+    assert r_det.detected_onset_diagnostic_only is False
     assert r_det.windows.steady_start_s > r_stage.windows.steady_start_s + 0.2
+
+
+def test_stage_validated_onset_mismatch_is_qc_only_windows_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Late detected onset must not move primary timing or windows when stage-validated."""
+    run_dir = tmp_path / "st_qc_only"
+    timing = SyntheticTiming(
+        fps=100.0,
+        baseline_end_s=3.0,
+        motion_start_s=4.0,
+        motion_duration_s=8.0,
+    )
+    create_synthetic_constant_velocity_run(
+        run_dir,
+        basename="qc_only",
+        timing=timing,
+        offset_um=0.03,
+        noise_px=0.005,
+        drift_px_per_s=0.0,
+        stage_um_per_unit=0.06,
+        stage_speed_user_s=20.0,
+        timing_offset_s=0.5,
+    )
+    from barakuda.devices.optical_tweezers.drag import analysis as analysis_mod
+
+    orig = analysis_mod.detect_motion_onset
+
+    def _late_onset(*args, **kwargs):
+        onset, diag = orig(*args, **kwargs)
+        if onset is None:
+            return onset, diag
+        return float(onset) + 0.8, diag
+
+    monkeypatch.setattr(analysis_mod, "detect_motion_onset", _late_onset)
+    r = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+    )
+    assert r.drag_anchor_mode == "stage_validated"
+    assert r.motion_start_video_s_detected == pytest.approx(4.0)
+    assert r.detected_onset_video_s is not None
+    assert r.detected_onset_video_s > r.expected_stage_start_video_s + 0.5
+    delay = float(DragAnalysisConfig(analysis_axis="x").window_params.steady_start_delay_s)
+    assert r.windows.steady_start_s == pytest.approx(4.0 + delay)
+    assert r.stage_video_start_delta_s is not None
+    assert abs(r.stage_video_start_delta_s) > 0.5
+    assert r.detection_qc_gate in {"suspect", "fail"}
 
 
 def test_no_motion_stop_degrades_to_detected_onset_honest_summary(tmp_path: Path) -> None:
@@ -128,6 +182,8 @@ def test_no_motion_stop_degrades_to_detected_onset_honest_summary(tmp_path: Path
     d = drag_result_to_dict(r_forced)
     assert d["drag_anchor_mode_requested"] == "stage_validated"
     assert d["drag_anchor_mode_effective"] == "detected_onset"
+    assert d["motion_timing_primary_source"] == "trajectory_detected_onset"
+    assert d["detected_onset_diagnostic_only"] is False
 
 
 def test_physics_speed_uses_actual_metric_not_trace_derived(tmp_path: Path) -> None:
@@ -219,7 +275,7 @@ def test_gates_remain_separate_from_numeric_physics_ready(tmp_path: Path, monkey
         basename="gate",
         timing=timing,
         offset_um=0.02,
-        noise_px=0.0,
+        noise_px=0.005,
         drift_px_per_s=0.0,
         stage_um_per_unit=0.06,
         stage_speed_user_s=16.0,
@@ -241,6 +297,16 @@ def test_gates_remain_separate_from_numeric_physics_ready(tmp_path: Path, monkey
     )
 
     assert r.drag_anchor_mode == "stage_validated"
+    assert r.motion_timing_primary_source == "expected_stage_timing"
+    assert r.motion_start_video_s_detected == pytest.approx(r.expected_stage_start_video_s)
+    assert r.detected_onset_video_s is not None
+    assert r.detected_onset_video_s > r.expected_stage_start_video_s + 10.0
+    assert r.detected_onset_diagnostic_only is True
+    d = drag_result_to_dict(r)
+    assert d["motion_timing_primary_source"] == "expected_stage_timing"
+    assert d["detected_onset_diagnostic_only"] is True
+    assert float(d["motion_start_video_s_detected"]) == pytest.approx(float(d["expected_stage_start_video_s"]))
+    assert float(d["detected_onset_video_s"]) > float(d["expected_stage_start_video_s"]) + 10.0
     assert r.physics_status == "ready"
     assert r.detection_qc_gate == "fail"
     assert r.final_drag_verdict == "suspect"

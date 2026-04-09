@@ -73,7 +73,7 @@ def test_detected_onset_inconsistency_keeps_stage_primary_windows(tmp_path: Path
         basename="drag_i",
         timing=SyntheticTiming(fps=100.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=6.0),
         offset_um=0.02,
-        noise_px=0.0,
+        noise_px=0.005,
         drift_px_per_s=0.0,
         stage_um_per_unit=0.06,
         stage_speed_user_s=16.0,
@@ -94,6 +94,11 @@ def test_detected_onset_inconsistency_keeps_stage_primary_windows(tmp_path: Path
         DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, eta_pa_s=0.001, bead_radius_um=0.5),
     )
     assert result.drag_anchor_mode == "stage_validated"
+    assert result.motion_timing_primary_source == "expected_stage_timing"
+    assert result.motion_start_video_s_detected == pytest.approx(result.expected_stage_start_video_s)
+    assert result.detected_onset_video_s is not None
+    assert result.detected_onset_video_s > result.expected_stage_start_video_s + 10.0
+    assert result.detected_onset_diagnostic_only is True
     assert result.detected_onset_consistency_flag is False
     assert result.physics_primary_gate != "fail"
     assert result.detection_qc_gate == "fail"

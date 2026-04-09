@@ -899,6 +899,9 @@ def build_ot_item_summary(
         diagnostics["primary_timing_source_for_windows"] = drag_summary_json.get(
             "primary_timing_source_for_windows"
         )
+        diagnostics["motion_timing_primary_source"] = drag_summary_json.get("motion_timing_primary_source")
+        diagnostics["detected_onset_video_s"] = _parse_float(drag_summary_json.get("detected_onset_video_s"))
+        diagnostics["detected_onset_diagnostic_only"] = drag_summary_json.get("detected_onset_diagnostic_only")
         diagnostics["detected_onset_consistency_flag"] = drag_summary_json.get(
             "detected_onset_consistency_flag"
         )
@@ -1212,6 +1215,27 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
                 diagnostics.get("primary_timing_source_for_windows"),
                 "",
                 "primary_timing_source_for_windows",
+            ),
+            (
+                "Drag",
+                "Motion timing primary source",
+                diagnostics.get("motion_timing_primary_source"),
+                "",
+                "motion_timing_primary_source",
+            ),
+            (
+                "Drag",
+                "Detected onset (diagnostic, s)",
+                diagnostics.get("detected_onset_video_s"),
+                "s",
+                "detected_onset_video_s",
+            ),
+            (
+                "Drag",
+                "Detected onset diagnostic-only flag",
+                diagnostics.get("detected_onset_diagnostic_only"),
+                "",
+                "detected_onset_diagnostic_only",
             ),
             (
                 "Drag",

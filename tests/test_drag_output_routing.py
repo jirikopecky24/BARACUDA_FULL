@@ -112,6 +112,9 @@ def _fake_drag_result(base: str, cfg: DragAnalysisConfig) -> DragAnalysisResult:
         timestamp_validation_message="timestamps validated",
         drag_anchor_mode_requested=str(cfg.drag_anchor_mode),
         drag_anchor_mode="detected_onset",
+        motion_timing_primary_source="trajectory_detected_onset",
+        detected_onset_video_s=0.1,
+        detected_onset_diagnostic_only=False,
     )
 
 
@@ -379,6 +382,9 @@ def test_drag_summary_and_alignment_diagnostics_completeness(tmp_path: Path, mon
         "drag_anchor_mode_effective",
         "drag_anchor_mode",
         "primary_timing_source_for_windows",
+        "motion_timing_primary_source",
+        "detected_onset_video_s",
+        "detected_onset_diagnostic_only",
         "detected_onset_consistency_flag",
         "detected_onset_consistency_message",
         "stage_anchor_confidence",
