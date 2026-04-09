@@ -6,6 +6,12 @@
 - **Explicitly out of scope for detail**: Active umbrella oscillatory / step-response flows (`drag/active_umbrella/`), viscoelastic submodule, and Brownian analysis internals (except how Brownian calibration is **wired into** Drag).
 - **Method**: Read-through of the modules and tests listed in section 7; no behavioral changes were made for this document.
 
+### Follow-up: anchor policy plumbing (implemented)
+
+- **`drag_anchor_mode`** is supplied from postprocess (`drag_anchor_mode` key) and the OT panel row **Drag: anchor policy**, normalized with **`parse_drag_anchor_mode_param`** in `drag/schema.py` (missing or invalid → **`auto`**).
+- Batch builds **`DragAnalysisConfig(drag_anchor_mode=...)`** in `batch_controller.py`; **`analyze_drag_run`** records **`drag_anchor_mode_requested`** (operator/config) vs **`drag_anchor_mode`** / **`drag_anchor_mode_effective`** (resolved windows policy).
+- Saved **`_*_drag_summary.json`** / CSV, **`run_protocol`** analysis + provenance, and report diagnostics expose requested vs effective modes. Physics formulas unchanged; default **`auto`** matches prior automatic stage-vs-onset selection.
+
 ## 2. Current Drag architecture
 
 | Layer | Role | Primary modules |
@@ -68,7 +74,9 @@ The PDF/XLSX layers **should** treat the summary JSON as authoritative for drag-
 
 ## 8. Suggested lowest-risk first implementation task
 
-**Wire `drag_anchor_mode` from postprocess / UI into `DragAnalysisConfig` in `batch_controller.py` (defaulting to current `auto` behavior)** so behavior is explicit, reproducible, and testable without changing physics formulas or discovery logic.
+**Done:** `drag_anchor_mode` is plumbed from postprocess/UI into `DragAnalysisConfig` with default **`auto`**; see *Follow-up: anchor policy plumbing* above and `tests/test_drag_anchor_mode_plumbing.py`.
+
+**Next (example):** tighten invalid postprocess values (e.g. log when falling back from garbage strings to `auto`) or extend batch-level tests if you want end-to-end coverage without synthetic harness only.
 
 ---
 
@@ -81,4 +89,4 @@ The PDF/XLSX layers **should** treat the summary JSON as authoritative for drag-
 - Schema: `barakuda/devices/optical_tweezers/drag/schema.py`
 - Batch wiring: `barakuda/shell/batch_controller.py` (drag block ~1570+)
 - Report: `barakuda/core/ot_report.py`
-- Tests: `tests/test_drag_artifact_discovery.py`, `tests/test_drag_preflight_workflow.py`, `tests/test_drag_output_routing.py`, `tests/test_drag_physics_validation_gate.py`, `tests/test_truth_resolvers_and_report.py`
+- Tests: `tests/test_drag_artifact_discovery.py`, `tests/test_drag_preflight_workflow.py`, `tests/test_drag_output_routing.py`, `tests/test_drag_physics_validation_gate.py`, `tests/test_drag_anchor_mode_plumbing.py`, `tests/test_truth_resolvers_and_report.py`
