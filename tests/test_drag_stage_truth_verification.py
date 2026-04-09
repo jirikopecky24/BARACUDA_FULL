@@ -136,6 +136,54 @@ def test_stage_validated_onset_mismatch_is_qc_only_windows_unchanged(tmp_path: P
     assert r.detection_qc_gate in {"suspect", "fail"}
 
 
+def test_stage_validated_missing_detected_onset_anchor_provenance_honest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No trajectory onset: do not claim stage vs independent detected timing agreement."""
+    run_dir = tmp_path / "st_no_onset_prov"
+    timing = SyntheticTiming(
+        fps=100.0,
+        baseline_end_s=3.0,
+        motion_start_s=4.0,
+        motion_duration_s=8.0,
+    )
+    create_synthetic_constant_velocity_run(
+        run_dir,
+        basename="no_onset_p",
+        timing=timing,
+        offset_um=0.03,
+        noise_px=0.005,
+        drift_px_per_s=0.0,
+        stage_um_per_unit=0.06,
+        stage_speed_user_s=20.0,
+        timing_offset_s=0.5,
+    )
+    from barakuda.devices.optical_tweezers.drag import analysis as analysis_mod
+
+    _orig = analysis_mod.detect_motion_onset
+
+    def _force_no_onset(*args, **kwargs):
+        _o, d = _orig(*args, **kwargs)
+        return None, d
+
+    monkeypatch.setattr(analysis_mod, "detect_motion_onset", _force_no_onset)
+    r = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=3e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
+    )
+    assert r.drag_anchor_mode == "stage_validated"
+    assert r.detected_stage_start_video_s is None
+    assert r.detected_onset_consistency_flag is False
+    assert r.stage_anchor_reason == "stage timing available; detected onset missing."
+    assert "detected timing are consistent" not in (r.stage_anchor_reason or "")
+    assert r.stage_anchor_confidence in {"high", "medium"}
+    assert r.primary_timing_source_for_windows == "expected_stage_start_stop"
+    assert r.motion_timing_primary_source == "expected_stage_timing"
+    delay = float(DragAnalysisConfig(analysis_axis="x").window_params.steady_start_delay_s)
+    assert r.windows.steady_start_s == pytest.approx(4.0 + delay)
+
+
 def test_no_motion_stop_degrades_to_detected_onset_honest_summary(tmp_path: Path) -> None:
     """CASE B/C: Missing motion_stop → no validated stage window; auto and forced stage_validated fall back honestly."""
     run_dir = tmp_path / "st_no_stop"

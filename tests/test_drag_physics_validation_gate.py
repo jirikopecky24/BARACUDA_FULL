@@ -34,6 +34,8 @@ def test_baseline_comparison_and_eta_dual_outputs_exist(tmp_path: Path) -> None:
     )
     assert result.drag_anchor_mode == "stage_validated"
     assert result.primary_timing_source_for_windows == "expected_stage_start_stop"
+    assert result.detected_onset_consistency_flag is True
+    assert result.stage_anchor_reason == "stage and detected timing are consistent."
     assert result.baseline_strategy_primary == "stage_validated_baseline"
     assert result.baseline_strategy_alt == "long_premotion_baseline_reference"
     assert result.offset_primary_um is not None
@@ -103,6 +105,7 @@ def test_detected_onset_inconsistency_keeps_stage_primary_windows(tmp_path: Path
     assert result.detected_onset_video_s > result.expected_stage_start_video_s + 10.0
     assert result.detected_onset_diagnostic_only is True
     assert result.detected_onset_consistency_flag is False
+    assert "strongly inconsistent" in (result.stage_anchor_reason or "")
     assert result.physics_primary_gate != "fail"
     assert result.detection_qc_gate == "fail"
     assert result.final_drag_verdict == "suspect"

@@ -941,8 +941,16 @@ def analyze_drag_run(
                 f"detected timing moderately differs from expected stage timing (max_delta={worst_delta:.3f}s)."
             )
 
+    # Stage-anchor *messaging* must not treat expected-stage time as a surrogate "detected"
+    # onset when no independent trajectory onset exists (worst_delta can be 0 from that tautology).
+    _independent_detected_onset = (
+        _raw_detected_onset_s is not None and math.isfinite(float(_raw_detected_onset_s))
+    )
     if stage_anchor_available:
-        if worst_delta is None:
+        if not _independent_detected_onset:
+            stage_anchor_reason = "stage timing available; detected onset missing."
+            stage_anchor_confidence = "high" if not stage_anchor_breaking_reasons else "medium"
+        elif worst_delta is None:
             stage_anchor_confidence = "medium"
             stage_anchor_reason = "stage timing available; detected onset missing."
         elif worst_delta <= 0.5:
