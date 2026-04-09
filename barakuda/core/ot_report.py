@@ -8,6 +8,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import numpy as np
 
 
 PAGE_SIZE = (8.27, 11.69)  # A4 in inches
@@ -1157,6 +1158,7 @@ def build_ot_item_summary(
         "metrics": metrics,
         "diagnostics": diagnostics,
         "warnings": warnings,
+        "run_json": run_json or {},
         "artifacts": artifacts,
     }
     _finalize_brownian_report_augmentation(summary_out)
@@ -1371,13 +1373,12 @@ def _identity_rows(summary: dict[str, Any]) -> list[list[str]]:
                 pass
         return "n/a", "not_available"
 
-    acq_dt, acq_src = _resolve_acquisition_dt()
+    acq_dt, _acq_src = _resolve_acquisition_dt()
     processed_raw = summary.get("created_at") or datetime.now().isoformat(timespec="seconds")
     return [
         ["Item", _cover_cell_text(summary.get("item_id"), max_chars=40)],
         ["Status", _fmt_status(summary.get("status"))],
         ["Acquisition date/time", _cover_cell_text(acq_dt, max_chars=44)],
-        ["Acquisition source", _cover_cell_text(acq_src, max_chars=44)],
         ["Processed / report generated", _cover_cell_text(processed_raw, max_chars=44)],
     ]
 
@@ -1436,18 +1437,52 @@ def _key_result_rows(summary: dict[str, Any]) -> list[list[str]]:
 
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
+    def _fmt_display_converted(
+        value: Any,
+        se: Any,
+        *,
+        scale: float,
+        unit: str,
+        max_decimals: int | None = None,
+    ) -> str:
+        v = _parse_float(value)
+        if v is None:
+            return "n/a"
+        u = _parse_float(se)
+        v_scaled = v * scale
+        u_scaled = (u * scale) if u is not None else None
+        if max_decimals is not None and math.isfinite(v_scaled):
+            if u_scaled is not None and math.isfinite(u_scaled) and u_scaled > 0:
+                try:
+                    unc_exp = int(math.floor(math.log10(abs(u_scaled))))
+                    precision = max(0, min(max_decimals, -unc_exp + 1))
+                except Exception:
+                    precision = max_decimals
+                v_text = f"{v_scaled:.{precision}f}"
+                u_text = f"{u_scaled:.{precision}f}"
+                return f"{v_text} ± {u_text} {_fmt_unit(unit)}"
+            v_text = f"{v_scaled:.{max_decimals}f}"
+            return f"{v_text} {_fmt_unit(unit)}"
+        return _fmt_measure_with_uncertainty(v_scaled, u_scaled, unit)
+
     rows: list[list[str]] = [
         [
             "Mean viscosity",
-            _fmt_brownian_value_pm_se(
+            _fmt_display_converted(
                 metrics.get("eta_mean_pa_s"),
                 metrics.get("eta_mean_pa_s_se"),
-                "Pa*s",
+                scale=1e3,
+                unit="mPa*s",
             ),
         ],
         [
             "Diffusion coefficient",
-            _fmt_brownian_value_pm_se(metrics.get("D_m2_s"), metrics.get("D_m2_s_se"), "m^2/s"),
+            _fmt_display_converted(
+                metrics.get("D_m2_s"),
+                metrics.get("D_m2_s_se"),
+                scale=1e12,
+                unit="um^2/s",
+            ),
         ],
         [
             "Trap stiffness X",
@@ -1483,18 +1518,22 @@ def _key_result_rows(summary: dict[str, Any]) -> list[list[str]]:
         ],
         [
             "Relaxation time X",
-            _fmt_brownian_value_pm_se(
+            _fmt_display_converted(
                 diagnostics.get("tau_x_s"),
                 diagnostics.get("tau_x_s_se"),
-                "s",
+                scale=1e3,
+                unit="ms",
+                max_decimals=3,
             ),
         ],
         [
             "Relaxation time Y",
-            _fmt_brownian_value_pm_se(
+            _fmt_display_converted(
                 diagnostics.get("tau_y_s"),
                 diagnostics.get("tau_y_s_se"),
-                "s",
+                scale=1e3,
+                unit="ms",
+                max_decimals=3,
             ),
         ],
     ]
@@ -1537,6 +1576,10 @@ def _fmt_key_result(value: Any, unit: str, sig_figs: int = 3) -> str:
 def _conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
     metrics = summary.get("metrics") or {}
     diagnostics = summary.get("diagnostics") or {}
+    cfg = ((summary.get("run_json") or {}).get("config") or {})
+    tracking_cfg = cfg.get("tracking") or {}
+    start_frame = tracking_cfg.get("start_frame")
+    end_frame = tracking_cfg.get("end_frame")
     rows = [
         ["Analysis mode", _wrap(metrics.get("mode"), 50)],
         ["Frame rate", _fmt_measure(metrics.get("fps"), "Hz")],
@@ -1549,7 +1592,10 @@ def _conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Bead diameter", _fmt_measure(metrics.get("bead_diameter_um"), "um")],
         ["Bead radius", _fmt_measure(metrics.get("bead_radius_um"), "um")],
         ["Bead source", _wrap(metrics.get("bead_source"), 50)],
+        ["Tracking method", _wrap(tracking_cfg.get("method"), 50)],
     ]
+    if start_frame is not None and end_frame is not None:
+        rows.append(["Frame range used", _wrap(f"{start_frame} -> {end_frame}", 50)])
     for label, key in (
         ("Selected calibration source", "selected_calibration_path"),
         ("Selected trajectory source", "selected_trajectory_path"),
@@ -1723,16 +1769,10 @@ def _drag_alignment_rows(summary: dict[str, Any]) -> list[list[str]]:
 def _qc_rows(summary: dict[str, Any]) -> list[list[str]]:
     diagnostics = summary.get("diagnostics") or {}
     warnings = summary.get("warnings") or []
-    head: list[list[str]] = []
     bqc = diagnostics.get("brownian_qc") or {}
+    head: list[list[str]] = []
     if bqc and not _is_drag_report(summary):
-        head = [
-            ["QC: timing", _wrap(bqc.get("timing"), 52)],
-            ["QC: tracking", _wrap(bqc.get("tracking"), 52)],
-            ["QC: PSD fit", _wrap(bqc.get("psd_fit"), 52)],
-            ["Overall Brownian QC", _wrap(bqc.get("overall"), 52)],
-            ["QC rules (summary)", _wrap(bqc.get("notes"), 52)],
-        ]
+        head = [["QC rules (summary)", _wrap(_compact_qc_rules_summary(bqc.get("notes")), 52)]]
     rows = [
         ["Lost tracking fraction", _fmt_value(diagnostics.get("lost_fraction"))],
         ["Camera dropped frames", _fmt_value(diagnostics.get("camera_dropped_frames"))],
@@ -1839,6 +1879,101 @@ def _build_plot_entry(label: str, csv_path: str | None, x_opts: tuple[str, ...],
     return (label, path, x_opts, y_opts, x_title, y_title, log_x, log_y)
 
 
+def _compact_qc_rules_summary(notes: Any) -> str:
+    text = str(notes or "").strip()
+    if not text:
+        return "n/a"
+    # Keep this short so the QC row does not dominate the table layout.
+    return (
+        "Timing: timestamp validation. "
+        "Tracking: lost_fraction (<=1% pass, <=5% caution). "
+        "PSD: Lorentz RMSE/|A| tiers 2%/8%; fail if kappa unit check fails."
+    )
+
+
+def _safe_psd_fit_overlay(
+    *,
+    label: str,
+    csv_path: Path,
+    x_values: list[float],
+    y_values: list[float],
+    y_column_name: str,
+) -> tuple[list[float], list[float], float] | None:
+    """
+    Return PSD fit overlay curve only when conversion/model is demonstrably consistent.
+    Guardrails intentionally fail closed: measured PSD remains, but no overlay is drawn.
+    """
+    low_label = label.lower().strip()
+    axis_key = "x" if low_label.startswith("psd x") else ("y" if low_label.startswith("psd y") else None)
+    if axis_key is None:
+        return None
+    # We only draw overlay when measured series is in explicit um^2/Hz representation.
+    if y_column_name != "psd_um2_per_hz":
+        return None
+    suffix = "_psd_x.csv" if axis_key == "x" else "_psd_y.csv"
+    if not csv_path.name.endswith(suffix):
+        return None
+
+    base = csv_path.name[: -len(suffix)]
+    fit_path = csv_path.parent.parent / "audit" / f"{base}_psd_fit.json"
+    fit_payload = _load_json(fit_path)
+    fit_block = (fit_payload or {}).get(f"fit_{axis_key}") or {}
+    A = _parse_float(fit_block.get("A"))
+    B = _parse_float(fit_block.get("B"))
+    fc = _parse_float(fit_block.get("fc_hz"))
+    if A is None or B is None or fc is None or fc <= 0:
+        return None
+
+    fmin = _parse_float(fit_block.get("fmin_hz"))
+    fmax = _parse_float(fit_block.get("fmax_hz"))
+    if fmin is None or fmax is None or fmin <= 0 or fmax <= fmin:
+        return None
+
+    # Candidate unit scalings from fit-domain to measured-domain.
+    scales: list[float] = [1.0]
+    run_json = _load_json(csv_path.parent.parent / "audit" / "run.json")
+    um_per_px = _parse_float((((run_json or {}).get("config") or {}).get("calibration") or {}).get("um_per_px"))
+    if um_per_px is not None and um_per_px > 0:
+        s2 = float(um_per_px * um_per_px)
+        scales.extend([s2, 1.0 / s2])
+
+    best_overlay: tuple[float, list[float], list[float], float] | None = None
+    for scale in scales:
+        pairs: list[tuple[float, float]] = []
+        ys_fit: list[float] = []
+        xs_fit: list[float] = []
+        for f, p in zip(x_values, y_values):
+            ff = _parse_float(f)
+            pp = _parse_float(p)
+            if ff is None or pp is None or ff <= 0 or pp <= 0:
+                continue
+            if ff < fmin or ff > fmax:
+                continue
+            pred_native = (A / ((fc * fc) + (ff * ff))) + B
+            pred = pred_native * scale
+            if not math.isfinite(pred) or pred <= 0:
+                continue
+            xs_fit.append(float(ff))
+            ys_fit.append(float(pred))
+            pairs.append((float(ff), float(pred / pp)))
+        if len(pairs) < 20:
+            continue
+        log_ratios = [abs(math.log10(ratio)) for _ff, ratio in pairs if ratio > 0]
+        if not log_ratios:
+            continue
+        median_log_ratio = float(np.median(np.asarray(log_ratios, dtype=np.float64)))
+        if not math.isfinite(median_log_ratio):
+            continue
+        if best_overlay is None or median_log_ratio < best_overlay[0]:
+            best_overlay = (median_log_ratio, xs_fit, ys_fit, fc)
+
+    if best_overlay is None:
+        return None
+    if best_overlay[0] > 0.35:
+        return None
+    return best_overlay[1], best_overlay[2], best_overlay[3]
+
+
 def _build_image_entry(label: str, path_value: str | None) -> tuple[str, Path] | None:
     if not path_value:
         return None
@@ -1877,6 +2012,13 @@ def _style_table(table, body_font_size: int = 9, header_font_size: int = 10) -> 
             if _col_idx == 0:
                 text_obj.set_fontweight("bold")
     for (row_idx, _col_idx), cell in table.get_celld().items():
+        if row_idx > 0 and _col_idx == 1:
+            try:
+                label_text = str(table[(row_idx, 0)].get_text().get_text() or "").strip().lower()
+                if label_text == "qc rules (summary)":
+                    cell.PAD = 0.08
+            except Exception:
+                pass
         base_height = 0.062 if row_idx == 0 else 0.052
         cell.set_height(base_height * row_line_counts.get(row_idx, 1))
 
@@ -1904,6 +2046,21 @@ def _add_panel(fig, bounds: tuple[float, float, float, float], *, facecolor: str
         zorder=-5,
     )
     fig.add_artist(panel)
+
+
+def _add_figure_caption(fig, text: str, *, y: float = 0.84) -> None:
+    """Add a concise explanatory caption under the page header."""
+    fig.text(
+        PAGE_MARGIN_LEFT,
+        y,
+        text,
+        fontsize=9.2,
+        color=MUTED_COLOR,
+        ha="left",
+        va="top",
+        family=FONT_FAMILY,
+        wrap=True,
+    )
 
 
 def _cover_table_col_width(rows: list[list[str]], *, min_fraction: float = 0.30, max_fraction: float = 0.46) -> float:
@@ -1998,6 +2155,42 @@ def _cover_key_result_rows(summary_rows: list[list[str]]) -> list[list[str]]:
     return out
 
 
+def _build_single_cover_table_rows(
+    title: str,
+    left_rows: list[list[str]],
+    right_rows: list[list[str]],
+) -> list[list[str]]:
+    """Compose one two-column cover table with section dividers."""
+    item_in_title = title.lower().startswith("item report:")
+    identity_rows: list[list[str]] = []
+    for row in left_rows:
+        if not row:
+            continue
+        label = str(row[0]).strip()
+        value = str(row[1]).strip() if len(row) > 1 else ""
+        if label == "Acquisition source":
+            continue
+        if item_in_title and label == "Item":
+            continue
+        identity_rows.append([label, value or "n/a"])
+
+    key_rows = _cover_key_result_rows(right_rows)
+    qc_rows = [row for row in key_rows if str(row[0]).startswith("QC:") or str(row[0]) == "Overall Brownian QC"]
+    main_rows = [row for row in key_rows if row not in qc_rows]
+
+    out: list[list[str]] = []
+    if identity_rows:
+        out.append(["Identity / timing", ""])
+        out.extend(identity_rows)
+    if main_rows:
+        out.append(["Main results", ""])
+        out.extend(main_rows)
+    if qc_rows:
+        out.append(["Brownian QC", ""])
+        out.extend(qc_rows)
+    return out
+
+
 def _batch_cover_key_rows(batch_summary: dict[str, Any]) -> list[list[str]]:
     return [
         ["Report generated", _wrap(datetime.now().isoformat(timespec="seconds"), 22)],
@@ -2086,43 +2279,75 @@ def _render_cover_page(
     ax.text(
         0.50,
         0.688,
-        "Prepared for scientific review and external sharing.",
+        "Quick first-page verdict: identity, timing, primary results, and Brownian QC.",
         fontsize=10.4,
         color=TEXT_COLOR,
         ha="center",
         wrap=True,
     )
 
-    _render_cover_card(
-        fig,
-        (0.05, 0.19, 0.43, 0.44),
-        "Report details",
-        left_rows,
-        facecolor=CARD_BG,
-        header_label="Report detail",
-        label_wrap=20,
-        value_wrap=38,
-        min_label_fraction=0.31,
-        max_label_fraction=0.40,
-        label_col_fraction=0.36,
+    table_rows = _build_single_cover_table_rows(title, left_rows, right_rows)
+    bounds = (0.06, 0.15, 0.88, 0.50)
+    _add_panel(fig, bounds, facecolor=CARD_BG)
+    ax_tbl = fig.add_axes([bounds[0] + 0.015, bounds[1] + 0.020, bounds[2] - 0.030, bounds[3] - 0.040])
+    ax_tbl.axis("off")
+
+    def _wrap_cover_cell(text: str, width: int) -> str:
+        s = str(text or "").strip()
+        if not s:
+            return "n/a"
+        if len(s) <= width and "\n" not in s:
+            return s
+        return textwrap.fill(s, width=width, break_long_words=False, break_on_hyphens=False)
+
+    wrapped_rows = [[_wrap_cover_cell(r[0], 34), _wrap_cover_cell(r[1], 62)] for r in table_rows]
+    table = ax_tbl.table(
+        cellText=wrapped_rows,
+        colLabels=["Field", "Value"],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[0.36, 0.64],
+        bbox=[0.0, 0.0, 1.0, 1.0],
     )
-    _render_cover_card(
-        fig,
-        (0.52, 0.19, 0.43, 0.44),
-        "Key results",
-        _cover_key_result_rows(right_rows),
-        facecolor=PANEL_BG,
-        header_label="Key result",
-        label_wrap=26,
-        value_wrap=48,
-        min_label_fraction=0.40,
-        max_label_fraction=0.52,
-        label_col_fraction=0.44,
-    )
+    table.auto_set_font_size(False)
+    section_labels = {"Identity / timing", "Main results", "Brownian QC"}
+    nrows = len(wrapped_rows) + 1  # include header
+    row_h = 0.98 / max(1, nrows)
+    for (row_idx, col_idx), cell in table.get_celld().items():
+        text_obj = cell.get_text()
+        cell.PAD = 0.13
+        cell.set_edgecolor(LINE_COLOR)
+        cell.set_linewidth(0.45)
+        text_obj.set_wrap(True)
+        text_obj.set_ha("left")
+        text_obj.set_va("center")
+        if row_idx == 0:
+            cell.set_facecolor(BRAND_COLOR)
+            text_obj.set_color("white")
+            text_obj.set_fontweight("bold")
+            text_obj.set_fontsize(10.3)
+        else:
+            row_label = wrapped_rows[row_idx - 1][0]
+            is_section = (row_label in section_labels) and (wrapped_rows[row_idx - 1][1] in {"", "n/a"})
+            if is_section:
+                cell.set_facecolor(PANEL_BG if col_idx == 0 else CARD_BG)
+                if col_idx == 0:
+                    text_obj.set_fontweight("bold")
+                    text_obj.set_color(BRAND_COLOR)
+                    text_obj.set_fontsize(9.8)
+                else:
+                    text_obj.set_text("")
+            else:
+                cell.set_facecolor("white" if row_idx % 2 else PANEL_BG)
+                text_obj.set_color(TEXT_COLOR)
+                text_obj.set_fontsize(9.2 if col_idx == 0 else 9.0)
+                if col_idx == 0:
+                    text_obj.set_fontweight("bold")
+        cell.set_height(row_h)
 
     fig.text(
         0.50,
-        0.12,
+        0.105,
         "The sections that follow retain the same measurements, QC outputs, plots, and exported artifacts as the analysis pipeline.",
         fontsize=9.2,
         color=MUTED_COLOR,
@@ -2635,15 +2860,15 @@ def _render_dual_table_page(
     fig.patch.set_facecolor("white")
     _add_brand_header(fig, title, page_counter=page_counter)
 
-    _add_panel(fig, (0.06, 0.46, 0.88, 0.31), facecolor=CARD_BG)
-    _add_panel(fig, (0.06, 0.09, 0.88, 0.29), facecolor=PANEL_BG)
+    _add_panel(fig, (0.06, 0.45, 0.88, 0.33), facecolor=CARD_BG)
+    _add_panel(fig, (0.06, 0.08, 0.88, 0.33), facecolor=PANEL_BG)
 
-    ax_top_title = fig.add_axes([PAGE_MARGIN_LEFT, 0.74, 0.84, 0.05])
+    ax_top_title = fig.add_axes([PAGE_MARGIN_LEFT, 0.742, 0.84, 0.042])
     ax_top_title.axis("off")
     ax_top_title.text(0.0, 0.5, top_title, fontsize=FONT_SIZE_HEADER, fontweight="bold", 
                       color=TEXT_COLOR, va="center", family=FONT_FAMILY)
 
-    ax_top = fig.add_axes([PAGE_MARGIN_LEFT, 0.495, 0.84, 0.23])
+    ax_top = fig.add_axes([PAGE_MARGIN_LEFT, 0.472, 0.84, 0.26])
     ax_top.axis("off")
     top_table = ax_top.table(
         cellText=top_rows,
@@ -2652,14 +2877,14 @@ def _render_dual_table_page(
         colLoc="left",
         bbox=[0.0, 0.0, 1.0, 1.0],
     )
-    _style_table(top_table)
+    _style_table(top_table, body_font_size=9, header_font_size=10)
 
-    ax_bottom_title = fig.add_axes([PAGE_MARGIN_LEFT, 0.34, 0.84, 0.05])
+    ax_bottom_title = fig.add_axes([PAGE_MARGIN_LEFT, 0.362, 0.84, 0.042])
     ax_bottom_title.axis("off")
     ax_bottom_title.text(0.0, 0.5, bottom_title, fontsize=FONT_SIZE_HEADER, fontweight="bold", 
                          color=TEXT_COLOR, va="center", family=FONT_FAMILY)
 
-    ax_bottom = fig.add_axes([PAGE_MARGIN_LEFT, 0.125, 0.84, 0.19])
+    ax_bottom = fig.add_axes([PAGE_MARGIN_LEFT, 0.105, 0.84, 0.24])
     ax_bottom.axis("off")
     bottom_table = ax_bottom.table(
         cellText=bottom_rows,
@@ -2668,7 +2893,7 @@ def _render_dual_table_page(
         colLoc="left",
         bbox=[0.0, 0.0, 1.0, 1.0],
     )
-    _style_table(bottom_table)
+    _style_table(bottom_table, body_font_size=9, header_font_size=10)
 
     pdf.savefig(fig)
     plt.close(fig)
@@ -2698,7 +2923,13 @@ def _render_plot_pages(
         fig, axes = plt.subplots(nrows, ncols, figsize=PAGE_SIZE)
         fig.patch.set_facecolor("white")
         _add_brand_header(fig, title, page_counter=page_counter)
-        fig.subplots_adjust(top=0.81, left=0.10, right=0.92, bottom=0.09, hspace=0.46, wspace=0.28)
+        if "Power Spectral Density" in title:
+            _add_figure_caption(
+                fig,
+                "PSD captures the frequency content of Brownian motion. Measured spectra are overlaid with Lorentzian fits to support corner-frequency and fit-quality interpretation.",
+                y=0.84,
+            )
+        fig.subplots_adjust(top=0.77, left=0.10, right=0.92, bottom=0.085, hspace=0.40, wspace=0.28)
         flat_axes = list(axes.flatten()) if hasattr(axes, "flatten") else [axes]
         for ax in flat_axes:
             ax.axis("off")
@@ -2712,7 +2943,55 @@ def _render_plot_pages(
             xs, ys, _, _ = parsed
             ax.axis("on")
             ax.set_facecolor(PANEL_BG)
-            ax.plot(xs, ys, linewidth=1.6, color=PLOT_COLOR)
+            fit_drawn = False
+            y_name = parsed[3]
+            overlay = _safe_psd_fit_overlay(
+                label=label,
+                csv_path=csv_path,
+                x_values=xs,
+                y_values=ys,
+                y_column_name=y_name,
+            )
+
+            low_label = label.lower()
+            is_psd = low_label.startswith("psd x") or low_label.startswith("psd y")
+            ax.plot(xs, ys, linewidth=1.6, color=PLOT_COLOR, label="Measured PSD" if is_psd else None)
+            if overlay is not None:
+                xs_fit, ys_fit, fc_hz = overlay
+                ax.plot(
+                    xs_fit,
+                    ys_fit,
+                    linewidth=1.55,
+                    color="#C0392B",
+                    linestyle="--",
+                    alpha=0.95,
+                    label="Fitted PSD",
+                )
+                fit_drawn = True
+                if fc_hz > 0 and math.isfinite(fc_hz):
+                    fc_color = "#E67E22"  # warm accent: readable, distinct from measured/fitted curves
+                    fc_pred = (ys_fit[min(range(len(xs_fit)), key=lambda i: abs(xs_fit[i] - fc_hz))] if xs_fit else None)
+                    ax.axvline(fc_hz, color=fc_color, linestyle=(0, (3, 2)), linewidth=1.45, alpha=0.95)
+                    if fc_pred is not None and math.isfinite(fc_pred) and fc_pred > 0:
+                        ax.plot(
+                            [fc_hz],
+                            [fc_pred],
+                            marker="o",
+                            markersize=4.6,
+                            markeredgewidth=0.7,
+                            markeredgecolor="white",
+                            color=fc_color,
+                            zorder=5,
+                        )
+                    ax.text(
+                        fc_hz * 1.10,
+                        fc_pred * 1.20 if (fc_pred is not None and fc_pred > 0) else (max(ys_fit) * 1.05 if ys_fit else 1.0),
+                        f"fc = {fc_hz:.2f} Hz",
+                        fontsize=8,
+                        color=fc_color,
+                        ha="left",
+                        va="bottom",
+                    )
             if log_x:
                 ax.set_xscale("log")
             if log_y:
@@ -2723,6 +3002,8 @@ def _render_plot_pages(
             ax.set_ylabel(y_title, fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
             ax.tick_params(labelsize=8)
             ax.grid(True, which="both", linestyle="--", linewidth=0.5, color=LINE_COLOR)
+            if fit_drawn:
+                ax.legend(loc="upper right", fontsize=8, frameon=True, facecolor="white", edgecolor=LINE_COLOR)
             for spine in ax.spines.values():
                 spine.set_color(LINE_COLOR)
         pdf.savefig(fig)
@@ -2760,6 +3041,11 @@ def _render_trajectory_heatmap_page(
     fig = plt.figure(figsize=PAGE_SIZE)
     fig.patch.set_facecolor("white")
     _add_brand_header(fig, title, page_counter=page_counter)
+    _add_figure_caption(
+        fig,
+        "Heat map and marginal histograms summarize spatial Brownian fluctuations in the trap. Distribution symmetry and spread help assess trap behavior.",
+        y=0.84,
+    )
 
     # Scatter_hist layout: histx top, scatter bottom-left, histy right, colorbar far right
     gs = GridSpec(
@@ -2770,7 +3056,7 @@ def _render_trajectory_heatmap_page(
         left=PAGE_MARGIN_LEFT,
         right=1 - PAGE_MARGIN_RIGHT,
         bottom=PAGE_MARGIN_BOTTOM + 0.02,
-        top=0.84,
+        top=0.79,
         wspace=0.05,
         hspace=0.05,
     )
@@ -2821,11 +3107,16 @@ def _render_histogram_r_and_msd_page(
     """Render one page with Histogram R curve and MSD plot stacked vertically."""
     import matplotlib.pyplot as plt
 
-    # Two rows, one column: top = Histogram R, bottom = MSD
-    fig, axes = plt.subplots(2, 1, figsize=PAGE_SIZE)
+    # Two rows, one column: top = Histogram R, bottom = MSD (MSD gets more height for readability)
+    fig, axes = plt.subplots(2, 1, figsize=PAGE_SIZE, gridspec_kw={"height_ratios": [1.0, 1.35]})
     fig.patch.set_facecolor("white")
     _add_brand_header(fig, "Histogram R And MSD", page_counter=page_counter)
-    fig.subplots_adjust(top=0.81, left=0.10, right=0.92, bottom=0.09, hspace=0.38)
+    _add_figure_caption(
+        fig,
+        "Histogram R summarizes radial position distribution. MSD shows time-dependent mean-squared displacement and supports relaxation-dynamics interpretation.",
+        y=0.84,
+    )
+    fig.subplots_adjust(top=0.77, left=0.10, right=0.92, bottom=0.085, hspace=0.32)
 
     ax_hist, ax_msd = axes
 
@@ -2858,7 +3149,22 @@ def _render_histogram_r_and_msd_page(
         if msd_parsed is not None:
             msd_xs, msd_ys, _, _ = msd_parsed
             ax_msd.set_facecolor(PANEL_BG)
-            ax_msd.loglog(msd_xs, msd_ys, color=PLOT_COLOR, linewidth=1.5)
+            finite_pairs = [
+                (x, y) for x, y in zip(msd_xs, msd_ys)
+                if math.isfinite(float(x)) and math.isfinite(float(y)) and float(x) > 0 and float(y) > 0
+            ]
+            if finite_pairs:
+                xs_pos = [float(p[0]) for p in finite_pairs]
+                ys_pos = [float(p[1]) for p in finite_pairs]
+                ax_msd.loglog(xs_pos, ys_pos, color=PLOT_COLOR, linewidth=2.0, marker="o", markersize=2.3, alpha=0.95)
+                xmin, xmax = min(xs_pos), max(xs_pos)
+                ymin, ymax = min(ys_pos), max(ys_pos)
+                if xmin > 0 and xmax > xmin:
+                    ax_msd.set_xlim(xmin * 0.90, xmax * 1.12)
+                if ymin > 0 and ymax > ymin:
+                    ax_msd.set_ylim(ymin * 0.85, ymax * 1.18)
+            else:
+                ax_msd.plot(msd_xs, msd_ys, color=PLOT_COLOR, linewidth=1.9)
             ax_msd.set_title("MSD", fontsize=11.5, fontweight="bold", color=TEXT_COLOR, pad=10, family=FONT_FAMILY)
             ax_msd.set_xlabel("τ [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
             ax_msd.set_ylabel("MSD [µm²]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
@@ -2898,6 +3204,11 @@ def _render_preview_grid_page(
     fig = plt.figure(figsize=PAGE_SIZE)
     fig.patch.set_facecolor("white")
     _add_brand_header(fig, "Preview Frames", page_counter=page_counter)
+    _add_figure_caption(
+        fig,
+        "Representative frames sampled across the run for visual QA. They help verify tracking stability and localization quality over time.",
+        y=0.84,
+    )
 
     nrows, ncols = 3, 4
     gs = GridSpec(
@@ -2906,7 +3217,7 @@ def _render_preview_grid_page(
         left=PAGE_MARGIN_LEFT,
         right=1 - PAGE_MARGIN_RIGHT,
         bottom=PAGE_MARGIN_BOTTOM + 0.02,
-        top=0.84,
+        top=0.79,
         wspace=0.12,
         hspace=0.18,
     )
