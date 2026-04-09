@@ -728,8 +728,8 @@ def test_brownian_identity_rows_use_acquisition_and_processed_times(tmp_path: Pa
     rows = ot_report._identity_rows(summary)
     labels = {row[0]: row[1] for row in rows}
     assert labels["Acquisition date/time"] == "2026-04-08T11:23:27"
-    assert labels["Acquisition source"] == "video_meta.timestamp"
     assert labels["Processed / report generated"] == "2026-04-08T16:50:15"
+    assert "Acquisition source" not in labels
 
 
 def test_scientific_notation_uses_multiplication_sign() -> None:
@@ -826,12 +826,531 @@ def test_brownian_summary_includes_uncertainties_tau_anisotropy_qc(tmp_path: Pat
     assert any(lab.startswith("QC:") for lab in labels)
     assert "Diffusion coefficient" in labels
     diff_row = next(r for r in key_rows if r[0] == "Diffusion coefficient")
-    assert "×" in diff_row[1] or "e-" in diff_row[1].lower()
+    assert ("×" in diff_row[1]) or ("e-" in diff_row[1].lower()) or ("µm²/s" in diff_row[1])
     qc = ot_report._qc_rows(summary)
     qc_labels = [r[0] for r in qc]
-    assert "QC: timing" in qc_labels
-    assert "Overall Brownian QC" in qc_labels
     assert "QC rules (summary)" in qc_labels
+    assert "QC: timing" not in qc_labels
+    assert "QC: tracking" not in qc_labels
+    assert "QC: PSD fit" not in qc_labels
+    assert "Overall Brownian QC" not in qc_labels
+
+
+def test_brownian_cover_key_results_use_readable_display_units() -> None:
+    summary = {
+        "metrics": {
+            "mode": "BROWNIAN",
+            "eta_mean_pa_s": 0.00123,
+            "eta_mean_pa_s_se": 1.0e-5,
+            "D_m2_s": 2.5e-13,
+            "D_m2_s_se": 1.0e-14,
+            "kappa_x_pn_per_um": 18.0,
+            "kappa_x_pn_per_um_se": 0.07,
+            "kappa_y_pn_per_um": 17.0,
+            "kappa_y_pn_per_um_se": 0.07,
+        },
+        "diagnostics": {
+            "fc_x_hz": 57.0,
+            "fc_x_hz_se": 0.02,
+            "fc_y_hz": 64.0,
+            "fc_y_hz_se": 0.02,
+            "tau_x_s": 1.0 / (2.0 * math.pi * 57.0),
+            "tau_x_s_se": 1.0e-5,
+            "tau_y_s": 1.0 / (2.0 * math.pi * 64.0),
+            "tau_y_s_se": 1.0e-5,
+            "trap_kappa_ratio_xy": 18.0 / 17.0,
+            "trap_fc_ratio_xy": 57.0 / 64.0,
+            "brownian_qc": {"timing": "pass", "tracking": "pass", "psd_fit": "pass", "overall": "usable"},
+        },
+    }
+    rows = ot_report._key_result_rows(summary)
+    value_by_label = {label: value for label, value in rows}
+    assert "mPa" in value_by_label["Mean viscosity"]
+    assert "µm²/s" in value_by_label["Diffusion coefficient"]
+    assert "ms" in value_by_label["Relaxation time X"]
+    assert "ms" in value_by_label["Relaxation time Y"]
+    assert "Trap anisotropy (κx/κy)" in value_by_label
+    assert "QC: timing" in value_by_label
+    assert "Overall Brownian QC" in value_by_label
+
+
+def test_brownian_qc_verdict_stays_on_cover_not_page3() -> None:
+    summary = {
+        "metrics": {"mode": "BROWNIAN"},
+        "diagnostics": {
+            "brownian_qc": {
+                "timing": "pass",
+                "tracking": "pass",
+                "psd_fit": "warning",
+                "overall": "caution",
+                "notes": "summary notes",
+            }
+        },
+    }
+    cover_rows = ot_report._key_result_rows(summary)
+    cover_labels = [a for a, _ in cover_rows]
+    assert "QC: timing" in cover_labels
+    assert "QC: tracking" in cover_labels
+    assert "QC: PSD fit" in cover_labels
+    assert "Overall Brownian QC" in cover_labels
+
+    page3_rows = ot_report._qc_rows(summary)
+    page3_labels = [a for a, _ in page3_rows]
+    assert "QC: timing" not in page3_labels
+    assert "QC: tracking" not in page3_labels
+    assert "QC: PSD fit" not in page3_labels
+    assert "Overall Brownian QC" not in page3_labels
+    assert "QC rules (summary)" in page3_labels
+
+
+def test_relaxation_time_cover_format_is_shorter_in_ms() -> None:
+    summary = {
+        "metrics": {"mode": "BROWNIAN"},
+        "diagnostics": {
+            "tau_x_s": 0.0027561234,
+            "tau_x_s_se": 0.000000321,
+            "tau_y_s": 0.0031049876,
+            "tau_y_s_se": 0.000000456,
+        },
+    }
+    rows = ot_report._key_result_rows(summary)
+    values = {label: value for label, value in rows}
+    tx = values["Relaxation time X"]
+    ty = values["Relaxation time Y"]
+    assert "ms" in tx and "ms" in ty
+    assert tx.count(".") <= 2
+    assert ty.count(".") <= 2
+
+
+def test_cover_single_table_rows_drop_item_and_source_when_title_has_item() -> None:
+    left_rows = [
+        ["Item", "Gly20_brown_rep01"],
+        ["Status", "Success"],
+        ["Acquisition date/time", "2026-04-08T11:23:27"],
+        ["Acquisition source", "video_meta.timestamp"],
+        ["Processed / report generated", "2026-04-08T16:50:15"],
+    ]
+    right_rows = [
+        ["Mean viscosity", "1.230 ± 0.010 mPa·s"],
+        ["QC: timing", "pass"],
+        ["Overall Brownian QC", "usable"],
+    ]
+    rows = ot_report._build_single_cover_table_rows(
+        "Item Report: Gly20_brown_rep01",
+        left_rows,
+        right_rows,
+    )
+    labels = [r[0] for r in rows]
+    assert "Item" not in labels
+    assert "Acquisition source" not in labels
+    assert "Identity / timing" in labels
+    assert "Main results" in labels
+    assert "Brownian QC" in labels
+
+
+def test_render_cover_page_uses_single_table_not_multi_cards(monkeypatch) -> None:
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    called = {"cards": 0}
+
+    def _forbid_card(*_args, **_kwargs):
+        called["cards"] += 1
+        raise AssertionError("multi-card cover layout should not be used")
+
+    monkeypatch.setattr(ot_report, "_render_cover_card", _forbid_card)
+    ot_report._render_cover_page(
+        _DummyPdf(),
+        title="Item Report: Gly20_brown_rep01",
+        subtitle="Item-level summary",
+        left_rows=[
+            ["Item", "Gly20_brown_rep01"],
+            ["Status", "Success"],
+            ["Acquisition date/time", "2026-04-08T11:23:27"],
+            ["Processed / report generated", "2026-04-08T16:50:15"],
+        ],
+        right_rows=[
+            ["Mean viscosity", "1.230 ± 0.010 mPa·s"],
+            ["QC: timing", "pass"],
+            ["Overall Brownian QC", "usable"],
+        ],
+    )
+    assert called["cards"] == 0
+
+
+def test_real_item_preview_v6_generation_smoke() -> None:
+    item_root = Path(r"C:/Work/BARAKUDA_FULL/runs/ot/2026-04-08_164655/items/Gly20_brown_rep01")
+    run_dir = item_root / "analysis"
+    out_pdf = run_dir / "results" / "2026-04-09-OT-Gly20_brown_rep01-report-polished-preview-v6.pdf"
+    if not run_dir.is_dir():
+        pytest.skip("Real item folder is not available in this environment.")
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name="Gly20_brown_rep01",
+        item_id="Gly20_brown_rep01",
+        source_input_path=str(item_root / "raw" / "Gly20_brown_rep01.raw"),
+        status="success",
+    )
+    summary["analysis_dir"] = str(run_dir)
+    ot_report.export_ot_item_pdf(out_pdf, summary)
+    assert out_pdf.is_file()
+    assert out_pdf.stat().st_size > 1000
+
+
+def test_real_item_preview_v7_generation_smoke() -> None:
+    item_root = Path(r"C:/Work/BARAKUDA_FULL/runs/ot/2026-04-08_164655/items/Gly20_brown_rep01")
+    run_dir = item_root / "analysis"
+    out_pdf = run_dir / "results" / "2026-04-09-OT-Gly20_brown_rep01-report-polished-preview-v7.pdf"
+    if not run_dir.is_dir():
+        pytest.skip("Real item folder is not available in this environment.")
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name="Gly20_brown_rep01",
+        item_id="Gly20_brown_rep01",
+        source_input_path=str(item_root / "raw" / "Gly20_brown_rep01.raw"),
+        status="success",
+    )
+    summary["analysis_dir"] = str(run_dir)
+    ot_report.export_ot_item_pdf(out_pdf, summary)
+    assert out_pdf.is_file()
+    assert out_pdf.stat().st_size > 1000
+
+
+def test_histogram_and_msd_page_emphasizes_msd_log_curve(tmp_path: Path, monkeypatch) -> None:
+    hist = tmp_path / "hist_r.csv"
+    hist.write_text("bin_center_um,count\n0.1,10\n0.2,15\n0.3,8\n", encoding="utf-8")
+    msd = tmp_path / "msd.csv"
+    msd.write_text(
+        "tau_s,msd_r_um2\n0.001,0.002\n0.002,0.004\n0.004,0.009\n0.008,0.018\n",
+        encoding="utf-8",
+    )
+
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    import matplotlib.axes
+
+    called = {"loglog": 0}
+    original_loglog = matplotlib.axes.Axes.loglog
+
+    def _capture_loglog(self, *args, **kwargs):
+        called["loglog"] += 1
+        assert kwargs.get("linewidth", 0) >= 1.9
+        return original_loglog(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "loglog", _capture_loglog)
+    ot_report._render_histogram_r_and_msd_page(_DummyPdf(), hist, msd)
+    assert called["loglog"] >= 1
+
+
+def test_graph_pages_emit_short_captions(tmp_path: Path, monkeypatch) -> None:
+    caps: list[str] = []
+    monkeypatch.setattr(ot_report, "_add_figure_caption", lambda _fig, text, **_kwargs: caps.append(str(text)))
+
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    # Preview frames page
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    img = tmp_path / "p1.png"
+    plt.imsave(img, np.zeros((8, 8, 3), dtype=np.uint8))
+    ot_report._render_preview_grid_page(_DummyPdf(), [img])
+
+    # Trajectory page
+    traj = tmp_path / "traj.csv"
+    traj.write_text("x_corr_um,y_corr_um\n0.0,0.0\n0.1,0.05\n0.2,-0.03\n", encoding="utf-8")
+    ot_report._render_trajectory_heatmap_page(_DummyPdf(), traj)
+
+    # Histogram+MSD page
+    hist = tmp_path / "hist_r.csv"
+    hist.write_text("bin_center_um,count\n0.1,10\n0.2,12\n", encoding="utf-8")
+    msd = tmp_path / "msd.csv"
+    msd.write_text("tau_s,msd_r_um2\n0.001,0.002\n0.002,0.004\n", encoding="utf-8")
+    ot_report._render_histogram_r_and_msd_page(_DummyPdf(), hist, msd)
+
+    assert any("Representative frames" in c for c in caps)
+    assert any("Heat map and marginal histograms" in c for c in caps)
+    assert any("Histogram R summarizes" in c for c in caps)
+
+
+def test_psd_plot_page_draws_measured_and_fit_overlay(tmp_path: Path, monkeypatch) -> None:
+    csv_dir = tmp_path / "analysis" / "csv"
+    audit_dir = tmp_path / "analysis" / "audit"
+    csv_dir.mkdir(parents=True)
+    audit_dir.mkdir(parents=True)
+
+    A, B, fc = 1.5, 0.01, 3.0
+    psd_x = csv_dir / "demo_psd_x.csv"
+    freqs = [float(i) for i in range(1, 65)]
+    vals = [(A / (fc * fc + f * f)) + B for f in freqs]
+    lines = ["f_hz,psd_um2_per_hz"] + [f"{f},{v}" for f, v in zip(freqs, vals)]
+    psd_x.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (audit_dir / "demo_psd_fit.json").write_text(
+        json.dumps({"fit_x": {"A": A, "B": B, "fc_hz": fc, "fmin_hz": 1.0, "fmax_hz": 64.0}}, indent=2),
+        encoding="utf-8",
+    )
+
+    calls: list[str] = []
+    fc_lines = {"count": 0}
+    fc_labels: list[str] = []
+    import matplotlib.axes
+
+    original_plot = matplotlib.axes.Axes.plot
+    original_axvline = matplotlib.axes.Axes.axvline
+    original_text = matplotlib.axes.Axes.text
+
+    def _capture_plot(self, *args, **kwargs):
+        label = kwargs.get("label")
+        if isinstance(label, str):
+            calls.append(label)
+        return original_plot(self, *args, **kwargs)
+
+    def _capture_axvline(self, x=0, *args, **kwargs):
+        fc_lines["count"] += 1
+        return original_axvline(self, x, *args, **kwargs)
+
+    def _capture_text(self, x, y, s, *args, **kwargs):
+        if isinstance(s, str) and "fc =" in s:
+            fc_labels.append(s)
+        return original_text(self, x, y, s, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "plot", _capture_plot)
+    monkeypatch.setattr(matplotlib.axes.Axes, "axvline", _capture_axvline)
+    monkeypatch.setattr(matplotlib.axes.Axes, "text", _capture_text)
+
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    entry = ot_report._build_plot_entry(
+        "PSD X",
+        str(psd_x),
+        ("f_hz",),
+        ("psd_um2_per_hz",),
+        "Frequency [Hz]",
+        "PSD",
+        True,
+        True,
+    )
+    assert entry is not None
+    ot_report._render_plot_pages(_DummyPdf(), "Power Spectral Density", [entry], layout="vertical", items_per_page=2)
+    assert "Measured PSD" in calls
+    assert "Fitted PSD" in calls
+    assert fc_lines["count"] >= 1
+    assert any("Hz" in t for t in fc_labels)
+
+
+def test_psd_overlay_fallback_when_inconsistent_fit(tmp_path: Path, monkeypatch) -> None:
+    csv_dir = tmp_path / "analysis" / "csv"
+    audit_dir = tmp_path / "analysis" / "audit"
+    csv_dir.mkdir(parents=True)
+    audit_dir.mkdir(parents=True)
+
+    psd_x = csv_dir / "bad_psd_x.csv"
+    psd_x.write_text(
+        "f_hz,psd_um2_per_hz\n1.0,1.2\n2.0,0.9\n4.0,0.6\n8.0,0.3\n16.0,0.2\n32.0,0.1\n",
+        encoding="utf-8",
+    )
+    (audit_dir / "bad_psd_fit.json").write_text(
+        json.dumps({"fit_x": {"A": 1e-10, "B": 1e-12, "fc_hz": 50.0, "fmin_hz": 1.0, "fmax_hz": 32.0}}, indent=2),
+        encoding="utf-8",
+    )
+
+    calls: list[str] = []
+    import matplotlib.axes
+
+    original_plot = matplotlib.axes.Axes.plot
+
+    def _capture_plot(self, *args, **kwargs):
+        label = kwargs.get("label")
+        if isinstance(label, str):
+            calls.append(label)
+        return original_plot(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "plot", _capture_plot)
+
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    entry = ot_report._build_plot_entry(
+        "PSD X",
+        str(psd_x),
+        ("f_hz",),
+        ("psd_um2_per_hz",),
+        "Frequency [Hz]",
+        "PSD",
+        True,
+        True,
+    )
+    assert entry is not None
+    ot_report._render_plot_pages(_DummyPdf(), "Power Spectral Density", [entry], layout="vertical", items_per_page=2)
+    assert "Measured PSD" in calls
+    assert "Fitted PSD" not in calls
+
+
+def test_qc_rules_summary_is_compact_for_table_layout() -> None:
+    summary = {
+        "metrics": {"mode": "BROWNIAN"},
+        "diagnostics": {
+            "brownian_qc": {
+                "notes": "very long original note should be compacted in table",
+            }
+        },
+    }
+    rows = ot_report._qc_rows(summary)
+    qc_row = next((r for r in rows if r[0] == "QC rules (summary)"), None)
+    assert qc_row is not None
+    text = qc_row[1]
+    assert "Timing:" in text and "Tracking:" in text and "PSD:" in text
+    assert len(str(text)) < 220
+
+
+def test_style_table_reduces_qc_rules_value_cell_padding() -> None:
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    ax.axis("off")
+    table = ax.table(
+        cellText=[
+            ["QC rules (summary)", "Timing: ... Tracking: ... PSD: ..."],
+            ["Warnings", "0"],
+        ],
+        colLabels=["Field", "Value"],
+        cellLoc="left",
+        colLoc="left",
+        bbox=[0.0, 0.0, 1.0, 1.0],
+    )
+    ot_report._style_table(table)
+    # header is row 0; first body row is row 1.
+    assert table[(1, 1)].PAD <= 0.08
+    plt.close(fig)
+
+
+def test_safe_psd_overlay_applies_unit_scale_when_needed(tmp_path: Path) -> None:
+    analysis = tmp_path / "analysis"
+    csv_dir = analysis / "csv"
+    audit_dir = analysis / "audit"
+    csv_dir.mkdir(parents=True)
+    audit_dir.mkdir(parents=True)
+    um_per_px = 0.1
+    (audit_dir / "run.json").write_text(
+        json.dumps({"config": {"calibration": {"um_per_px": um_per_px}}}, indent=2),
+        encoding="utf-8",
+    )
+    A, B, fc = 1.0, 0.02, 5.0
+    (audit_dir / "u_psd_fit.json").write_text(
+        json.dumps({"fit_x": {"A": A, "B": B, "fc_hz": fc, "fmin_hz": 1.0, "fmax_hz": 64.0}}, indent=2),
+        encoding="utf-8",
+    )
+    psd_path = csv_dir / "u_psd_x.csv"
+    xs = [float(i) for i in range(1, 65)]
+    # Measured in um^2/Hz, while fit parameters are effectively px^2/Hz.
+    ys = [((A / (fc * fc + x * x)) + B) * (um_per_px**2) for x in xs]
+    lines = ["f_hz,psd_um2_per_hz"] + [f"{x},{y}" for x, y in zip(xs, ys)]
+    psd_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    overlay = ot_report._safe_psd_fit_overlay(
+        label="PSD X",
+        csv_path=psd_path,
+        x_values=xs,
+        y_values=ys,
+        y_column_name="psd_um2_per_hz",
+    )
+    assert overlay is not None
+    ox, oy, fc_fit = overlay
+    assert len(ox) >= 20
+    assert len(ox) == len(oy)
+    assert fc_fit > 0
+
+
+def test_msd_page_does_not_draw_fake_fit_overlay(tmp_path: Path, monkeypatch) -> None:
+    hist = tmp_path / "hist_r.csv"
+    hist.write_text("bin_center_um,count\n0.1,10\n0.2,12\n", encoding="utf-8")
+    msd = tmp_path / "msd.csv"
+    msd.write_text("tau_s,msd_r_um2\n0.001,0.002\n0.002,0.004\n0.004,0.009\n", encoding="utf-8")
+
+    labels: list[str] = []
+    import matplotlib.axes
+
+    original_plot = matplotlib.axes.Axes.plot
+
+    def _capture_plot(self, *args, **kwargs):
+        label = kwargs.get("label")
+        if isinstance(label, str):
+            labels.append(label)
+        return original_plot(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "plot", _capture_plot)
+
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    ot_report._render_histogram_r_and_msd_page(_DummyPdf(), hist, msd)
+    assert all("fit" not in str(l).lower() for l in labels)
+
+
+def test_real_item_preview_v8_generation_smoke() -> None:
+    item_root = Path(r"C:/Work/BARAKUDA_FULL/runs/ot/2026-04-08_164655/items/Gly20_brown_rep01")
+    run_dir = item_root / "analysis"
+    out_pdf = run_dir / "results" / "2026-04-09-OT-Gly20_brown_rep01-report-polished-preview-v8.pdf"
+    if not run_dir.is_dir():
+        pytest.skip("Real item folder is not available in this environment.")
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name="Gly20_brown_rep01",
+        item_id="Gly20_brown_rep01",
+        source_input_path=str(item_root / "raw" / "Gly20_brown_rep01.raw"),
+        status="success",
+    )
+    summary["analysis_dir"] = str(run_dir)
+    ot_report.export_ot_item_pdf(out_pdf, summary)
+    assert out_pdf.is_file()
+    assert out_pdf.stat().st_size > 1000
+
+
+def test_real_item_preview_v9_generation_smoke() -> None:
+    item_root = Path(r"C:/Work/BARAKUDA_FULL/runs/ot/2026-04-08_164655/items/Gly20_brown_rep01")
+    run_dir = item_root / "analysis"
+    out_pdf = run_dir / "results" / "2026-04-09-OT-Gly20_brown_rep01-report-polished-preview-v9.pdf"
+    if not run_dir.is_dir():
+        pytest.skip("Real item folder is not available in this environment.")
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name="Gly20_brown_rep01",
+        item_id="Gly20_brown_rep01",
+        source_input_path=str(item_root / "raw" / "Gly20_brown_rep01.raw"),
+        status="success",
+    )
+    summary["analysis_dir"] = str(run_dir)
+    ot_report.export_ot_item_pdf(out_pdf, summary)
+    assert out_pdf.is_file()
+    assert out_pdf.stat().st_size > 1000
+
+
+def test_real_item_preview_v10_generation_smoke() -> None:
+    item_root = Path(r"C:/Work/BARAKUDA_FULL/runs/ot/2026-04-08_164655/items/Gly20_brown_rep01")
+    run_dir = item_root / "analysis"
+    out_pdf = run_dir / "results" / "2026-04-09-OT-Gly20_brown_rep01-report-polished-preview-v10.pdf"
+    if not run_dir.is_dir():
+        pytest.skip("Real item folder is not available in this environment.")
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name="Gly20_brown_rep01",
+        item_id="Gly20_brown_rep01",
+        source_input_path=str(item_root / "raw" / "Gly20_brown_rep01.raw"),
+        status="success",
+    )
+    summary["analysis_dir"] = str(run_dir)
+    ot_report.export_ot_item_pdf(out_pdf, summary)
+    assert out_pdf.is_file()
+    assert out_pdf.stat().st_size > 1000
 
 
 def test_theory_page_lorentz_equation_replaced_with_stable_form() -> None:
