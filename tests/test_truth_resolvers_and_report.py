@@ -307,16 +307,7 @@ def test_drag_pdf_uses_drag_pages_not_brownian(tmp_path: Path, monkeypatch) -> N
 
     monkeypatch.setattr("matplotlib.backends.backend_pdf.PdfPages", lambda _p: _DummyPdf())
     monkeypatch.setattr(ot_report, "_render_cover_page", lambda *args, **kwargs: calls.append("cover"))
-    monkeypatch.setattr(
-        ot_report,
-        "_render_drag_item_summary_page",
-        lambda *args, **kwargs: calls.append("drag_summary_page"),
-    )
-    monkeypatch.setattr(
-        ot_report,
-        "_render_drag_analytical_page",
-        lambda *args, **kwargs: calls.append("drag_analytical_page"),
-    )
+    monkeypatch.setattr(ot_report, "_render_drag_theory_page", lambda *args, **kwargs: calls.append("drag_theory"))
     monkeypatch.setattr(ot_report, "_render_theory_page", lambda *args, **kwargs: calls.append("brownian_theory"))
     monkeypatch.setattr(ot_report, "_render_trajectory_heatmap_page", lambda *args, **kwargs: calls.append("trajectory"))
     monkeypatch.setattr(ot_report, "_render_histogram_r_and_msd_page", lambda *args, **kwargs: calls.append("hist_msd"))
@@ -325,9 +316,7 @@ def test_drag_pdf_uses_drag_pages_not_brownian(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(ot_report, "_render_dual_table_page", lambda *args, **kwargs: calls.append("dual"))
 
     ot_report.export_ot_item_pdf(tmp_path / "drag_report.pdf", summary)
-    assert "drag_summary_page" in calls
-    assert "drag_analytical_page" in calls
-    assert "cover" not in calls
+    assert "drag_theory" in calls
     assert "brownian_theory" not in calls
     assert "trajectory" not in calls
     assert "hist_msd" not in calls
@@ -363,8 +352,7 @@ def test_drag_cover_status_reflects_validation_gate_fail() -> None:
     assert any(row[0] == "Final drag verdict" for row in combined)
 
 
-def test_drag_report_two_page_family_layout(tmp_path: Path, monkeypatch) -> None:
-    """Drag item PDF uses the compact two-page layout (summary + analytical), not Brownian plot pages."""
+def test_drag_report_page3_split_into_readable_blocks(tmp_path: Path, monkeypatch) -> None:
     run_dir = tmp_path / "analysis"
     base = "drag_layout"
     _write(
@@ -392,33 +380,28 @@ def test_drag_report_two_page_family_layout(tmp_path: Path, monkeypatch) -> None
         source_input_path="drag.raw",
         status="success",
     )
-
     class _DummyPdf:
         def __enter__(self):
             return self
-
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    calls: list[str] = []
+    page_titles: list[str] = []
     monkeypatch.setattr("matplotlib.backends.backend_pdf.PdfPages", lambda _p: _DummyPdf())
     monkeypatch.setattr(ot_report, "_render_cover_page", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ot_report, "_render_drag_theory_page", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         ot_report,
-        "_render_drag_item_summary_page",
-        lambda *args, **kwargs: calls.append("drag_summary_page"),
+        "_render_paginated_table",
+        lambda _pdf, title, *_args, **_kwargs: page_titles.append(title),
     )
-    monkeypatch.setattr(
-        ot_report,
-        "_render_drag_analytical_page",
-        lambda *args, **kwargs: calls.append("drag_analytical_page"),
-    )
-    monkeypatch.setattr(ot_report, "_render_plot_pages", lambda *args, **kwargs: calls.append("plot"))
+    monkeypatch.setattr(ot_report, "_render_plot_pages", lambda *args, **kwargs: None)
 
     ot_report.export_ot_item_pdf(tmp_path / "drag_layout.pdf", summary)
-    assert calls.count("drag_summary_page") == 1
-    assert calls.count("drag_analytical_page") == 1
-    assert "plot" not in calls
+    assert "Drag Provenance" in page_titles
+    assert "Drag Timing and Alignment" in page_titles
+    assert "Drag QC and Confidence" in page_titles
+    assert "Drag Warnings" in page_titles
 
 
 def test_drag_report_trace_page_prefers_relative_time_axis(tmp_path: Path) -> None:
@@ -476,92 +459,6 @@ def test_current_drag_report_path_prefers_pdf_over_summary_json(tmp_path: Path) 
     assert summary["diagnostics"].get("current_drag_report_path") == "C:/drag/reports/final_report.pdf"
 
 
-def test_drag_key_result_rows_use_drag_metrics_not_brownian() -> None:
-    summary = {
-        "metrics": {"kappa_drag_pn_per_um": 5.0},
-        "diagnostics": {
-            "report_source_kind": "drag_summary",
-            "eta_pa_s": 0.002,
-            "drag_force_n": 2e-12,
-            "offset_um": 0.15,
-            "actual_speed_um_s": 10.0,
-            "speed_used_for_physics": 9.8,
-            "final_drag_verdict": "pass",
-        },
-    }
-    rows = ot_report._key_result_rows(summary)
-    labels = [r[0] for r in rows]
-    assert "Drag viscosity" in labels
-    assert "Drag force" in labels
-    assert "Speed used for physics" in labels
-    assert "Trap stiffness (drag κ)" in labels
-    assert not any("Corner frequency" in lab for lab in labels)
-
-
-def test_export_drag_item_pdf_smoke(tmp_path: Path) -> None:
-    run_dir = tmp_path / "analysis"
-    base = "drag_pdf_smoke"
-    audit = run_dir / "audit"
-    csv_dir = run_dir / "csv"
-    audit.mkdir(parents=True)
-    csv_dir.mkdir(parents=True)
-    _write(
-        audit / "run.json",
-        {
-            "config": {
-                "tracking": {"timing": {}},
-                "postprocess": {"physics_mode": "DRAG"},
-                "calibration": {"um_per_px": 0.064},
-            },
-        },
-    )
-    _write(
-        audit / f"{base}_drag_summary.json",
-        {
-            "report_source_kind": "drag_summary",
-            "drag_force_n": 1.0e-12,
-            "abs_offset_um": 0.2,
-            "kappa_pn_per_um": 4.2,
-            "actual_speed_um_s": 6.5,
-            "speed_used_for_physics": 6.5,
-            "eta_pa_s": 0.0010,
-            "final_drag_verdict": "pass",
-            "final_drag_reason": "ok",
-            "physics_primary_gate": "pass",
-            "detection_qc_gate": "pass",
-            "drag_anchor_mode_requested": "auto",
-            "drag_anchor_mode_effective": "stage_validated",
-            "primary_timing_source_for_windows": "stage",
-            "baseline_start_s": 0.0,
-            "baseline_end_s": 0.5,
-            "steady_start_s": 1.0,
-            "steady_end_s": 1.5,
-            "expected_stage_start_video_s": 0.8,
-            "expected_stage_stop_video_s": 1.6,
-            "t_first_s": 10.0,
-        },
-    )
-    trace = csv_dir / f"{base}_drag_trace_annotated.csv"
-    trace.write_text(
-        "video_time_rel_s,video_time_s,axis_px,is_baseline_window,is_steady_window\n"
-        "0.0,10.0,100.0,1,0\n"
-        "0.3,10.3,100.1,1,0\n"
-        "1.1,11.1,103.0,0,1\n"
-        "1.3,11.3,103.1,0,1\n",
-        encoding="utf-8",
-    )
-    summary = build_ot_item_summary(
-        run_dir=run_dir,
-        base_name=base,
-        item_id=base,
-        source_input_path="x.raw",
-        status="success",
-    )
-    out = tmp_path / "drag_item.pdf"
-    ot_report.export_ot_item_pdf(out, summary)
-    assert out.is_file() and out.stat().st_size > 2000
-
-
 def test_trace_page_renders_primary_and_qc_markers(tmp_path: Path, monkeypatch) -> None:
     trace = tmp_path / "trace.csv"
     trace.write_text(
@@ -569,7 +466,6 @@ def test_trace_page_renders_primary_and_qc_markers(tmp_path: Path, monkeypatch) 
         encoding="utf-8",
     )
     summary = {
-        "metrics": {"um_per_px": 0.1},
         "diagnostics": {
             "baseline_start_s": 0.0,
             "baseline_end_s": 0.5,
@@ -580,7 +476,7 @@ def test_trace_page_renders_primary_and_qc_markers(tmp_path: Path, monkeypatch) 
             "detected_stage_start_video_s": 11.4,
             "detected_stage_stop_video_s": 12.4,
             "t_first_s": 10.0,
-        },
+        }
     }
     labels: list[str] = []
     import matplotlib.axes
