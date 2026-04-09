@@ -382,7 +382,7 @@ def run_offline_drag_self_tests(output_dir: Path | None = None) -> None:
         export_alignment_diagnostics_json=True,
     )
 
-    const_result = analyze_drag_run(const_dir, cfg)
+    const_result = analyze_drag_run(const_dir, cfg, allow_discovered_trajectory=True)
     expected_eta = None
     # Expected eta from formula eta = kappa*offset/(6*pi*R*v)
     # actual speed in analysis is actual_speed_user_s * stage_um_per_unit

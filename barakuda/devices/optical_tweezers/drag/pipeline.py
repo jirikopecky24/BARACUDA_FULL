@@ -133,41 +133,48 @@ def _run_tracking_to_trajectory(
     return traj_path
 
 
-def run_drag_from_raw(
+def generate_drag_trajectory_from_raw(
     run_dir: Path,
-    drag_config: DragAnalysisConfig | None = None,
+    output_csv_dir: Path,
     tracking_config: dict[str, Any] | None = None,
-    output_root: Path | None = None,
-) -> tuple["DragAnalysisResult", dict[str, Path]]:
-    """End-to-end DRAG pipeline over a single RAW run folder.
+) -> Path:
+    """Run OT tracking on Drag RAW and write ``<basename>_trajectory.csv`` under ``output_csv_dir``.
 
-    Steps:
-      1) Discover RAW + timestamps + stage metadata in run_dir.
-      2) Run shared OT tracking-only helper to generate <basename>_trajectory.csv.
-      3) Run DRAG analysis (alignment, windows, offsets, physics) over that trajectory.
-      4) Export drag_summary.json/csv + drag_diagnostic.png in run_dir.
-
-    Returns:
-      (DragAnalysisResult, {"trajectory": ..., "summary_json": ..., "summary_csv": ..., "diagnostic_png": ...})
+    Does not search for an existing trajectory CSV; does not use Brownian calibration.
     """
-    paths = discover_drag_run_paths(run_dir, trajectory_path=None, require_trajectory=False)
-    canonical_root = (
-        Path(output_root).resolve()
-        if output_root is not None
-        else (Path(paths.run_dir).resolve() / "analysis")
+    paths = discover_drag_run_paths(
+        run_dir,
+        trajectory_path=None,
+        require_trajectory=False,
+        include_trajectory_discovery=False,
     )
+    output_csv_dir = Path(output_csv_dir)
+    output_csv_dir.mkdir(parents=True, exist_ok=True)
+    return _run_tracking_to_trajectory(paths.raw_path, output_csv_dir, tracking_config=tracking_config)
+
+
+def finalize_drag_run_from_trajectory(
+    run_dir: Path,
+    trajectory_path: Path,
+    drag_config: DragAnalysisConfig,
+    output_root: Path,
+) -> tuple["DragAnalysisResult", dict[str, Path]]:
+    """Physics, exports, and protocol merge after Drag-owned trajectory exists.
+
+    ``drag_config`` must already include Brownian-derived calibration (κ, etc.) when required.
+    """
+    paths = discover_drag_run_paths(
+        run_dir,
+        trajectory_path=None,
+        require_trajectory=False,
+        include_trajectory_discovery=False,
+    )
+    canonical_root = Path(output_root).resolve()
     out_audit = canonical_root / "audit"
     out_csv = canonical_root / "csv"
     out_results = canonical_root / "results"
     for d in (canonical_root, out_audit, out_csv, out_results):
         d.mkdir(parents=True, exist_ok=True)
-
-    # A) tracking-only pass -> trajectory.csv
-    traj_path = _run_tracking_to_trajectory(paths.raw_path, out_csv, tracking_config=tracking_config)
-
-    # B) DRAG analysis
-    # analysis_axis here is only a default; stage metadata ultimately defines the physical axis.
-    cfg = drag_config or DragAnalysisConfig(analysis_axis="x")
 
     from .export import (
         export_alignment_diagnostics_json,
@@ -179,12 +186,18 @@ def run_drag_from_raw(
     from barakuda.core.trajectory_csv_io import read_trajectory_csv
     import csv as _csv
 
-    # analyze_drag_run will also reload paths via load_drag_run; we just pass explicit trajectory path
     cfg = replace(
-        cfg,
+        drag_config,
         current_drag_output_root=str(canonical_root),
     )
-    result = analyze_drag_run(run_dir, cfg, trajectory_path=traj_path)
+    traj_path = Path(trajectory_path).resolve()
+    result = analyze_drag_run(
+        run_dir,
+        cfg,
+        trajectory_path=traj_path,
+        trajectory_source_kind="generated_from_drag_raw",
+        trajectory_generated_in_this_workflow=True,
+    )
     expected_summary_path = out_audit / f"{result.basename}_drag_summary.json"
     result = replace(
         result,
@@ -328,6 +341,35 @@ def run_drag_from_raw(
     return result, outputs
 
 
+def run_drag_from_raw(
+    run_dir: Path,
+    drag_config: DragAnalysisConfig | None = None,
+    tracking_config: dict[str, Any] | None = None,
+    output_root: Path | None = None,
+) -> tuple["DragAnalysisResult", dict[str, Path]]:
+    """End-to-end DRAG over a RAW run folder (tracking on RAW, then analysis).
+
+    ``drag_config`` must carry calibration inputs (e.g. κ from Brownian) when used
+    from a full shell pipeline; this helper does not load Brownian folders itself.
+    """
+    paths = discover_drag_run_paths(
+        run_dir,
+        trajectory_path=None,
+        require_trajectory=False,
+        include_trajectory_discovery=False,
+    )
+    canonical_root = (
+        Path(output_root).resolve()
+        if output_root is not None
+        else (Path(paths.run_dir).resolve() / "analysis")
+    )
+    out_csv = canonical_root / "csv"
+    out_csv.mkdir(parents=True, exist_ok=True)
+    traj_path = _run_tracking_to_trajectory(paths.raw_path, out_csv, tracking_config=tracking_config)
+    cfg = drag_config or DragAnalysisConfig(analysis_axis="x")
+    return finalize_drag_run_from_trajectory(run_dir, traj_path, cfg, canonical_root)
+
+
 def _update_run_protocol_with_drag_analysis(
     *,
     run_dir: Path,
@@ -442,6 +484,8 @@ def _update_run_protocol_with_drag_analysis(
         "selected_stage_trace_path": result.selected_stage_trace_path,
         "selected_timestamps_path": result.selected_timestamps_path,
         "selected_trajectory_path": result.selected_trajectory_path,
+        "trajectory_source_kind": result.trajectory_source_kind,
+        "trajectory_generated_in_this_workflow": result.trajectory_generated_in_this_workflow,
         "current_drag_input_path": result.current_drag_input_path,
         "current_drag_item_root": result.current_drag_item_root,
         "brownian_baseline_folder": result.brownian_baseline_folder,

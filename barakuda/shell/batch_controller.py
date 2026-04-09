@@ -56,7 +56,8 @@ from barakuda.devices.optical_tweezers.drag.calibration_import import (
     load_brownian_calibration_from_folder,
 )
 from barakuda.devices.optical_tweezers.drag.pipeline import (
-    run_drag_from_raw,
+    finalize_drag_run_from_trajectory,
+    generate_drag_trajectory_from_raw,
 )
 from barakuda.devices.optical_tweezers.drag.io import evaluate_drag_preflight
 from barakuda.devices.optical_tweezers.drag.alignment import DragAlignmentError
@@ -1536,6 +1537,15 @@ class BatchController:
                             if str(preflight.get("drag_preflight_status", "")).startswith("failed_"):
                                 raise ValueError(str(preflight.get("drag_preflight_message") or "DRAG preflight failed."))
 
+                            drag_csv_dir = Path(run_dir) / "csv"
+                            drag_csv_dir.mkdir(parents=True, exist_ok=True)
+                            drag_traj_path = generate_drag_trajectory_from_raw(
+                                run_dir_drag,
+                                drag_csv_dir,
+                                tracking_config=config["tracking"],
+                            )
+                            self._log(f"[DRAG] trajectory from Drag RAW tracking: {drag_traj_path}")
+
                             brownian_cal = load_brownian_calibration_from_folder(Path(baseline_folder))
                             self._log(
                                 "[DRAG preflight] baseline_calibration_artifacts="
@@ -1662,13 +1672,12 @@ class BatchController:
                             )
                             self._log(f"[DRAG] drag_anchor_mode_requested={_drag_anchor_mode!r}")
 
-                            # DRAG expects the acquisition/run folder where RAW + stage files live.
-
-                            drag_result, drag_outputs = run_drag_from_raw(
-                                run_dir=run_dir_drag,
-                                drag_config=drag_cfg,
-                                tracking_config=config["tracking"],
-                                output_root=run_dir,
+                            # Physics / exports use Brownian calibration only after Drag-owned trajectory exists.
+                            drag_result, drag_outputs = finalize_drag_run_from_trajectory(
+                                run_dir_drag,
+                                drag_traj_path,
+                                drag_cfg,
+                                Path(run_dir),
                             )
                             self._log(
                                 f"[DRAG output] trajectory={drag_outputs.get('trajectory')}"

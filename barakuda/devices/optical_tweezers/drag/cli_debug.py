@@ -105,7 +105,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        result = analyze_drag_run(run_dir, cfg, trajectory_path=trajectory_path)
+        result = analyze_drag_run(
+            run_dir,
+            cfg,
+            trajectory_path=trajectory_path,
+            allow_discovered_trajectory=trajectory_path is None,
+        )
     except (DragIoError, DragAlignmentError, DragWindowError) as e:
         print(f"[DRAG] Analysis failed: {e}")
         return 1

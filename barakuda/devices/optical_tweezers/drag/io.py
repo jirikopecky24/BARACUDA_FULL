@@ -211,8 +211,13 @@ def discover_drag_run_paths(
     trajectory_path: Path | None = None,
     *,
     require_trajectory: bool = True,
+    include_trajectory_discovery: bool = True,
 ) -> DragRunPaths:
     """Discover all required DRAG files in a run directory.
+
+    When ``include_trajectory_discovery`` is False and no ``trajectory_path`` is
+    provided, trajectory CSV is left unset (used for Drag's default RAW→tracking
+    flow where tracking generates the file).
 
     Preferred convention:
       <basename>.raw
@@ -383,7 +388,7 @@ def discover_drag_run_paths(
             mode="provided_path_in_item_scope",
             warning=None,
         )
-    else:
+    elif include_trajectory_discovery:
         try:
             resolved_traj, tr_mode, tr_warn, tr_candidates = _select_item_scoped_artifact(
                 artifact_key="trajectory_path",
@@ -440,6 +445,26 @@ def discover_drag_run_paths(
                 mode="missing_or_ambiguous",
                 warning=str(exc),
             )
+    else:
+        resolved_traj = None
+        artifact_selection["trajectory_path"] = {
+            "selected_artifact_path": None,
+            "artifact_selection_mode": "skipped_for_drag_generated_trajectory",
+            "artifact_selection_warning": None,
+            "candidate_files": [],
+            "searched_directories": [str(p) for p in analysis_scoped_dirs],
+        }
+        _log_artifact_discovery(
+            input_path=run_dir,
+            item_root=item_root,
+            artifact_key="trajectory_path",
+            expected_kind="trajectory CSV",
+            search_dirs=analysis_scoped_dirs,
+            candidates=[],
+            selected=None,
+            mode="skipped_for_drag_generated_trajectory",
+            warning=None,
+        )
 
     return DragRunPaths(
         run_dir=run_dir,
@@ -468,7 +493,12 @@ def evaluate_drag_preflight(
     baseline_selection_mode = "explicit_ui_folder" if baseline_folder else "missing"
 
     try:
-        paths = discover_drag_run_paths(run_dir, trajectory_path=None, require_trajectory=False)
+        paths = discover_drag_run_paths(
+            run_dir,
+            trajectory_path=None,
+            require_trajectory=False,
+            include_trajectory_discovery=False,
+        )
     except Exception as exc:
         return {
             "current_drag_input_path": str(current_drag_input_path),
@@ -482,37 +512,35 @@ def evaluate_drag_preflight(
         }
 
     traj_info = paths.artifact_selection.get("trajectory_path") or {}
-    traj_selected = paths.trajectory_path
 
-    if traj_selected is not None:
-        status = "ready_existing_trajectory"
-        msg = "Current drag trajectory CSV is available in current drag context."
-    else:
-        if item_root is None:
-            status = "ready_tracking_required_standalone"
-            if baseline_folder is not None:
-                msg = (
-                    "Current drag run has no trajectory CSV. Brownian baseline folder is loaded correctly "
-                    "but is unrelated to the current drag trajectory. Tracking will generate trajectory first."
-                )
-            else:
-                msg = (
-                    "Current drag run has no trajectory CSV and no Brownian baseline folder is configured. "
-                    "Tracking can generate trajectory, but Drag calibration still requires Brownian baseline."
-                )
-        else:
-            status = "ready_tracking_required_item"
+    # Default Drag workflow does not use preflight to gate on any pre-existing trajectory CSV.
+    if item_root is None:
+        status = "ready_drag_sidecars_standalone"
+        if baseline_folder is not None:
             msg = (
-                "Current drag item has no trajectory CSV yet. Tracking will generate trajectory before Drag analysis."
+                "Drag RAW and sidecars are present in this folder. The batch will run Drag tracking on the RAW "
+                "video, then load the paired Brownian folder for calibration/κ only (Brown is not used to pick "
+                "a trajectory)."
             )
-        warn = traj_info.get("artifact_selection_warning")
-        if warn:
-            msg = f"{msg} Discovery detail: {warn}"
+        else:
+            msg = (
+                "Drag RAW and sidecars are present. Tracking will run on the Drag RAW video; configure a Brownian "
+                "baseline folder for Drag calibration after tracking."
+            )
+    else:
+        status = "ready_drag_sidecars_item"
+        msg = (
+            "Drag RAW and sidecars are present in the item. The batch will run Drag tracking on the Drag RAW "
+            "video, then apply Brownian calibration from the paired baseline folder (not for trajectory selection)."
+        )
+    warn = traj_info.get("artifact_selection_warning")
+    if warn:
+        msg = f"{msg} Discovery detail: {warn}"
 
     return {
         "current_drag_input_path": str(current_drag_input_path),
         "current_drag_item_root": str(item_root) if item_root is not None else None,
-        "current_drag_trajectory_path": str(traj_selected) if traj_selected is not None else None,
+        "current_drag_trajectory_path": None,
         "brownian_baseline_folder": str(baseline_folder) if baseline_folder is not None else None,
         "baseline_selection_mode": baseline_selection_mode,
         "drag_preflight_status": status,
@@ -670,18 +698,40 @@ def _load_video_timestamps(timestamps_path: Path) -> tuple[list[int], list[float
         ) from exc
 
 
-def load_drag_run(run_dir: Path, trajectory_path: Path | None = None) -> DragRunLoaded:
+def load_drag_run(
+    run_dir: Path,
+    trajectory_path: Path | None = None,
+    *,
+    allow_discover_trajectory: bool = True,
+) -> DragRunLoaded:
     """Load all required inputs for a DRAG analysis from a run folder.
 
-    Note: DRAG v1 requires a trajectory CSV; if none is discovered or provided,
-    this function raises DragIoError with a user-facing explanation.
+    With an explicit ``trajectory_path``, on-disk trajectory discovery is skipped
+    (thesis-safe path after Drag-generated tracking).
+
+    With ``trajectory_path=None`` and ``allow_discover_trajectory=True``, a CSV
+    is discovered as before (debug / legacy reuse only). With
+    ``allow_discover_trajectory=False``, trajectory must be supplied separately.
     """
-    paths = discover_drag_run_paths(run_dir, trajectory_path=trajectory_path)
+    if trajectory_path is not None:
+        paths = discover_drag_run_paths(
+            run_dir,
+            trajectory_path=Path(trajectory_path).resolve(),
+            require_trajectory=False,
+            include_trajectory_discovery=False,
+        )
+    else:
+        paths = discover_drag_run_paths(
+            run_dir,
+            trajectory_path=None,
+            require_trajectory=allow_discover_trajectory,
+            include_trajectory_discovery=allow_discover_trajectory,
+        )
     if paths.trajectory_path is None:
         raise DragIoError(
-            "DRAG v1 requires an existing trajectory CSV. "
-            f"No trajectory was provided and {paths.basename}_trajectory.csv "
-            f"was not found in {paths.run_dir}."
+            "DRAG v1 requires a trajectory CSV. "
+            "Provide trajectory_path (e.g. from Drag tracking output), or pass "
+            "allow_discover_trajectory=True to reuse an on-disk trajectory (non-default)."
         )
 
     stage_meta = _load_stage_meta(paths.stage_meta_path)

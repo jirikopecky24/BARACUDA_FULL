@@ -147,9 +147,44 @@ def analyze_drag_run(
     run_dir: Path,
     config: DragAnalysisConfig,
     trajectory_path: Path | None = None,
+    *,
+    allow_discovered_trajectory: bool = False,
+    trajectory_source_kind: str | None = None,
+    trajectory_generated_in_this_workflow: bool | None = None,
 ) -> DragAnalysisResult:
-    """High-level entry point: perform DRAG analysis for a single run folder."""
-    loaded: DragRunLoaded = load_drag_run(Path(run_dir), trajectory_path=trajectory_path)
+    """High-level entry point: perform DRAG analysis for a single run folder.
+
+    Default thesis-safe path: pass ``trajectory_path`` to the CSV produced by Drag
+    tracking (e.g. ``run_drag_from_raw`` / ``generate_drag_trajectory_from_raw``).
+
+    Set ``allow_discovered_trajectory=True`` only for explicit debug/legacy reuse of
+    an on-disk trajectory without running tracking first.
+    """
+    rd = Path(run_dir)
+    if trajectory_path is None:
+        if not allow_discovered_trajectory:
+            raise DragIoError(
+                "Drag analysis requires trajectory_path for the default path (trajectory from Drag tracking "
+                "on this RAW). Use allow_discovered_trajectory=True only to reuse an existing on-disk "
+                "trajectory CSV (non-default / debug)."
+            )
+        loaded = load_drag_run(rd, trajectory_path=None, allow_discover_trajectory=True)
+        _traj_kind = trajectory_source_kind or "reused_existing_trajectory"
+        _traj_gen = (
+            False if trajectory_generated_in_this_workflow is None else bool(trajectory_generated_in_this_workflow)
+        )
+    else:
+        loaded = load_drag_run(rd, trajectory_path=Path(trajectory_path), allow_discover_trajectory=False)
+        if trajectory_source_kind == "generated_from_drag_raw":
+            _traj_kind = "generated_from_drag_raw"
+            _traj_gen = True if trajectory_generated_in_this_workflow is None else bool(trajectory_generated_in_this_workflow)
+        else:
+            _traj_kind = trajectory_source_kind or "provided_explicit_path"
+            _traj_gen = (
+                bool(trajectory_generated_in_this_workflow)
+                if trajectory_generated_in_this_workflow is not None
+                else False
+            )
 
     axis = config.analysis_axis
     stage_axis = loaded.stage_meta.axis
@@ -1310,5 +1345,7 @@ def analyze_drag_run(
         stage_validated_physics_acceptable=stage_validated_physics_acceptable,
         detected_onset_qc_only=detected_onset_qc_only,
         detected_onset_veto_applied=detected_onset_veto_applied,
+        trajectory_source_kind=_traj_kind,
+        trajectory_generated_in_this_workflow=_traj_gen,
     )
 

@@ -30,6 +30,8 @@ def drag_result_to_dict(result: DragAnalysisResult) -> dict[str, Any]:
         "selected_stage_trace_path": result.selected_stage_trace_path,
         "selected_timestamps_path": result.selected_timestamps_path,
         "selected_trajectory_path": result.selected_trajectory_path,
+        "trajectory_source_kind": result.trajectory_source_kind,
+        "trajectory_generated_in_this_workflow": result.trajectory_generated_in_this_workflow,
         "current_drag_input_path": result.current_drag_input_path,
         "current_drag_item_root": result.current_drag_item_root,
         "brownian_baseline_folder": result.brownian_baseline_folder,
