@@ -867,6 +867,9 @@ def build_ot_item_summary(
         diagnostics["steady_end_s"] = _parse_float(drag_summary_json.get("steady_end_s"))
         diagnostics["actual_motion_duration_s"] = _parse_float(drag_summary_json.get("actual_motion_duration_s"))
         diagnostics["actual_speed_um_s"] = _parse_float(drag_summary_json.get("actual_speed_um_s"))
+        diagnostics["commanded_speed_user_s_ref"] = _parse_float(
+            drag_summary_json.get("commanded_speed_user_s_ref")
+        )
         diagnostics["eta_pa_s"] = _parse_float(drag_summary_json.get("eta_pa_s"))
         diagnostics["analysis_status"] = drag_summary_json.get("analysis_status")
         diagnostics["physics_status"] = drag_summary_json.get("physics_status")
@@ -1456,6 +1459,701 @@ def _drag_cover_rows(summary: dict[str, Any]) -> tuple[list[list[str]], list[lis
     return rows[:6], rows[6:]
 
 
+_DRAG_SUMMARY_SECTION_LABELS = frozenset(
+    {
+        "Identity / route",
+        "Verdict & evidence",
+        "Main Drag results",
+        "Secondary diagnostics",
+        "Conditions & QC snapshot",
+    }
+)
+
+
+def _drag_summary_um_per_px(summary: dict[str, Any]) -> float | None:
+    return _parse_float((summary.get("metrics") or {}).get("um_per_px"))
+
+
+def _drag_verdict_strip_meta(summary: dict[str, Any]) -> tuple[str, str, str]:
+    """Return (banner_title, strip_hex, detail_one_line)."""
+    diagnostics = summary.get("diagnostics") or {}
+    gate = str(diagnostics.get("drag_validation_gate") or "").strip().lower()
+    final_verdict = str(diagnostics.get("final_drag_verdict") or "").strip().lower()
+    physics_status = str(diagnostics.get("physics_status") or "").strip().lower()
+    if final_verdict == "fail" or gate == "fail" or "fail" in physics_status:
+        level = "fail"
+        color = "#B71C1C"
+    elif final_verdict in {"suspect", "pass_with_warnings"} or gate == "suspect" or "suspect" in physics_status:
+        level = "caution"
+        color = "#F9A825"
+    else:
+        level = "pass"
+        color = "#2E7D32"
+    verdict_disp = _fmt_value(diagnostics.get("final_drag_verdict")).replace("n/a", "unknown")
+    title = f"Drag verdict — {verdict_disp.upper()}"
+    reason = str(diagnostics.get("final_drag_reason") or "").strip()
+    if len(reason) > 140:
+        reason = reason[:137] + "…"
+    if not reason:
+        reason = "See summary fields and analytical page for stage-truth and QC context."
+    return title, color, reason
+
+
+def _drag_computed_physics_available(summary: dict[str, Any]) -> bool:
+    diagnostics = summary.get("diagnostics") or {}
+    eta = _parse_float(diagnostics.get("eta_pa_s"))
+    if eta is not None and math.isfinite(eta) and eta > 0:
+        return True
+    f_n = _parse_float(diagnostics.get("drag_force_n"))
+    off = _parse_float(diagnostics.get("offset_um"))
+    return f_n is not None and off is not None and math.isfinite(f_n) and math.isfinite(off)
+
+
+def _drag_accepted_physics_line(summary: dict[str, Any]) -> str:
+    diagnostics = summary.get("diagnostics") or {}
+    raw = diagnostics.get("stage_validated_physics_acceptable")
+    if isinstance(raw, bool):
+        return "yes" if raw else "no"
+    verdict = str(diagnostics.get("final_drag_verdict") or "").strip().lower()
+    pg = str(diagnostics.get("physics_primary_gate") or "").strip().lower()
+    if verdict in {"fail"} or pg == "fail":
+        return "no"
+    if verdict in {"pass", "pass_with_warnings"} and pg in {"pass", "suspect", ""}:
+        return "yes (verdict / primary gate)"
+    return _fmt_value(raw)
+
+
+def _drag_format_eta_mpa_s(diagnostics: dict[str, Any]) -> str:
+    eta = _parse_float(diagnostics.get("eta_pa_s"))
+    if eta is None:
+        return "n/a"
+    return _fmt_measure(eta * 1e3, "mPa*s")
+
+
+def _drag_format_force_pN(diagnostics: dict[str, Any]) -> str:
+    f_n = _parse_float(diagnostics.get("drag_force_n"))
+    if f_n is None:
+        return "n/a"
+    return _fmt_measure(f_n * 1e12, "pN")
+
+
+def _select_drag_preview_paths(image_paths: list[Path], max_images: int = 3) -> list[Path]:
+    paths = [Path(p) for p in image_paths if p]
+    if not paths:
+        return []
+    if len(paths) <= max_images:
+        return paths
+    n = len(paths)
+    if max_images <= 1:
+        return [paths[0]]
+    if max_images == 2:
+        return [paths[0], paths[-1]]
+    mid = paths[n // 2]
+    return [paths[0], mid, paths[-1]]
+
+
+def _drag_sample_context_rows(summary: dict[str, Any]) -> list[list[str]]:
+    """Optional experiment labels from video_meta / run_json when present."""
+    rows: list[list[str]] = []
+    analysis_dir = summary.get("analysis_dir")
+    if not analysis_dir:
+        return rows
+    item_root = Path(str(analysis_dir)).parent
+    meta_path = item_root / "raw" / "video_meta.json"
+    payload = _load_json(meta_path) if meta_path.is_file() else None
+    if payload:
+        for key, label in (
+            ("sample_id", "Sample ID"),
+            ("sample", "Sample"),
+            ("bead_id", "Bead ID"),
+            ("family", "Family"),
+            ("day", "Day"),
+            ("experiment", "Experiment"),
+        ):
+            val = payload.get(key)
+            if val is not None and str(val).strip():
+                rows.append([label, _cover_cell_text(val, max_chars=48)])
+    run_json = summary.get("run_json") or {}
+    prov = (run_json.get("provenance") or {}) if isinstance(run_json, dict) else {}
+    for key, label in (("sample_id", "Sample ID"), ("batch_label", "Batch label")):
+        val = prov.get(key)
+        if val is not None and str(val).strip() and not any(r[0] == label for r in rows):
+            rows.append([label, _cover_cell_text(val, max_chars=48)])
+    return rows[:6]
+
+
+def _build_drag_item_cover_table_rows(summary: dict[str, Any]) -> list[list[str]]:
+    """Single two-column table: section dividers + fields (Brown cover discipline, drag content)."""
+    metrics = summary.get("metrics") or {}
+    diagnostics = summary.get("diagnostics") or {}
+    warnings = summary.get("warnings") or []
+    rows: list[list[str]] = []
+
+    rows.append(["Identity / route", ""])
+    rows.extend(_identity_rows(summary))
+    rows.append(["Analysis route", "Active Drag — constant-velocity drag"])
+    rows.extend(_drag_sample_context_rows(summary))
+    axis_lbl = str(diagnostics.get("drag_stage_axis") or diagnostics.get("drag_axis") or "").strip()
+    if axis_lbl:
+        rows.append(["Drag axis (stage / analysis)", axis_lbl])
+
+    rows.append(["Verdict & evidence", ""])
+    rows.append(["Final drag verdict", _cover_cell_text(diagnostics.get("final_drag_verdict"), max_chars=56)])
+    rows.append(["Verdict reason", _cover_cell_text(diagnostics.get("final_drag_reason"), max_chars=56)])
+    rows.append(
+        ["Computed drag physics available", "yes" if _drag_computed_physics_available(summary) else "no"]
+    )
+    rows.append(["Accepted for physics interpretation", _cover_cell_text(_drag_accepted_physics_line(summary), max_chars=56)])
+
+    rows.append(["Main Drag results", ""])
+    rows.append(["Drag viscosity", _drag_format_eta_mpa_s(diagnostics)])
+    rows.append(["Steady offset (reported)", _fmt_measure(diagnostics.get("offset_um"), "um")])
+    rows.append(["Drag force", _drag_format_force_pN(diagnostics)])
+    v_phys = _parse_float(diagnostics.get("speed_used_for_physics"))
+    if v_phys is None:
+        v_phys = _parse_float(diagnostics.get("actual_speed_um_s"))
+    rows.append(["Speed used for physics", _fmt_measure(v_phys, "um/s")])
+
+    rows.append(["Secondary diagnostics", ""])
+    rows.append(["Requested anchor", _cover_cell_text(diagnostics.get("drag_anchor_mode_requested"), max_chars=52)])
+    rows.append(["Effective anchor", _cover_cell_text(diagnostics.get("drag_anchor_mode_effective"), max_chars=52)])
+    rows.append(["Physics primary gate", _cover_cell_text(diagnostics.get("physics_primary_gate"), max_chars=52)])
+    rows.append(["Detection QC gate", _cover_cell_text(diagnostics.get("detection_qc_gate"), max_chars=52)])
+
+    rows.append(["Conditions & QC snapshot", ""])
+    rows.append(["Temperature", _fmt_measure(metrics.get("temperature_c"), "C")])
+    rows.append(["Bead diameter", _fmt_measure(metrics.get("bead_diameter_um"), "um")])
+    rows.append(["Frame rate", _fmt_measure(metrics.get("fps"), "Hz")])
+    rows.append(["Timestamp validation", _cover_cell_text(diagnostics.get("timestamp_validation_pass"), max_chars=48)])
+    rows.append(["Timing source", _cover_cell_text(diagnostics.get("timing_source"), max_chars=48)])
+    rows.append(["Primary timing for windows", _cover_cell_text(diagnostics.get("primary_timing_source_for_windows"), max_chars=48)])
+    rows.append(["Commanded stage speed (reference)", _fmt_measure(diagnostics.get("commanded_speed_user_s_ref"), "um/s")])
+    rows.append(["Actual speed (metadata)", _fmt_measure(diagnostics.get("actual_speed_um_s"), "um/s")])
+    rows.append(["Stage anchor confidence", _cover_cell_text(diagnostics.get("stage_anchor_confidence"), max_chars=48)])
+    if warnings:
+        rows.append(["Warnings (summary)", _cover_cell_text(" | ".join(str(w) for w in warnings[:8]), max_chars=56)])
+    return rows
+
+
+def _render_drag_metric_card_strip(fig, summary: dict[str, Any], bounds: tuple[float, float, float, float]) -> None:
+    """Four horizontal metric cards (Brown-like CARD_BG / LINE_COLOR)."""
+    from matplotlib import patches
+
+    bx, by, bw, bh = bounds
+    diagnostics = summary.get("diagnostics") or {}
+    metrics = summary.get("metrics") or {}
+    v_phys = _parse_float(diagnostics.get("speed_used_for_physics"))
+    if v_phys is None:
+        v_phys = _parse_float(diagnostics.get("actual_speed_um_s"))
+    cards = [
+        ("Drag viscosity", _drag_format_eta_mpa_s(diagnostics)),
+        ("Steady offset", _fmt_measure(diagnostics.get("offset_um"), "um")),
+        ("Drag force", _drag_format_force_pN(diagnostics)),
+        ("Speed (physics)", _fmt_measure(v_phys, "um/s")),
+    ]
+    n = len(cards)
+    gap = 0.012
+    cw = (bw - gap * (n - 1)) / n
+    for i, (title, value) in enumerate(cards):
+        x0 = bx + i * (cw + gap)
+        ax_c = fig.add_axes([x0, by, cw, bh])
+        ax_c.axis("off")
+        ax_c.add_patch(
+            patches.FancyBboxPatch(
+                (0.02, 0.08),
+                0.96,
+                0.84,
+                boxstyle="round,pad=0.02,rounding_size=0.015",
+                linewidth=0.55,
+                edgecolor=LINE_COLOR,
+                facecolor=CARD_BG,
+                transform=ax_c.transAxes,
+            )
+        )
+        ax_c.text(
+            0.5,
+            0.72,
+            title,
+            transform=ax_c.transAxes,
+            ha="center",
+            va="center",
+            fontsize=8.2,
+            color=MUTED_COLOR,
+            family=FONT_FAMILY,
+        )
+        ax_c.text(
+            0.5,
+            0.38,
+            value,
+            transform=ax_c.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10.5,
+            color=TEXT_COLOR,
+            fontweight="bold",
+            family=FONT_FAMILY,
+        )
+
+
+def _render_drag_item_summary_page(
+    pdf,
+    summary: dict[str, Any],
+    preview_paths: list[Path],
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Drag page 1: Brown-family cover discipline, drag-only narrative, previews."""
+    import matplotlib.pyplot as plt
+    import matplotlib.image as mpimg
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, page_note=None, cover=True, page_counter=page_counter)
+    ax_bg = fig.add_axes([0, 0, 1, 1])
+    ax_bg.axis("off")
+    item_id = _cover_cell_text(summary.get("item_id"), max_chars=42)
+    ax_bg.text(0.50, 0.805, "Active Drag Analysis", fontsize=10.5, color=ACCENT_COLOR, fontweight="bold", ha="center")
+    ax_bg.text(
+        0.50,
+        0.768,
+        f"Drag Item Report — {item_id}",
+        fontsize=22,
+        fontweight="bold",
+        color=TEXT_COLOR,
+        ha="center",
+    )
+    ax_bg.text(
+        0.50,
+        0.732,
+        "Constant-velocity drag · stage-truth-first interpretation",
+        fontsize=11.0,
+        color=MUTED_COLOR,
+        ha="center",
+    )
+    ax_bg.text(
+        0.50,
+        0.698,
+        "Identity, verdict, drag metrics, and conditions — same report family as Brownian OT items.",
+        fontsize=10.0,
+        color=TEXT_COLOR,
+        ha="center",
+    )
+
+    title, strip_color, detail = _drag_verdict_strip_meta(summary)
+    ax_strip = fig.add_axes([0.06, 0.652, 0.88, 0.034])
+    ax_strip.axis("off")
+    ax_strip.add_patch(
+        plt.Rectangle((0, 0), 1, 1, transform=ax_strip.transAxes, facecolor=strip_color, alpha=0.92)
+    )
+    ax_strip.text(
+        0.02,
+        0.55,
+        title,
+        transform=ax_strip.transAxes,
+        ha="left",
+        va="center",
+        fontsize=10.5,
+        color="white",
+        fontweight="bold",
+        family=FONT_FAMILY,
+    )
+    ax_strip.text(
+        0.98,
+        0.55,
+        detail,
+        transform=ax_strip.transAxes,
+        ha="right",
+        va="center",
+        fontsize=8.4,
+        color="white",
+        family=FONT_FAMILY,
+    )
+
+    _render_drag_metric_card_strip(fig, summary, (0.06, 0.545, 0.88, 0.095))
+
+    table_rows = _build_drag_item_cover_table_rows(summary)
+    bounds = (0.06, 0.26, 0.88, 0.275)
+    _add_panel(fig, bounds, facecolor=CARD_BG)
+    ax_tbl = fig.add_axes([bounds[0] + 0.012, bounds[1] + 0.015, bounds[2] - 0.024, bounds[3] - 0.028])
+    ax_tbl.axis("off")
+
+    def _wrap_cell(text: str, width: int) -> str:
+        s = str(text or "").strip()
+        if not s:
+            return "n/a"
+        if len(s) <= width and "\n" not in s:
+            return s
+        return textwrap.fill(s, width=width, break_long_words=False, break_on_hyphens=False)
+
+    wrapped = [[_wrap_cell(r[0], 30), _wrap_cell(r[1], 58)] for r in table_rows]
+    table = ax_tbl.table(
+        cellText=wrapped,
+        colLabels=["Field", "Value"],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[0.34, 0.66],
+        bbox=[0.0, 0.0, 1.0, 1.0],
+    )
+    table.auto_set_font_size(False)
+    nrows = len(wrapped) + 1
+    row_h = 0.98 / max(1, nrows)
+    for (row_idx, col_idx), cell in table.get_celld().items():
+        text_obj = cell.get_text()
+        cell.PAD = 0.1
+        cell.set_edgecolor(LINE_COLOR)
+        cell.set_linewidth(0.45)
+        text_obj.set_wrap(True)
+        text_obj.set_ha("left")
+        text_obj.set_va("center")
+        if row_idx == 0:
+            cell.set_facecolor(BRAND_COLOR)
+            text_obj.set_color("white")
+            text_obj.set_fontweight("bold")
+            text_obj.set_fontsize(9.8)
+        else:
+            row_label = wrapped[row_idx - 1][0]
+            is_section = (row_label in _DRAG_SUMMARY_SECTION_LABELS) and (wrapped[row_idx - 1][1] in {"", "n/a"})
+            if is_section:
+                cell.set_facecolor(PANEL_BG if col_idx == 0 else CARD_BG)
+                if col_idx == 0:
+                    text_obj.set_fontweight("bold")
+                    text_obj.set_color(BRAND_COLOR)
+                    text_obj.set_fontsize(9.2)
+                else:
+                    text_obj.set_text("")
+            else:
+                cell.set_facecolor("white" if row_idx % 2 else PANEL_BG)
+                text_obj.set_color(TEXT_COLOR)
+                text_obj.set_fontsize(8.5 if col_idx == 0 else 8.3)
+                if col_idx == 0:
+                    text_obj.set_fontweight("bold")
+        cell.set_height(row_h)
+
+    if preview_paths:
+        from matplotlib.gridspec import GridSpec
+
+        ax_bg.text(
+            0.06,
+            0.235,
+            "Preview frames (representative)",
+            fontsize=FONT_SIZE_HEADER,
+            fontweight="bold",
+            color=TEXT_COLOR,
+            ha="left",
+            family=FONT_FAMILY,
+        )
+        ax_bg.text(
+            0.06,
+            0.218,
+            "Pre-motion, mid-sequence, and late frames when available — drag QA only (not Brownian diagnostics).",
+            fontsize=8.5,
+            color=MUTED_COLOR,
+            ha="left",
+            family=FONT_FAMILY,
+        )
+        n_prev = min(3, len(preview_paths))
+        gs = GridSpec(1, n_prev, left=0.06, right=0.94, bottom=0.04, top=0.205, wspace=0.14)
+        for i in range(n_prev):
+            axp = fig.add_subplot(gs[0, i])
+            axp.axis("off")
+            p = preview_paths[i]
+            try:
+                img = mpimg.imread(p)
+                axp.imshow(img)
+                axp.set_title(f"Frame {i + 1}", fontsize=8.5, color=MUTED_COLOR, pad=4, family=FONT_FAMILY)
+            except Exception:
+                axp.text(0.5, 0.5, "Not available", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+
+    fig.text(
+        0.50,
+        0.018,
+        "Drag metrics and gates reflect saved drag_summary / protocol fields — not recomputed in the report layer.",
+        fontsize=8.4,
+        color=MUTED_COLOR,
+        ha="center",
+    )
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _load_drag_trace_um_series(
+    trace_csv: Path, summary: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Load time + displacement along drag axis in µm (relative to baseline median). Never returns raw px for plotting."""
+    diagnostics = summary.get("diagnostics") or {}
+    um_pp = _drag_summary_um_per_px(summary)
+    times: list[float] = []
+    px_vals: list[float] = []
+    base_flags: list[bool] = []
+    steady_flags: list[bool] = []
+    try:
+        with trace_csv.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                t_val = row.get("video_time_rel_s") or row.get("video_time_s")
+                px_s = row.get("axis_px")
+                if t_val is None or px_s is None:
+                    continue
+                try:
+                    times.append(float(t_val))
+                    px_vals.append(float(px_s))
+                except Exception:
+                    continue
+                else:
+                    base_flags.append(str(row.get("is_baseline_window", "0")).strip() in {"1", "true", "True"})
+                    steady_flags.append(str(row.get("is_steady_window", "0")).strip() in {"1", "true", "True"})
+    except Exception:
+        return None
+    if not times or not px_vals or um_pp is None or not math.isfinite(um_pp) or um_pp <= 0:
+        return None
+    baseline_px = [px_vals[i] for i in range(len(px_vals)) if i < len(base_flags) and base_flags[i]]
+    if not baseline_px:
+        ref = float(np.median(np.asarray(px_vals, dtype=np.float64)))
+    else:
+        ref = float(np.median(np.asarray(baseline_px, dtype=np.float64)))
+    disp_um = [(p - ref) * float(um_pp) for p in px_vals]
+    base_um = [disp_um[i] for i in range(len(disp_um)) if i < len(base_flags) and base_flags[i]]
+    steady_um = [disp_um[i] for i in range(len(disp_um)) if i < len(steady_flags) and steady_flags[i]]
+    return {
+        "times": times,
+        "disp_um": disp_um,
+        "baseline_um": base_um,
+        "steady_um": steady_um,
+        "um_per_px": float(um_pp),
+    }
+
+
+def _render_drag_analytical_page(
+    pdf,
+    summary: dict[str, Any],
+    trace_csv: Path | None,
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Drag page 2: displacement vs time (µm), baseline/steady distribution, pairing + provenance."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Drag Trace And Distributions", page_counter=page_counter)
+    diagnostics = summary.get("diagnostics") or {}
+    metrics = summary.get("metrics") or {}
+
+    series = _load_drag_trace_um_series(trace_csv, summary) if trace_csv and trace_csv.is_file() else None
+
+    ax_main = fig.add_axes([0.10, 0.52, 0.82, 0.30])
+    ax_hist = fig.add_axes([0.10, 0.20, 0.82, 0.26])
+    ax_main.set_facecolor(PANEL_BG)
+    ax_hist.set_facecolor(PANEL_BG)
+
+    t_first = diagnostics.get("t_first_s")
+
+    def _rel(ts: Any) -> float | None:
+        if ts is None:
+            return None
+        try:
+            val = float(ts)
+        except Exception:
+            return None
+        if series and series.get("times"):
+            tmx = max(series["times"])
+            if t_first is not None and val > tmx + 5.0:
+                return val - float(t_first)
+            if t_first is not None and val >= float(t_first) and val > tmx:
+                return val - float(t_first)
+        return val
+
+    if series:
+        ax_main.plot(
+            series["times"],
+            series["disp_um"],
+            linewidth=1.6,
+            color=PLOT_COLOR,
+            label="Displacement",
+        )
+        b0 = _rel(diagnostics.get("baseline_start_s"))
+        b1 = _rel(diagnostics.get("baseline_end_s"))
+        s0 = _rel(diagnostics.get("steady_start_s"))
+        s1 = _rel(diagnostics.get("steady_end_s"))
+        if b0 is not None and b1 is not None:
+            ax_main.axvspan(b0, b1, color="#A5D6A7", alpha=0.18)
+        if s0 is not None and s1 is not None:
+            ax_main.axvspan(s0, s1, color="#EF9A9A", alpha=0.18)
+        exp_start = _rel(diagnostics.get("expected_stage_start_video_s"))
+        exp_stop = _rel(diagnostics.get("expected_stage_stop_video_s"))
+        if exp_start is not None:
+            ax_main.axvline(exp_start, color="#1565C0", linestyle="-.", linewidth=1.0, label="expected stage start")
+        if exp_stop is not None:
+            ax_main.axvline(exp_stop, color="#0D47A1", linestyle="-.", linewidth=1.0, label="expected stage stop")
+        det_on = _rel(diagnostics.get("detected_onset_video_s"))
+        if det_on is None:
+            det_on = _rel(diagnostics.get("detected_stage_start_video_s"))
+        if det_on is not None:
+            ax_main.axvline(
+                det_on,
+                color="#424242",
+                linestyle="--",
+                linewidth=0.9,
+                alpha=0.85,
+                label="detected onset (QC)",
+            )
+        det_stop = _rel(diagnostics.get("detected_stage_stop_video_s"))
+        if det_stop is not None:
+            ax_main.axvline(
+                det_stop,
+                color="#616161",
+                linestyle=":",
+                linewidth=0.9,
+                alpha=0.85,
+                label="detected stop (QC)",
+            )
+        ax_main.axhline(0.0, color=LINE_COLOR, linestyle=":", linewidth=0.8, alpha=0.9)
+        ax_main.set_title(
+            "Displacement along drag axis vs time",
+            fontsize=11.5,
+            fontweight="bold",
+            color=TEXT_COLOR,
+            pad=8,
+            family=FONT_FAMILY,
+        )
+        ax_main.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_main.set_ylabel("Displacement [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_main.tick_params(labelsize=8)
+        ax_main.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR)
+        for spine in ax_main.spines.values():
+            spine.set_color(LINE_COLOR)
+        ax_main.text(
+            0.02,
+            0.98,
+            "Shaded: baseline / steady windows · Blue dash-dot: expected stage · Gray: detected onset (if QC-only)",
+            transform=ax_main.transAxes,
+            fontsize=7.5,
+            color=MUTED_COLOR,
+            va="top",
+            family=FONT_FAMILY,
+        )
+    else:
+        ax_main.axis("off")
+        ax_main.text(
+            0.5,
+            0.5,
+            "Trace or scale unavailable — cannot plot metric displacement.\n"
+            "Provide drag_trace_annotated.csv and um_per_px in calibration.",
+            ha="center",
+            va="center",
+            color=MUTED_COLOR,
+            family=FONT_FAMILY,
+        )
+
+    if series and (series.get("baseline_um") or series.get("steady_um")):
+        base_um = series.get("baseline_um") or []
+        steady_um = series.get("steady_um") or []
+        lo = min(base_um + steady_um) if (base_um or steady_um) else -0.1
+        hi = max(base_um + steady_um) if (base_um or steady_um) else 0.1
+        pad = max(0.05 * (hi - lo), 0.02)
+        bins = 28
+        if base_um:
+            ax_hist.hist(
+                base_um,
+                bins=bins,
+                range=(lo - pad, hi + pad),
+                density=True,
+                alpha=0.55,
+                color="#43A047",
+                label="Baseline window",
+            )
+        if steady_um:
+            ax_hist.hist(
+                steady_um,
+                bins=bins,
+                range=(lo - pad, hi + pad),
+                density=True,
+                alpha=0.55,
+                color="#E53935",
+                label="Steady window",
+            )
+        ax_hist.set_title(
+            "Displacement distribution (drag axis)",
+            fontsize=11.0,
+            fontweight="bold",
+            color=TEXT_COLOR,
+            pad=8,
+            family=FONT_FAMILY,
+        )
+        ax_hist.set_xlabel("Displacement [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_hist.set_ylabel("Density [1/µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_hist.legend(fontsize=8, frameon=False, loc="upper right")
+        ax_hist.tick_params(labelsize=8)
+        ax_hist.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR, alpha=0.6)
+        for spine in ax_hist.spines.values():
+            spine.set_color(LINE_COLOR)
+    else:
+        ax_hist.axis("off")
+        ax_hist.text(
+            0.5,
+            0.5,
+            "Baseline / steady histogram not available",
+            ha="center",
+            va="center",
+            color=MUTED_COLOR,
+            family=FONT_FAMILY,
+        )
+
+    pair_lines = [
+        f"Brownian baseline folder: {_short_path(diagnostics.get('brownian_baseline_folder'), keep_parts=4)}",
+        f"Pairing / selection mode: {_fmt_value(diagnostics.get('baseline_selection_mode'))}",
+        f"Stiffness used (κ): {_fmt_measure(metrics.get('kappa_drag_pn_per_um'), 'pN/um')}",
+        f"κ source: {_fmt_value(diagnostics.get('kappa_source'))}",
+    ]
+    fig.text(
+        0.06,
+        0.125,
+        "Paired baseline / calibration context",
+        fontsize=10.0,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        family=FONT_FAMILY,
+    )
+    fig.text(
+        0.06,
+        0.078,
+        "\n".join(pair_lines),
+        fontsize=8.3,
+        color=TEXT_COLOR,
+        family=FONT_FAMILY,
+        linespacing=1.35,
+    )
+
+    prov_lines = [
+        f"Item / analysis directory: {_short_path(summary.get('analysis_dir'), keep_parts=5)}",
+        f"Report source: {_fmt_value(diagnostics.get('report_source_kind'))} — {_short_path(diagnostics.get('report_source_path'), keep_parts=5)}",
+        f"Trajectory: {_short_path(diagnostics.get('selected_trajectory_path'), keep_parts=4)}",
+        f"Timestamps: {_short_path(diagnostics.get('selected_timestamps_path'), keep_parts=4)}",
+        f"Stage meta / trace: {_short_path(diagnostics.get('selected_stage_meta_path'), keep_parts=3)} · {_short_path(diagnostics.get('selected_stage_trace_path'), keep_parts=3)}",
+    ]
+    fig.text(
+        0.06,
+        0.048,
+        "Provenance",
+        fontsize=9.5,
+        fontweight="bold",
+        color=MUTED_COLOR,
+        family=FONT_FAMILY,
+    )
+    fig.text(
+        0.06,
+        0.014,
+        " · ".join(prov_lines),
+        fontsize=7.8,
+        color=MUTED_COLOR,
+        family=FONT_FAMILY,
+        linespacing=1.25,
+    )
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 def _path_entries_for_item(summary: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return [
         ("Source input", _wrap_path_segments(summary.get("source_input_path"), 88)),
@@ -1468,13 +2166,20 @@ def _key_result_rows(summary: dict[str, Any]) -> list[list[str]]:
     if _is_drag_report(summary):
         metrics = summary.get("metrics") or {}
         diagnostics = summary.get("diagnostics") or {}
+        eta = _parse_float(diagnostics.get("eta_pa_s"))
+        eta_disp = _fmt_measure(eta * 1e3, "mPa*s") if eta is not None else "n/a"
+        f_n = _parse_float(diagnostics.get("drag_force_n"))
+        f_disp = _fmt_measure(f_n * 1e12, "pN") if f_n is not None else "n/a"
+        v_phys = _parse_float(diagnostics.get("speed_used_for_physics"))
+        if v_phys is None:
+            v_phys = _parse_float(diagnostics.get("actual_speed_um_s"))
         return [
-            ["Mean viscosity", _fmt_key_result(metrics.get("eta_mean_pa_s"), "Pa*s")],
-            ["Diffusion coefficient", _fmt_key_result(metrics.get("D_m2_s"), "m^2/s")],
-            ["Trap stiffness X", _fmt_key_result(metrics.get("kappa_x_pn_per_um"), "pN/um")],
-            ["Trap stiffness Y", _fmt_key_result(metrics.get("kappa_y_pn_per_um"), "pN/um")],
-            ["Corner frequency X", _fmt_key_result(diagnostics.get("fc_x_hz"), "Hz")],
-            ["Corner frequency Y", _fmt_key_result(diagnostics.get("fc_y_hz"), "Hz")],
+            ["Drag viscosity", eta_disp],
+            ["Steady offset (reported)", _fmt_measure(diagnostics.get("offset_um"), "um")],
+            ["Drag force", f_disp],
+            ["Speed used for physics", _fmt_measure(v_phys, "um/s")],
+            ["Trap stiffness (drag κ)", _fmt_measure(metrics.get("kappa_drag_pn_per_um"), "pN/um")],
+            ["Final drag verdict", _fmt_value(diagnostics.get("final_drag_verdict"))],
         ]
 
     metrics = summary.get("metrics") or {}
@@ -3353,81 +4058,8 @@ def _render_drag_trace_page(
     *,
     page_counter: PageCounter | None = None,
 ) -> None:
-    import matplotlib.pyplot as plt
-
-    diagnostics = summary.get("diagnostics") or {}
-    times: list[float] = []
-    signal: list[float] = []
-    try:
-        with trace_csv.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                t_val = row.get("video_time_rel_s") or row.get("video_time_s")
-                x_val = row.get("axis_px")
-                if t_val is None or x_val is None:
-                    continue
-                try:
-                    times.append(float(t_val))
-                    signal.append(float(x_val))
-                except Exception:
-                    continue
-    except Exception:
-        return
-    if not times or not signal:
-        return
-
-    t_first = diagnostics.get("t_first_s")
-
-    def _rel(ts: Any) -> float | None:
-        if ts is None:
-            return None
-        try:
-            val = float(ts)
-        except Exception:
-            return None
-        if t_first is not None and val > max(times) + 5.0:
-            # stage/video absolute timestamps -> convert to relative if needed
-            return val - float(t_first)
-        if t_first is not None and val >= float(t_first) and val > max(times):
-            return val - float(t_first)
-        return val
-
-    fig, ax = plt.subplots(1, 1, figsize=PAGE_SIZE)
-    fig.patch.set_facecolor("white")
-    _add_brand_header(fig, "Drag Windows And Annotated Trace", page_counter=page_counter)
-    fig.subplots_adjust(top=0.81, left=0.10, right=0.92, bottom=0.10)
-    ax.set_facecolor(PANEL_BG)
-    ax.plot(times, signal, linewidth=1.5, color=PLOT_COLOR, label="axis signal (px)")
-
-    b0 = _rel(diagnostics.get("baseline_start_s"))
-    b1 = _rel(diagnostics.get("baseline_end_s"))
-    s0 = _rel(diagnostics.get("steady_start_s"))
-    s1 = _rel(diagnostics.get("steady_end_s"))
-    if b0 is not None and b1 is not None:
-        ax.axvspan(b0, b1, color="#A5D6A7", alpha=0.22, label="primary baseline window")
-    if s0 is not None and s1 is not None:
-        ax.axvspan(s0, s1, color="#EF9A9A", alpha=0.22, label="primary steady window")
-
-    exp_start = _rel(diagnostics.get("expected_stage_start_video_s"))
-    exp_stop = _rel(diagnostics.get("expected_stage_stop_video_s"))
-    det_start = _rel(diagnostics.get("detected_stage_start_video_s"))
-    det_stop = _rel(diagnostics.get("detected_stage_stop_video_s"))
-    if exp_start is not None:
-        ax.axvline(exp_start, color="#1565C0", linestyle="-.", linewidth=1.0, label="expected stage start")
-    if exp_stop is not None:
-        ax.axvline(exp_stop, color="#0D47A1", linestyle="-.", linewidth=1.0, label="expected stage stop")
-    if det_start is not None:
-        ax.axvline(det_start, color="#000000", linestyle="--", linewidth=1.0, label="detected onset (QC)")
-    if det_stop is not None:
-        ax.axvline(det_stop, color="#616161", linestyle=":", linewidth=1.0, label="detected stop (QC)")
-
-    ax.set_title("Primary stage windows with detected onset QC", fontsize=11.0, fontweight="bold")
-    ax.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL)
-    ax.set_ylabel("Axis position [px]", fontsize=FONT_SIZE_SMALL)
-    ax.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR)
-    ax.legend(fontsize=8)
-    pdf.savefig(fig)
-    plt.close(fig)
+    """Backward-compatible single-page drag trace render; uses metric displacement [µm] when scale is available."""
+    _render_drag_analytical_page(pdf, summary, trace_csv, page_counter=page_counter)
 
 
 def _render_image_pages(
@@ -3513,84 +4145,21 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
 
     with PdfPages(report_path) as pdf:
         if drag_mode:
-            left_rows, right_rows = _drag_cover_rows(summary)
-            _render_cover_page(
+            drag_previews = _select_drag_preview_paths(preview_paths, max_images=3)
+            _render_drag_item_summary_page(
                 pdf,
-                title=f"DRAG Item Report: {summary.get('item_id')}",
-                subtitle="Constant-velocity drag summary",
-                left_rows=left_rows,
-                right_rows=right_rows,
-                eyebrow="DRAG Summary",
+                summary,
+                drag_previews,
                 page_counter=page_counter,
             )
-            _render_drag_theory_page(pdf, page_counter=page_counter)
-            _render_paginated_table(
+            trace_path = artifacts.get("drag_trace_annotated_csv")
+            trace_csv = Path(trace_path) if trace_path and Path(trace_path).is_file() else None
+            _render_drag_analytical_page(
                 pdf,
-                "Drag Provenance",
-                ["Field", "Value"],
-                _drag_provenance_rows(summary),
-                rows_per_page=18,
+                summary,
+                trace_csv,
                 page_counter=page_counter,
             )
-            _render_paginated_table(
-                pdf,
-                "Drag Timing and Alignment",
-                ["Field", "Value"],
-                _drag_timing_alignment_rows(summary),
-                rows_per_page=18,
-                page_counter=page_counter,
-            )
-            _render_paginated_table(
-                pdf,
-                "Drag QC and Confidence",
-                ["Field", "Value"],
-                _drag_qc_confidence_rows(summary),
-                rows_per_page=18,
-                page_counter=page_counter,
-            )
-            _render_paginated_table(
-                pdf,
-                "Drag Warnings",
-                ["Field", "Value"],
-                _drag_warning_rows(summary),
-                rows_per_page=18,
-                page_counter=page_counter,
-            )
-            drag_diag = _build_image_entry("Drag diagnostic figure", artifacts.get("drag_diagnostic_png"))
-            if drag_diag is not None:
-                _render_image_pages(
-                    pdf,
-                    "Drag Diagnostic Figure",
-                    [drag_diag],
-                    layout="vertical",
-                    items_per_page=1,
-                    page_counter=page_counter,
-                )
-            _render_paginated_table(
-                pdf,
-                "Alignment Diagnostics Summary",
-                ["Field", "Value"],
-                _drag_alignment_rows(summary),
-                rows_per_page=18,
-                page_counter=page_counter,
-            )
-            windows_csv = artifacts.get("drag_windows_csv")
-            if windows_csv and Path(windows_csv).is_file():
-                _render_drag_windows_table_page(pdf, Path(windows_csv), page_counter=page_counter)
-            trace_entry = _build_plot_entry(
-                "Annotated drag trace",
-                artifacts.get("drag_trace_annotated_csv"),
-                ("video_time_rel_s", "video_time_s", "stage_time_aligned_s"),
-                ("axis_px",),
-                "Time from video start [s]",
-                "Axis position [px]",
-                False,
-                False,
-            )
-            if trace_entry is not None:
-                _render_drag_trace_page(pdf, trace_entry[1], summary, page_counter=page_counter)
-            if preview_paths:
-                _render_preview_grid_page(pdf, preview_paths, page_counter=page_counter)
         else:
             # Cover page - no page number
             _render_cover_page(

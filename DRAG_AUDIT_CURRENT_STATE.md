@@ -21,7 +21,7 @@
 | **End-to-end from RAW** | Tracking → trajectory CSV → `analyze_drag_run` → exports + protocol | `drag/pipeline.py` (`run_drag_from_raw`) |
 | **Schema / summary** | Config, result dataclass, flat export dict | `drag/schema.py`, `drag/export.py` |
 | **Orchestration** | Brownian κ / scale injection, `DragAnalysisConfig` population, call to `run_drag_from_raw` | `shell/batch_controller.py` |
-| **Reporting** | Prefers `*_drag_summary.json` over legacy drag blobs | `core/ot_report.py` (`build_ot_item_summary`, drag diagnostics) |
+| **Reporting** | Prefers `*_drag_summary.json` over legacy drag blobs; **Drag item PDF** reuses the Brown OT report family (page geometry, typography, panels) with a **two-page drag-only** layout: page 1 = verdict + metric strip + summary table + previews; page 2 = displacement vs time and baseline/steady distributions in **µm**, pairing/provenance text — no Brownian PSD/MSD/histogram-R pages and **no pixel units** in user-facing plot labels | `core/ot_report.py` (`build_ot_item_summary`, `export_ot_item_pdf`) |
 | **Legacy parallel** | Time-only heuristic (second half of trace), not stage-aware | `strategies/drag_constant_velocity.py` |
 
 Data flow (modern path): **acquisition folder** (or item-scoped dirs) → **discovered artifacts** → **`DragRunLoaded`** → **`DragAnalysisResult`** → **`export_drag_summary_json/csv`** + **`run_protocol.json`** merge in `pipeline._update_run_protocol_with_drag_analysis`.
