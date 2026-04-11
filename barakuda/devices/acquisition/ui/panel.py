@@ -40,6 +40,9 @@ from barakuda.devices.acquisition.camera_base import AbstractCamera
 from barakuda.devices.acquisition.camera_factory import enumerate_all, create as create_camera
 # Motion integration (lazy — only imported if pyximc is available)
 from barakuda.devices.acquisition.motion.recipes import ConstantVelocityDragRecipe
+from barakuda.devices.acquisition.motion.stage_scale_audit import (
+    build_stage_motion_audit_dict,
+)
 from barakuda.devices.acquisition.motion.motion_run import (
     run_record_and_motion,
     MotionRunResult,
@@ -843,9 +846,12 @@ class AcquisitionPanel(QWidget):
         self._spin_stage_um_per_unit.setValue(1.25)
         self._spin_stage_um_per_unit.setDecimals(4)
         self._spin_stage_um_per_unit.setToolTip(
-            "Micrometers per stage user unit.\n"
+            "Micrometers per XIMC position unit (get_position float).\n"
             "Standa 8MT167-25LS-MEn1 (pitch 0.25 mm, 200 steps/rev): 1.25 µm/unit.\n"
-            "0 = unknown (leave blank, will be omitted from *_stage.json)."
+            "0 = unknown (omitted from *_stage.json).\n"
+            "Validate: independently measure physical travel in µm for a known "
+            "actual_travel_user (see *_stage.json / QC stage_motion_audit); "
+            "measured_um / actual_travel_user should match this value."
         )
         stage_form.addRow("µm/unit:", self._spin_stage_um_per_unit)
 
@@ -915,16 +921,17 @@ class AcquisitionPanel(QWidget):
         self._spin_motion_travel_um.valueChanged.connect(lambda _v: self._update_motion_run_button())
         cv_form.addRow("Travel (µm):", self._spin_motion_travel_um)
 
-        self._spin_motion_speed_um_s = _NoScrollDoubleSpinBox()
-        self._spin_motion_speed_um_s.setRange(0.0, 1e12)
-        self._spin_motion_speed_um_s.setValue(60.0)
-        self._spin_motion_speed_um_s.setDecimals(3)
-        self._spin_motion_speed_um_s.setSuffix(" reg")
-        self._spin_motion_speed_um_s.setToolTip(
-            "XIMC raw speed register value (legacy backend path).\n"
-            "This is not interpreted as µm/s in the current runtime path."
+        self._spin_motion_speed_reg = _NoScrollDoubleSpinBox()
+        self._spin_motion_speed_reg.setRange(0.0, 1e12)
+        self._spin_motion_speed_reg.setValue(60.0)
+        self._spin_motion_speed_reg.setDecimals(3)
+        self._spin_motion_speed_reg.setSuffix(" reg")
+        self._spin_motion_speed_reg.setToolTip(
+            "XIMC firmware Speed register (not µm/s).\n"
+            "Physical speed used in *_stage.json comes from measured Δposition/Δt, "
+            "not from this register."
         )
-        cv_form.addRow("Speed (raw reg):", self._spin_motion_speed_um_s)
+        cv_form.addRow("Speed (XIMC Speed reg):", self._spin_motion_speed_reg)
 
         self._spin_motion_accel_um_s2 = _NoScrollDoubleSpinBox()
         self._spin_motion_accel_um_s2.setRange(0.0, 1e12)
@@ -965,6 +972,28 @@ class AcquisitionPanel(QWidget):
         cv_form.addRow("Last actual travel (µm):", self._lbl_motion_actual_travel_um)
         cv_form.addRow("Last actual speed (µm/s):", self._lbl_motion_actual_speed_um_s)
         cv_form.addRow("Last motion duration (s):", self._lbl_motion_actual_duration_s)
+
+        self._lbl_motion_actual_travel_user = QLabel("not available yet")
+        self._lbl_motion_actual_speed_user = QLabel("not available yet")
+        self._lbl_motion_commanded_travel_user = QLabel("not available yet")
+        self._lbl_motion_travel_user_ratio = QLabel("not available yet")
+        self._lbl_motion_actual_travel_user.setToolTip(
+            "Encoder-based travel from XIMC position (same units as command). "
+            "Compare to independent µm measurement to validate µm/unit."
+        )
+        self._lbl_motion_actual_speed_user.setToolTip(
+            "actual_travel_user / duration — not the Speed register value."
+        )
+        self._lbl_motion_commanded_travel_user.setToolTip(
+            "travel_user sent to the backend for this run (from Travel µm ÷ µm/unit)."
+        )
+        self._lbl_motion_travel_user_ratio.setToolTip(
+            "actual_travel_user / commanded — expect ~1 if motion completed as requested."
+        )
+        cv_form.addRow("Last actual travel (user units):", self._lbl_motion_actual_travel_user)
+        cv_form.addRow("Last actual speed (user units/s):", self._lbl_motion_actual_speed_user)
+        cv_form.addRow("Commanded travel (user units):", self._lbl_motion_commanded_travel_user)
+        cv_form.addRow("Actual / commanded travel:", self._lbl_motion_travel_user_ratio)
 
         self._motion_protocol_stack.addWidget(cvw)
 
@@ -1087,6 +1116,9 @@ class AcquisitionPanel(QWidget):
         actual_travel_um: float | None = None,
         actual_speed_um_s: float | None = None,
         actual_duration_s: float | None = None,
+        actual_travel_user: float | None = None,
+        actual_speed_user_s: float | None = None,
+        travel_user_commanded: float | None = None,
     ) -> None:
         self._lbl_motion_actual_travel_um.setText(
             f"{float(actual_travel_um):.3f}" if actual_travel_um is not None else "not available yet"
@@ -1097,6 +1129,33 @@ class AcquisitionPanel(QWidget):
         self._lbl_motion_actual_duration_s.setText(
             f"{float(actual_duration_s):.4f}" if actual_duration_s is not None else "not available yet"
         )
+        if not hasattr(self, "_lbl_motion_actual_travel_user"):
+            return
+        self._lbl_motion_actual_travel_user.setText(
+            f"{float(actual_travel_user):.6f}"
+            if actual_travel_user is not None
+            else "not available yet"
+        )
+        self._lbl_motion_actual_speed_user.setText(
+            f"{float(actual_speed_user_s):.6f}"
+            if actual_speed_user_s is not None
+            else "not available yet"
+        )
+        self._lbl_motion_commanded_travel_user.setText(
+            f"{float(travel_user_commanded):.6f}"
+            if travel_user_commanded is not None
+            else "not available yet"
+        )
+        ratio_txt = "not available yet"
+        if (
+            actual_travel_user is not None
+            and travel_user_commanded is not None
+            and abs(float(travel_user_commanded)) > 1e-15
+        ):
+            ratio_txt = f"{float(actual_travel_user) / float(travel_user_commanded):.6f}"
+        elif actual_travel_user is not None and travel_user_commanded is not None:
+            ratio_txt = "n/a (commanded travel ~0)"
+        self._lbl_motion_travel_user_ratio.setText(ratio_txt)
 
     def _open_stage_console(self) -> None:
         if self._stage_console_win is None:
@@ -1425,7 +1484,7 @@ class AcquisitionPanel(QWidget):
             direction=direction,
             travel=travel_user,
             # UI core motion inputs are primary in this panel.
-            speed=float(self._spin_motion_speed_um_s.value()),
+            speed=float(self._spin_motion_speed_reg.value()),
             accel=float(self._spin_motion_accel_um_s2.value()),
             decel=float(self._spin_motion_decel_um_s2.value()),
             pre_delay_s=self._spin_motion_pre_delay.value(),
@@ -1606,6 +1665,13 @@ class AcquisitionPanel(QWidget):
                 "motion_start_s": motion_result.motion_start_s,
                 "motion_stop_s": motion_result.motion_stop_s,
             }
+            try:
+                stage_meta_path = Path(motion_result.stage_json_path)
+                if stage_meta_path.is_file():
+                    stage_meta = json.loads(stage_meta_path.read_text(encoding="utf-8"))
+                    qc["stage_motion_audit"] = build_stage_motion_audit_dict(stage_meta)
+            except Exception:
+                pass
             run_dir = Path(record_result.video_path).resolve().parent
             run_basename = Path(record_result.video_path).stem
             qc_path = os.path.join(str(run_dir), run_basename + "_qc.json")
@@ -1623,6 +1689,9 @@ class AcquisitionPanel(QWidget):
             actual_metric = stage_meta.get("actual_metric")
             if not isinstance(actual_metric, dict):
                 actual_metric = {}
+            cmd_tu = stage_meta.get("travel_user_commanded_raw")
+            if cmd_tu is None:
+                cmd_tu = stage_meta.get("travel_user_commanded")
             self._update_motion_actual_metric_labels(
                 actual_travel_um=(
                     float(actual_metric["actual_travel_um"])
@@ -1639,6 +1708,17 @@ class AcquisitionPanel(QWidget):
                     if actual_metric.get("actual_motion_duration_s") is not None
                     else None
                 ),
+                actual_travel_user=(
+                    float(stage_meta["actual_travel_user"])
+                    if stage_meta.get("actual_travel_user") is not None
+                    else None
+                ),
+                actual_speed_user_s=(
+                    float(stage_meta["actual_speed_user_s"])
+                    if stage_meta.get("actual_speed_user_s") is not None
+                    else None
+                ),
+                travel_user_commanded=float(cmd_tu) if cmd_tu is not None else None,
             )
         except Exception:
             self._update_motion_actual_metric_labels()
