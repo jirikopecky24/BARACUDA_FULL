@@ -4081,24 +4081,6 @@ def _drag_plot_markers(ax, markers: dict[str, dict[str, Any]], *, include_window
         ax.axvline(det_st, color="#616161", linestyle=":", linewidth=1.0, label="detected stop (QC-only)")
 
 
-def _drag_axes_caption(fig: Any, ax: Any, text: str, *, dy: float = 0.010) -> None:
-    """Legacy helper; prefer _drag_caption_row_text on a dedicated caption axes."""
-    pos = ax.get_position()
-    wrapped = textwrap.fill(text.strip(), width=74)
-    fig.text(
-        pos.x0 + 0.5 * pos.width,
-        pos.y0 - dy,
-        wrapped,
-        ha="center",
-        va="top",
-        fontsize=7.9,
-        color=MUTED_COLOR,
-        family=FONT_FAMILY,
-        linespacing=1.2,
-        transform=fig.transFigure,
-    )
-
-
 def _drag_caption_row_text(ax_cap: Any, text: str, *, width: int = 84) -> None:
     """Caption in its own axes row — below plot/labels, never inside the plotting area."""
     ax_cap.axis("off")
@@ -4156,42 +4138,6 @@ def _drag_figure_legend_from_axes(
         handletextpad=0.55,
         borderpad=0.52,
         labelspacing=0.85,
-    )
-
-
-def _drag_legend_below_bottom_axis(
-    bottom_ax,
-    axes: tuple[Any, ...],
-    *,
-    ncol: int = 3,
-    fontsize: float = 6.4,
-    bbox_y: float = -0.11,
-) -> None:
-    """Merged legend on the bottom axis, directly under the subplot (not page footer)."""
-    lines: list[Any] = []
-    labels: list[str] = []
-    for ax in axes:
-        lns, labs = ax.get_legend_handles_labels()
-        lines.extend(lns)
-        labels.extend(labs)
-    by_label: dict[str, Any] = {}
-    for ln, lb in zip(lines, labels):
-        if lb and lb not in by_label:
-            by_label[lb] = ln
-    if not by_label:
-        return
-    bottom_ax.legend(
-        list(by_label.values()),
-        list(by_label.keys()),
-        loc="upper center",
-        bbox_to_anchor=(0.5, bbox_y),
-        bbox_transform=bottom_ax.transAxes,
-        ncol=ncol,
-        fontsize=fontsize,
-        frameon=True,
-        framealpha=0.96,
-        fancybox=False,
-        edgecolor=LINE_COLOR,
     )
 
 

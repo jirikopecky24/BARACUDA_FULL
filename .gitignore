@@ -225,3 +225,9 @@ barakuda_crash.log
 
 # Ad-hoc pyqtgraph ROI inspect dump (see test_roi2.py)
 roi_shape_source.txt
+
+# OS / editor noise (repo hygiene; does not hide source)
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.stackdump
