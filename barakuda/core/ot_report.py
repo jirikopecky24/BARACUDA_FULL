@@ -17,6 +17,14 @@ PAGE_MARGIN_RIGHT = 0.08
 PAGE_MARGIN_TOP = 0.12
 PAGE_MARGIN_BOTTOM = 0.06
 
+# Drag PDF inner pages: unified print-safe content frame (figure coordinates, origin bottom-left).
+DRAG_CONTENT_LEFT = 0.105
+DRAG_CONTENT_RIGHT = 0.895
+DRAG_STACK_TOP = 0.802
+DRAG_STACK_BOTTOM = 0.258
+# Legend: below captions, clearly above page bottom (print-safe).
+DRAG_LEGEND_FIG_Y = 0.190
+
 BRAND_NAME = "BARAKUDA"
 REPORT_NAME = "Optical Tweezers Analysis Report"
 BRAND_COLOR = "#0F3D5E"
@@ -866,6 +874,7 @@ def build_ot_item_summary(
         diagnostics["steady_start_s"] = _parse_float(drag_summary_json.get("steady_start_s"))
         diagnostics["steady_end_s"] = _parse_float(drag_summary_json.get("steady_end_s"))
         diagnostics["actual_motion_duration_s"] = _parse_float(drag_summary_json.get("actual_motion_duration_s"))
+        diagnostics["actual_travel_um"] = _parse_float(drag_summary_json.get("actual_travel_um"))
         diagnostics["actual_speed_um_s"] = _parse_float(drag_summary_json.get("actual_speed_um_s"))
         diagnostics["eta_pa_s"] = _parse_float(drag_summary_json.get("eta_pa_s"))
         diagnostics["analysis_status"] = drag_summary_json.get("analysis_status")
@@ -1425,10 +1434,39 @@ def _identity_rows(summary: dict[str, Any]) -> list[list[str]]:
     ]
 
 
+def _drag_cover_source_file_display(summary: dict[str, Any]) -> str:
+    """Prefer a real filename over placeholder `source_input_path` (e.g. CLI tests passing `x`)."""
+    diagnostics = summary.get("diagnostics") or {}
+    run_json = summary.get("run_json") or {}
+    candidates = [
+        summary.get("original_input_path"),
+        summary.get("resolved_video_path"),
+        diagnostics.get("current_drag_input_path"),
+        run_json.get("input_path"),
+        summary.get("source_input_path"),
+    ]
+    best_path = ""
+    for c in candidates:
+        if not c:
+            continue
+        s = str(c).strip()
+        if not s or s.lower() in {"x", "n/a", "-", "none"}:
+            continue
+        if len(s) > len(best_path):
+            best_path = s
+    if not best_path:
+        return "n/a"
+    pn = Path(best_path)
+    name = pn.name
+    if len(name) <= 2 and len(str(pn)) > 4:
+        return _wrap(str(pn), 56)
+    return _wrap(name, 56)
+
+
 def _drag_cover_rows(summary: dict[str, Any]) -> tuple[list[list[str]], list[list[str]]]:
     diagnostics = summary.get("diagnostics") or {}
     metrics = summary.get("metrics") or {}
-    source_name = Path(str(summary.get("source_input_path") or "")).name if summary.get("source_input_path") else "n/a"
+    source_name = _drag_cover_source_file_display(summary)
     gate = str(diagnostics.get("drag_validation_gate") or "").strip().lower()
     final_verdict = str(diagnostics.get("final_drag_verdict") or "").strip().lower()
     physics_status = str(diagnostics.get("physics_status") or "").strip().lower()
@@ -1437,16 +1475,47 @@ def _drag_cover_rows(summary: dict[str, Any]) -> tuple[list[list[str]], list[lis
         status_value = "fail"
     elif final_verdict in {"suspect", "pass_with_warnings"} or gate == "suspect" or "suspect" in physics_status:
         status_value = "suspect"
+
+    def _f_pn(val: Any) -> str:
+        v = _parse_float(val)
+        if v is None:
+            return "n/a"
+        return f"{v * 1e12:.3f} pN"
+
+    def _f_mpas(val: Any) -> str:
+        v = _parse_float(val)
+        if v is None:
+            return "n/a"
+        return f"{v * 1e3:.3f} mPa·s"
+
+    def _f_um(val: Any) -> str:
+        v = _parse_float(val)
+        if v is None:
+            return "n/a"
+        return f"{v:.4f} µm"
+
+    def _f_um_s(val: Any) -> str:
+        v = _parse_float(val)
+        if v is None:
+            return "n/a"
+        return f"{v:.2f} µm/s"
+
+    def _f_kappa(val: Any) -> str:
+        v = _parse_float(val)
+        if v is None:
+            return "n/a"
+        return f"{v:.2f} pN/µm"
+
     rows = [
         ["Item", _wrap(summary.get("item_id"), 56)],
         ["Status", _fmt_status(status_value)],
         ["Run ID", _wrap(summary.get("run_id"), 56)],
         ["Source file", _wrap(source_name, 56)],
-        ["Drag force [N]", _fmt_value(diagnostics.get("drag_force_n"))],
-        ["Viscosity [Pa*s]", _fmt_value(diagnostics.get("eta_pa_s"))],
-        ["Drag stiffness [pN/um]", _fmt_value(metrics.get("kappa_drag_pn_per_um"))],
-        ["Actual speed [um/s]", _fmt_value(diagnostics.get("actual_speed_um_s"))],
-        ["Absolute offset [um]", _fmt_value(diagnostics.get("offset_um"))],
+        ["Drag force", _f_pn(diagnostics.get("drag_force_n"))],
+        ["Viscosity", _f_mpas(diagnostics.get("eta_pa_s"))],
+        ["Drag stiffness", _f_kappa(metrics.get("kappa_drag_pn_per_um"))],
+        ["Actual speed", _f_um_s(diagnostics.get("actual_speed_um_s"))],
+        ["Absolute offset", _f_um(diagnostics.get("offset_um"))],
         ["Alignment status", _wrap(diagnostics.get("alignment_status"), 56)],
         ["Physics status", _wrap(diagnostics.get("physics_status"), 56)],
         ["Primary physics gate", _wrap(diagnostics.get("physics_primary_gate"), 56)],
@@ -2260,7 +2329,7 @@ def _add_page_footer(fig, page_counter: PageCounter | None) -> None:
     if page_counter is not None:
         page_counter.next()
         fig.text(
-            1 - PAGE_MARGIN_RIGHT, 0.02, page_counter.page_str(),
+            1 - PAGE_MARGIN_RIGHT, 0.026, page_counter.page_str(),
             fontsize=9, color=MUTED_COLOR, ha="right", va="bottom"
         )
 
@@ -2764,39 +2833,264 @@ def _render_drag_theory_page(
     *,
     page_counter: PageCounter | None = None,
 ) -> None:
+    """Single-page drag theory: Brown-family layout, airy spacing, display equations without boxes."""
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=PAGE_SIZE)
     fig.patch.set_facecolor("white")
-    _add_brand_header(fig, "Drag Theory and Method", page_counter=page_counter)
+    _add_brand_header(fig, "Theory and Methods", page_counter=page_counter)
 
-    ax = fig.add_axes([PAGE_MARGIN_LEFT, PAGE_MARGIN_BOTTOM + 0.02, 1 - PAGE_MARGIN_LEFT - PAGE_MARGIN_RIGHT, 0.76])
+    theory_bottom = 0.112
+    ax_h = DRAG_STACK_TOP - theory_bottom
+    ax = fig.add_axes([DRAG_CONTENT_LEFT, theory_bottom, DRAG_CONTENT_RIGHT - DRAG_CONTENT_LEFT, ax_h])
     ax.axis("off")
 
-    lines = [
-        "Constant-velocity drag method",
-        "",
-        "1) Current drag trajectory is analyzed in the active run.",
-        "2) Brownian baseline is used only for calibration (kappa, optional scale).",
-        "3) Baseline and steady-state windows are resolved on the current drag trajectory.",
-        "4) Offset is computed between baseline and steady-state positions.",
-        "5) Drag force is inferred as: F_drag = kappa * offset.",
-        "6) Viscosity is inferred from drag force and actual stage speed.",
-        "",
-        "Provenance note:",
-        "Current trajectory source is intentionally independent from baseline source.",
-        "The report always lists both sources explicitly for auditability.",
-    ]
+    line_height = 0.0295
+    section_gap = 0.04
+    equation_gap = 0.054
+    theory_section_fs = 11
+    y = 0.98
+
     ax.text(
         0.0,
-        0.98,
-        "\n".join(lines),
-        fontsize=10.5,
+        y,
+        "Constant-velocity drag in a harmonic trap",
+        fontsize=FONT_SIZE_HEADER,
+        fontweight="bold",
         color=TEXT_COLOR,
-        va="top",
+        transform=ax.transAxes,
         family=FONT_FAMILY,
-        linespacing=1.5,
+        ha="left",
     )
+    y -= line_height * 1.5
+
+    ax.text(
+        0.0,
+        y,
+        textwrap.fill(
+            (
+                "The stage executes an approximately constant-velocity segment while a trapped bead is monitored along the drag axis. "
+                "The harmonic trap (stiffness κ) pulls the particle toward its centre; fluid drag opposes that motion when the medium "
+                "moves relative to the bead."
+            ),
+            width=90,
+        ),
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+        va="top",
+        linespacing=1.42,
+    )
+    y -= line_height * 2.55 + section_gap * 0.45
+
+    ax.text(
+        0.0,
+        y,
+        textwrap.fill(
+            (
+                "At steady motion the bead sits at a finite offset x_ss: Stokes drag balances trap restoring force (κ x_ss). "
+                "That offset is the physical readout of viscosity, slip speed, and trap stiffness—not a tracking defect. "
+                "Overdamped relaxation after perturbations is characterised by τ = γ/κ."
+            ),
+            width=90,
+        ),
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+        va="top",
+        linespacing=1.42,
+    )
+    y -= line_height * 2.65 + section_gap * 1.05
+
+    ax.text(
+        0.0,
+        y,
+        "Stokes drag and steady offset",
+        fontsize=theory_section_fs,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= line_height * 1.15
+
+    ax.text(
+        0.0,
+        y,
+        textwrap.fill(
+            "For a sphere of effective radius R in viscosity η, the drag coefficient is γ ≈ 6πηR. Steady balance and relaxation:",
+            width=90,
+        ),
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+        va="top",
+        linespacing=1.4,
+    )
+    y -= line_height * 1.45 + section_gap * 0.55
+
+    y -= equation_gap * 0.5
+    ax.text(
+        0.5,
+        y,
+        r"$\gamma \approx 6\pi\eta R$",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
+    y -= equation_gap
+    ax.text(
+        0.5,
+        y,
+        r"$x_{\mathrm{ss}} = \dfrac{\gamma v}{\kappa}$",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
+    y -= equation_gap
+    ax.text(
+        0.5,
+        y,
+        r"$\tau = \dfrac{\gamma}{\kappa}$",
+        fontsize=14,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        ha="center",
+    )
+    y -= line_height * 1.05
+
+    ax.text(
+        0.0,
+        y,
+        textwrap.fill(
+            (
+                r"where $v$ is the steady slip speed along the drag axis, and $\gamma$ is the same drag coefficient that enters "
+                r"Brownian calibration (PSD corner frequency) when overdamped dynamics apply."
+            ),
+            width=94,
+        ),
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+        va="top",
+        linespacing=1.4,
+    )
+    y -= line_height * 2.15 + section_gap * 1.15
+
+    ax.text(
+        0.0,
+        y,
+        "Signal structure and reporting windows",
+        fontsize=theory_section_fs,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= line_height * 1.15
+
+    ax.text(
+        0.0,
+        y,
+        textwrap.fill(
+            (
+                "Read the trace as baseline → transition → steady plateau: baseline sets the centreing reference; the plateau carries "
+                "headline numbers. Windows follow stage-truth sidecars; trajectory onset/stop overlays are QC-only, not primary definitions."
+            ),
+            width=90,
+        ),
+        fontsize=FONT_SIZE_NORMAL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+        va="top",
+        linespacing=1.4,
+    )
+    y -= line_height * 2.45 + section_gap * 1.1
+
+    ax.text(
+        0.0,
+        y,
+        "Assumptions and limitations",
+        fontsize=theory_section_fs,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= line_height * 1.1
+
+    ax.text(
+        0.0,
+        y,
+        textwrap.fill(
+            (
+                "Overdamped, inertia-free motion; 1D axis-aligned interpretation. Brownian calibration supplies κ and noise context only. "
+                "Near-wall hydrodynamics, slip, heating, and non-Stokes corrections are not fully closed here—interpret margins "
+                "accordingly."
+            ),
+            width=90,
+        ),
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        fontstyle="italic",
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+        va="top",
+        linespacing=1.38,
+    )
+    y -= line_height * 2.15 + section_gap * 1.1
+
+    ax.text(
+        0.0,
+        y,
+        "References",
+        fontsize=theory_section_fs,
+        fontweight="bold",
+        color=BRAND_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= line_height
+    ax.text(
+        0.0,
+        y,
+        "[1] K. Berg-Sorensen, H. Flyvbjerg, Rev. Sci. Instrum. 75, 594 (2004)",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+    y -= line_height * 0.95
+    ax.text(
+        0.0,
+        y,
+        "[2] A. Rohrbach, Opt. Express 13, 9695 (2005)",
+        fontsize=FONT_SIZE_SMALL,
+        color=TEXT_COLOR,
+        transform=ax.transAxes,
+        family=FONT_FAMILY,
+        ha="left",
+    )
+
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -3430,6 +3724,1471 @@ def _render_drag_trace_page(
     plt.close(fig)
 
 
+def _read_csv_columns(path: Path | None) -> dict[str, np.ndarray]:
+    """
+    Read a CSV into numeric columns (float where possible).
+
+    Non-numeric cells become NaN. Missing path -> empty dict.
+    """
+    if path is None or not Path(path).is_file():
+        return {}
+    cols: dict[str, list[float]] = {}
+    try:
+        with Path(path).open("r", encoding="utf-8", newline="") as f:
+            rdr = csv.DictReader(f)
+            for row in rdr:
+                if not row:
+                    continue
+                for k, v in row.items():
+                    if k is None:
+                        continue
+                    if k not in cols:
+                        cols[k] = []
+                    cols[k].append(_parse_float(v) if v not in (None, "") else float("nan"))
+    except Exception:
+        return {}
+    return {k: np.asarray(v, dtype=np.float64) for k, v in cols.items()}
+
+
+def _drag_video_time_origin_s(summary: dict[str, Any]) -> float:
+    diagnostics = summary.get("diagnostics") or {}
+    t0 = _parse_float(diagnostics.get("t_first_s"))
+    if t0 is None:
+        t0 = 0.0
+    return float(t0)
+
+
+def _drag_to_video_rel_s(summary: dict[str, Any], video_time_s: float | None) -> float | None:
+    if video_time_s is None:
+        return None
+    t0 = _drag_video_time_origin_s(summary)
+    return float(video_time_s) - t0
+
+
+def _drag_stage_to_video_rel_s(summary: dict[str, Any], stage_time_s: float | None) -> float | None:
+    """Map stage trace seconds into video-relative seconds using saved alignment offset."""
+    if stage_time_s is None:
+        return None
+    diagnostics = summary.get("diagnostics") or {}
+    off = _parse_float(diagnostics.get("alignment_offset_s"))
+    if off is None:
+        return None
+    t_video = float(stage_time_s) + float(off)
+    return _drag_to_video_rel_s(summary, t_video)
+
+
+def _drag_resolve_primary_markers(
+    summary: dict[str, Any],
+    *,
+    windows_csv: Path | None,
+    stage_trace_path: Path | None,
+) -> dict[str, dict[str, Any]]:
+    """
+    Resolve stage-truth-first diagnostic markers.
+
+    Returns:
+      {"raw": {...}, "derived": {...}}
+    All marker times are in video-relative seconds (time from video start).
+    """
+    diagnostics = summary.get("diagnostics") or {}
+    raw: dict[str, Any] = {}
+    derived: dict[str, Any] = {}
+
+    # Primary truth: expected stage start/stop in video time (already stage-aligned by analysis).
+    raw["motion_start_s"] = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get("expected_stage_start_video_s")))
+    raw["motion_stop_s"] = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get("expected_stage_stop_video_s")))
+
+    # Optional stage trace events (script / running-confirmed), mapped via alignment offset.
+    if stage_trace_path is not None and Path(stage_trace_path).is_file():
+        try:
+            with Path(stage_trace_path).open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for row in rdr:
+                    if not row:
+                        continue
+                    ev = str(row.get("event", "")).strip().lower()
+                    t_s = _parse_float(row.get("t_s"))
+                    if t_s is None:
+                        continue
+                    if ev in {"motion_command_issued", "motion_running_confirmed", "motion_start", "motion_stop"}:
+                        raw[ev] = _drag_stage_to_video_rel_s(summary, float(t_s))
+        except Exception:
+            pass
+
+    # Windows: baseline/steady from summary; if missing, fall back to windows CSV.
+    b0 = _parse_float(diagnostics.get("baseline_start_s"))
+    b1 = _parse_float(diagnostics.get("baseline_end_s"))
+    s0 = _parse_float(diagnostics.get("steady_start_s"))
+    s1 = _parse_float(diagnostics.get("steady_end_s"))
+    if (b0 is None or b1 is None or s0 is None or s1 is None) and windows_csv is not None and Path(windows_csv).is_file():
+        try:
+            with Path(windows_csv).open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for row in rdr:
+                    name = str(row.get("window", "")).strip().lower()
+                    st = _parse_float(row.get("start_s"))
+                    en = _parse_float(row.get("end_s"))
+                    if name == "baseline" and st is not None and en is not None:
+                        b0, b1 = st, en
+                    if name == "steady" and st is not None and en is not None:
+                        s0, s1 = st, en
+        except Exception:
+            pass
+
+    raw["baseline_start_s"] = _drag_to_video_rel_s(summary, b0)
+    raw["baseline_end_s"] = _drag_to_video_rel_s(summary, b1)
+    raw["steady_start_s"] = _drag_to_video_rel_s(summary, s0)
+    raw["steady_end_s"] = _drag_to_video_rel_s(summary, s1)
+
+    # Secondary QC marker: trajectory onset detection.
+    derived["detected_onset_qc_s"] = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get("detected_stage_start_video_s")))
+    derived["detected_stop_qc_s"] = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get("detected_stage_stop_video_s")))
+
+    # Derived phase boundaries for visualization when no encoder trace exists.
+    ms = raw.get("motion_start_s")
+    me = raw.get("motion_stop_s")
+    ss0 = raw.get("steady_start_s")
+    ss1 = raw.get("steady_end_s")
+    if isinstance(ms, float) and isinstance(me, float) and math.isfinite(ms) and math.isfinite(me) and me > ms:
+        dur = me - ms
+        a = max(0.12 * dur, 0.05)
+        a = min(a, 0.33 * dur)
+        derived["acceleration_end_s"] = ms + a
+        derived["deceleration_start_s"] = me - a
+    if isinstance(ss0, float) and math.isfinite(ss0):
+        derived["steady_state_start_s"] = float(ss0)
+    if isinstance(ss1, float) and math.isfinite(ss1):
+        derived["steady_state_stop_s"] = float(ss1)
+    if raw.get("motion_running_confirmed") is not None:
+        derived["motion_running_confirmed_s"] = raw.get("motion_running_confirmed")
+    else:
+        if isinstance(ms, float) and isinstance(derived.get("acceleration_end_s"), float):
+            derived["motion_running_confirmed_s"] = ms + 0.5 * (derived["acceleration_end_s"] - ms)
+    return {"raw": raw, "derived": derived}
+
+
+def _drag_um_per_px(summary: dict[str, Any]) -> float | None:
+    metrics = summary.get("metrics") or {}
+    v = _parse_float(metrics.get("um_per_px"))
+    return float(v) if v is not None and v > 0 else None
+
+
+def _drag_stage_travel_um(summary: dict[str, Any]) -> float | None:
+    # Preferred: drag summary exports actual_travel_um; keep fallback conservative.
+    diagnostics = summary.get("diagnostics") or {}
+    v = _parse_float(diagnostics.get("actual_travel_um"))
+    if v is not None and math.isfinite(v):
+        return float(v)
+    return None
+
+
+def _drag_trace_time_and_signal_um(
+    summary: dict[str, Any],
+    trace_csv: Path | None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    cols = _read_csv_columns(trace_csv)
+    if not cols:
+        return None, None
+    t = cols.get("video_time_rel_s")
+    if t is None:
+        t_abs = cols.get("video_time_s")
+        if t_abs is not None and len(t_abs):
+            t0 = float(t_abs[0])
+            t = t_abs - t0
+    if t is None:
+        t = cols.get("stage_time_aligned_s")
+    y_um = cols.get("axis_um")
+    if y_um is None:
+        y_px = cols.get("axis_px")
+        um_per_px = _drag_um_per_px(summary)
+        if y_px is not None and um_per_px is not None:
+            y_um = y_px * float(um_per_px)
+    if t is None or y_um is None or len(t) == 0 or len(y_um) == 0:
+        return None, None
+    n = min(len(t), len(y_um))
+    return t[:n], y_um[:n]
+
+
+def _drag_stage_profile_from_saved_data(
+    summary: dict[str, Any],
+    *,
+    stage_trace_path: Path | None,
+    trace_csv: Path | None,
+    markers: dict[str, dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    def _first_present(columns: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray | None:
+        for name in names:
+            arr = columns.get(name)
+            if arr is not None:
+                return arr
+        return None
+
+    cols = _read_csv_columns(stage_trace_path)
+    if cols:
+        t = cols.get("video_time_rel_s")
+        if t is None:
+            t = cols.get("stage_time_aligned_s")
+        if t is None:
+            t_stage = cols.get("t_s")
+            if t_stage is not None:
+                mapped: list[float] = []
+                for v in t_stage:
+                    if math.isnan(v):
+                        mapped.append(float("nan"))
+                    else:
+                        rel = _drag_stage_to_video_rel_s(summary, float(v))
+                        mapped.append(float(rel) if rel is not None else float("nan"))
+                t = np.asarray(mapped, dtype=np.float64)
+        pos = _first_present(cols, ("stage_position_um", "position_um", "stage_pos_um", "x_um"))
+        vel = _first_present(cols, ("stage_velocity_um_s", "velocity_um_s", "stage_vel_um_s", "vx_um_s"))
+        if t is not None and pos is not None and len(t) and len(pos):
+            n = min(len(t), len(pos))
+            t = t[:n]
+            pos = pos[:n]
+            finite_t = np.isfinite(t)
+            finite_pos = np.isfinite(pos)
+            keep = finite_t & finite_pos
+            if np.any(keep):
+                t = t[keep]
+                pos = pos[keep]
+                if vel is not None and len(vel):
+                    vel = vel[:n]
+                    vel = vel[keep]
+                else:
+                    vel = None
+                if vel is None:
+                    dt = np.diff(t, prepend=t[0])
+                    dp = np.diff(pos, prepend=pos[0])
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        vel = np.where(np.abs(dt) > 1e-12, dp / dt, np.nan)
+                return t, pos, np.asarray(vel, dtype=np.float64)
+
+    travel_um = _drag_stage_travel_um(summary)
+    prof = _drag_build_stage_profile_from_markers(markers, travel_um=travel_um)
+    if prof is not None:
+        return prof
+
+    t_trace, y_trace_um = _drag_trace_time_and_signal_um(summary, trace_csv)
+    if t_trace is None or y_trace_um is None:
+        return None
+    raw = markers.get("raw") or {}
+    b0 = raw.get("baseline_start_s")
+    b1 = raw.get("baseline_end_s")
+    baseline_mask = (t_trace >= float(b0)) & (t_trace <= float(b1)) if isinstance(b0, float) and isinstance(b1, float) else None
+    center = (
+        float(np.nanmedian(y_trace_um[baseline_mask]))
+        if (baseline_mask is not None and np.any(baseline_mask))
+        else float(np.nanmedian(y_trace_um))
+    )
+    bead_rel = y_trace_um - center
+    return t_trace, np.zeros_like(bead_rel), np.zeros_like(bead_rel)
+
+
+def _drag_build_stage_profile_from_markers(
+    markers: dict[str, dict[str, Any]],
+    *,
+    travel_um: float | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """
+    Build an idealized trapezoidal stage profile from stage-truth markers.
+    Returns (t, position_um, velocity_um_s) in video-relative seconds.
+    """
+    raw = markers.get("raw") or {}
+    derived = markers.get("derived") or {}
+    ms = raw.get("motion_start_s")
+    me = raw.get("motion_stop_s")
+    if not isinstance(ms, float) or not isinstance(me, float) or not math.isfinite(ms) or not math.isfinite(me) or me <= ms:
+        return None
+    if travel_um is None or not math.isfinite(float(travel_um)) or float(travel_um) == 0:
+        return None
+    travel = float(travel_um)
+
+    a_end = derived.get("acceleration_end_s")
+    d_start = derived.get("deceleration_start_s")
+    if not isinstance(a_end, float) or not isinstance(d_start, float) or a_end <= ms or d_start >= me or d_start <= a_end:
+        dur = me - ms
+        a_end = ms + 0.2 * dur
+        d_start = ms + 0.8 * dur
+
+    dur = me - ms
+    ta = a_end - ms
+    td = me - d_start
+    tc = max(0.0, d_start - a_end)
+    area = 0.5 * ta + tc + 0.5 * td
+    if area <= 0:
+        return None
+    v_plateau = travel / area
+
+    n = int(max(300, min(1600, math.ceil(dur * 200))))
+    t = np.linspace(ms, me, n, dtype=np.float64)
+    v = np.zeros_like(t)
+    accel_mask = t <= a_end
+    if ta > 0:
+        v[accel_mask] = v_plateau * (t[accel_mask] - ms) / ta
+    cruise_mask = (t > a_end) & (t < d_start)
+    v[cruise_mask] = v_plateau
+    decel_mask = t >= d_start
+    if td > 0:
+        v[decel_mask] = v_plateau * (me - t[decel_mask]) / td
+
+    dt = np.diff(t, prepend=t[0])
+    dt[0] = 0.0
+    pos = np.cumsum(v * dt)
+    return t, pos, v
+
+
+def _drag_plot_markers(ax, markers: dict[str, dict[str, Any]], *, include_windows: bool = True) -> None:
+    raw = markers.get("raw") or {}
+    derived = markers.get("derived") or {}
+
+    if include_windows:
+        b0 = raw.get("baseline_start_s")
+        b1 = raw.get("baseline_end_s")
+        s0 = raw.get("steady_start_s")
+        s1 = raw.get("steady_end_s")
+        if isinstance(b0, float) and isinstance(b1, float):
+            ax.axvspan(b0, b1, color="#A5D6A7", alpha=0.22, label="baseline window (primary)")
+        if isinstance(s0, float) and isinstance(s1, float):
+            ax.axvspan(s0, s1, color="#EF9A9A", alpha=0.22, label="steady window (primary)")
+
+    ms = raw.get("motion_start_s")
+    me = raw.get("motion_stop_s")
+    if isinstance(ms, float):
+        ax.axvline(ms, color="#1565C0", linestyle="-.", linewidth=1.1, label="motion start (stage truth)")
+    if isinstance(me, float):
+        ax.axvline(me, color="#0D47A1", linestyle="-.", linewidth=1.1, label="motion stop (stage truth)")
+
+    mrc = derived.get("motion_running_confirmed_s")
+    if isinstance(mrc, float):
+        ax.axvline(mrc, color="#1976D2", linestyle=":", linewidth=1.0, label="motion running confirmed (derived)")
+
+    ss0 = derived.get("steady_state_start_s")
+    ss1 = derived.get("steady_state_stop_s")
+    if isinstance(ss0, float):
+        ax.axvline(ss0, color="#2E7D32", linestyle="--", linewidth=1.0, label="steady-state start (from windows)")
+    if isinstance(ss1, float):
+        ax.axvline(ss1, color="#C62828", linestyle="--", linewidth=1.0, label="steady-state stop (from windows)")
+
+    dec = derived.get("deceleration_start_s")
+    if isinstance(dec, float):
+        ax.axvline(dec, color="#6A1B9A", linestyle=":", linewidth=1.0, label="deceleration start (derived)")
+
+    det_on = derived.get("detected_onset_qc_s")
+    det_st = derived.get("detected_stop_qc_s")
+    if isinstance(det_on, float):
+        ax.axvline(det_on, color="#000000", linestyle="--", linewidth=1.0, label="detected onset (QC-only)")
+    if isinstance(det_st, float):
+        ax.axvline(det_st, color="#616161", linestyle=":", linewidth=1.0, label="detected stop (QC-only)")
+
+
+def _drag_axes_caption(fig: Any, ax: Any, text: str, *, dy: float = 0.010) -> None:
+    """Legacy helper; prefer _drag_caption_row_text on a dedicated caption axes."""
+    pos = ax.get_position()
+    wrapped = textwrap.fill(text.strip(), width=74)
+    fig.text(
+        pos.x0 + 0.5 * pos.width,
+        pos.y0 - dy,
+        wrapped,
+        ha="center",
+        va="top",
+        fontsize=7.9,
+        color=MUTED_COLOR,
+        family=FONT_FAMILY,
+        linespacing=1.2,
+        transform=fig.transFigure,
+    )
+
+
+def _drag_caption_row_text(ax_cap: Any, text: str, *, width: int = 84) -> None:
+    """Caption in its own axes row — below plot/labels, never inside the plotting area."""
+    ax_cap.axis("off")
+    ax_cap.set_xlim(0, 1)
+    ax_cap.set_ylim(0, 1)
+    wrapped = textwrap.fill(text.strip(), width=width)
+    ax_cap.text(
+        0.5,
+        1.0,
+        wrapped,
+        transform=ax_cap.transAxes,
+        ha="center",
+        va="top",
+        fontsize=8.15,
+        color=MUTED_COLOR,
+        family=FONT_FAMILY,
+        linespacing=1.38,
+    )
+
+
+def _drag_figure_legend_from_axes(
+    fig: Any,
+    source_axes: tuple[Any, ...],
+    *,
+    ncol: int = 4,
+    fontsize: float = 7.45,
+) -> None:
+    """Shared legend in the bottom figure zone (below captions), print-safe."""
+    lines: list[Any] = []
+    labels: list[str] = []
+    for ax in source_axes:
+        lns, labs = ax.get_legend_handles_labels()
+        lines.extend(lns)
+        labels.extend(labs)
+    by_label: dict[str, Any] = {}
+    for ln, lb in zip(lines, labels):
+        if lb and lb not in by_label:
+            by_label[lb] = ln
+    if not by_label:
+        return
+    fig.legend(
+        list(by_label.values()),
+        list(by_label.keys()),
+        loc="upper center",
+        bbox_to_anchor=(0.5, DRAG_LEGEND_FIG_Y),
+        bbox_transform=fig.transFigure,
+        ncol=ncol,
+        fontsize=fontsize,
+        frameon=True,
+        framealpha=0.97,
+        fancybox=False,
+        edgecolor=LINE_COLOR,
+        columnspacing=1.08,
+        handlelength=1.55,
+        handletextpad=0.55,
+        borderpad=0.52,
+        labelspacing=0.85,
+    )
+
+
+def _drag_legend_below_bottom_axis(
+    bottom_ax,
+    axes: tuple[Any, ...],
+    *,
+    ncol: int = 3,
+    fontsize: float = 6.4,
+    bbox_y: float = -0.11,
+) -> None:
+    """Merged legend on the bottom axis, directly under the subplot (not page footer)."""
+    lines: list[Any] = []
+    labels: list[str] = []
+    for ax in axes:
+        lns, labs = ax.get_legend_handles_labels()
+        lines.extend(lns)
+        labels.extend(labs)
+    by_label: dict[str, Any] = {}
+    for ln, lb in zip(lines, labels):
+        if lb and lb not in by_label:
+            by_label[lb] = ln
+    if not by_label:
+        return
+    bottom_ax.legend(
+        list(by_label.values()),
+        list(by_label.keys()),
+        loc="upper center",
+        bbox_to_anchor=(0.5, bbox_y),
+        bbox_transform=bottom_ax.transAxes,
+        ncol=ncol,
+        fontsize=fontsize,
+        frameon=True,
+        framealpha=0.96,
+        fancybox=False,
+        edgecolor=LINE_COLOR,
+    )
+
+
+def _drag_pick_preview_index(target_rel_s: float, elapsed_s: float, n: int) -> int:
+    if n <= 1 or elapsed_s <= 0:
+        return 0
+    frac = min(max(target_rel_s / elapsed_s, 0.0), 1.0)
+    return int(round(frac * float(n - 1)))
+
+
+def _drag_select_stage_truth_preview_paths(
+    summary: dict[str, Any],
+    preview_paths: list[Path],
+) -> list[tuple[str, Path]]:
+    if not preview_paths:
+        return []
+    diagnostics = summary.get("diagnostics") or {}
+    markers = _drag_resolve_primary_markers(summary, windows_csv=None, stage_trace_path=None)
+    raw = markers.get("raw") or {}
+    elapsed = _parse_float(diagnostics.get("elapsed_time_s"))
+    elapsed_s = float(elapsed) if elapsed is not None and elapsed > 0 else float(max(1, len(preview_paths) - 1))
+
+    b0 = raw.get("baseline_start_s")
+    b1 = raw.get("baseline_end_s")
+    s0 = raw.get("steady_start_s")
+    s1 = raw.get("steady_end_s")
+    ms = raw.get("motion_start_s")
+    me = raw.get("motion_stop_s")
+    baseline_t = (float(b0) + float(b1)) * 0.5 if isinstance(b0, float) and isinstance(b1, float) else 0.12 * elapsed_s
+    steady_t = (float(s0) + float(s1)) * 0.5 if isinstance(s0, float) and isinstance(s1, float) else 0.60 * elapsed_s
+    if isinstance(me, float):
+        post_t = min(0.95 * elapsed_s, me + max(0.3, 0.3 * max(0.0, elapsed_s - me)))
+    elif isinstance(ms, float):
+        post_t = min(0.95 * elapsed_s, ms + 0.75 * max(0.1, elapsed_s - ms))
+    else:
+        post_t = 0.88 * elapsed_s
+
+    picks = [
+        ("Baseline (stage-truth window)", _drag_pick_preview_index(baseline_t, elapsed_s, len(preview_paths))),
+        ("Steady-state (stage-truth window)", _drag_pick_preview_index(steady_t, elapsed_s, len(preview_paths))),
+        ("Post-stop quiet segment", _drag_pick_preview_index(post_t, elapsed_s, len(preview_paths))),
+    ]
+    used: set[int] = set()
+    selected: list[tuple[str, Path]] = []
+    for label, idx in picks:
+        j = min(max(int(idx), 0), len(preview_paths) - 1)
+        while j in used and j + 1 < len(preview_paths):
+            j += 1
+        if j in used:
+            j = max(0, min(len(preview_paths) - 1, j - 1))
+        used.add(j)
+        selected.append((label, preview_paths[j]))
+    return selected
+
+
+def _drag_reference_line_x_px(summary: dict[str, Any], trace_csv: Path | None) -> float | None:
+    diagnostics = summary.get("diagnostics") or {}
+    x = _parse_float(diagnostics.get("baseline_position_px"))
+    if x is not None and math.isfinite(x):
+        return float(x)
+    cols = _read_csv_columns(trace_csv)
+    t = cols.get("video_time_rel_s")
+    y = cols.get("axis_px")
+    if t is None or y is None or len(t) == 0 or len(y) == 0:
+        return None
+    b0 = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get("baseline_start_s")))
+    b1 = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get("baseline_end_s")))
+    mask = (t >= float(b0)) & (t <= float(b1)) if isinstance(b0, float) and isinstance(b1, float) else None
+    if mask is not None and np.any(mask):
+        return float(np.nanmedian(y[mask]))
+    return float(np.nanmedian(y))
+
+
+def _drag_load_trajectory_numeric(path: Path | None) -> dict[str, np.ndarray]:
+    """Load trajectory CSV including leading '#' metadata lines."""
+    if path is None or not Path(path).is_file():
+        return {}
+    try:
+        from barakuda.core.trajectory_csv_io import read_trajectory_csv
+
+        tab = read_trajectory_csv(Path(path))
+    except Exception:
+        return {}
+    if not tab.header or not tab.rows:
+        return {}
+    out: dict[str, list[float]] = {h: [] for h in tab.header}
+    for row in tab.rows:
+        for h in tab.header:
+            out[h].append(_parse_float(row.get(h)) if row.get(h) not in (None, "") else float("nan"))
+    return {k: np.asarray(v, dtype=np.float64) for k, v in out.items()}
+
+
+def _drag_run_json_tracking_roi(summary: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    run = summary.get("run_json") or {}
+    roi = (run.get("config") or {}).get("tracking", {}).get("roi")
+    if not roi or len(roi) < 4:
+        return None
+    try:
+        x, y, w, h = (float(roi[0]), float(roi[1]), float(roi[2]), float(roi[3]))
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return x, y, w, h
+
+
+def _drag_axis_key(summary: dict[str, Any]) -> str:
+    d = summary.get("diagnostics") or {}
+    ax = str(d.get("drag_analysis_axis") or "").strip().lower()
+    if ax in ("x", "y"):
+        return ax
+    run = summary.get("run_json") or {}
+    post = (run.get("config") or {}).get("postprocess") or {}
+    ax2 = str(post.get("drag_axis") or "x").strip().lower()
+    return ax2 if ax2 in ("x", "y") else "x"
+
+
+def _drag_rel_time_for_preview_index(idx: int, n: int, elapsed_s: float) -> float:
+    if n <= 1:
+        return 0.0
+    return (float(idx) / float(n - 1)) * float(elapsed_s)
+
+
+def _drag_roi_origin_at_trajectory_row(traj: dict[str, np.ndarray], row: int, summary: dict[str, Any]) -> tuple[float, float]:
+    if "roi_x" in traj and "roi_y" in traj and row < len(traj["roi_x"]):
+        return float(traj["roi_x"][row]), float(traj["roi_y"][row])
+    r = _drag_run_json_tracking_roi(summary)
+    if r:
+        return r[0], r[1]
+    return 0.0, 0.0
+
+
+def _drag_pick_trajectory_row_for_preview(
+    traj: dict[str, np.ndarray],
+    preview_idx: int,
+    n_previews: int,
+    summary: dict[str, Any],
+) -> int:
+    frames = traj.get("frame")
+    if frames is not None and len(frames) and n_previews > 1:
+        f0 = float(np.nanmin(frames))
+        f1 = float(np.nanmax(frames))
+        f_tar = f0 + (f1 - f0) * (float(preview_idx) / float(n_previews - 1))
+        return int(np.nanargmin(np.abs(frames - f_tar)))
+
+    t_rel = traj.get("video_time_rel_s")
+    t_raw = traj.get("t_s")
+    t_arr = t_rel if t_rel is not None and len(t_rel) else t_raw
+    if t_arr is None or len(t_arr) == 0:
+        return 0
+    t_series = np.asarray(t_arr, dtype=np.float64)
+    if np.nanmin(t_series) > 500.0:
+        t_series = t_series - float(_drag_video_time_origin_s(summary))
+    elif np.nanmin(t_series) > 1.0 and np.nanmax(t_series) > float(np.nanmin(t_series)) + 10.0:
+        t_series = t_series - float(np.nanmin(t_series))
+
+    diagnostics = summary.get("diagnostics") or {}
+    elapsed = _parse_float(diagnostics.get("elapsed_time_s"))
+    elapsed_s = float(elapsed) if elapsed is not None and elapsed > 0 else float(max(1, n_previews - 1))
+    t_q = _drag_rel_time_for_preview_index(preview_idx, n_previews, elapsed_s)
+    return int(np.nanargmin(np.abs(t_series - t_q)))
+
+
+def _drag_shared_cover_reference_line(
+    summary: dict[str, Any],
+    preview_paths: list[Path],
+    trajectory_csv: Path | None,
+    trace_csv: Path | None,
+) -> tuple[str, float] | None:
+    """
+    Shared equilibrium reference in full-frame image pixels for the baseline preview instant.
+
+    Returns ("v", x_px) for a vertical line (drag along x) or ("h", y_px) for horizontal (drag along y).
+    """
+    if not preview_paths:
+        return None
+    selected = _drag_select_stage_truth_preview_paths(summary, preview_paths)
+    baseline_path = selected[0][1]
+    try:
+        preview_idx = next(i for i, p in enumerate(preview_paths) if Path(p).resolve() == Path(baseline_path).resolve())
+    except StopIteration:
+        preview_idx = 0
+    n_prev = len(preview_paths)
+    axis = _drag_axis_key(summary)
+
+    traj_path = Path(trajectory_csv) if trajectory_csv else None
+    traj = _drag_load_trajectory_numeric(traj_path) if (traj_path and traj_path.is_file()) else {}
+    if traj and "x_px" in traj and "y_px" in traj:
+        ri = _drag_pick_trajectory_row_for_preview(traj, preview_idx, n_prev, summary)
+        ri = max(0, min(ri, len(traj["x_px"]) - 1))
+        rx, ry = _drag_roi_origin_at_trajectory_row(traj, ri, summary)
+        x_tr = float(traj["x_px"][ri])
+        y_tr = float(traj["y_px"][ri])
+        if axis == "x":
+            return ("v", float(rx + x_tr))
+        return ("h", float(ry + y_tr))
+
+    diagnostics = summary.get("diagnostics") or {}
+    elapsed = _parse_float(diagnostics.get("elapsed_time_s"))
+    elapsed_s = float(elapsed) if elapsed is not None and elapsed > 0 else float(max(1, n_prev - 1))
+    t_q = _drag_rel_time_for_preview_index(preview_idx, n_prev, elapsed_s)
+    cols = _read_csv_columns(trace_csv)
+    t = cols.get("video_time_rel_s")
+    axp = cols.get("axis_px")
+    if t is not None and axp is not None and len(t) and len(axp):
+        finite = np.isfinite(t) & np.isfinite(axp)
+        if np.any(finite):
+            t2 = t[finite]
+            a2 = axp[finite]
+            order = np.argsort(t2)
+            t2 = t2[order]
+            a2 = a2[order]
+            t_qc = float(np.clip(t_q, float(t2[0]), float(t2[-1])))
+            val = float(np.interp(t_qc, t2, a2))
+            r = _drag_run_json_tracking_roi(summary)
+            if r:
+                if axis == "x":
+                    return ("v", float(r[0] + val))
+                return ("h", float(r[1] + val))
+            if axis == "x":
+                return ("v", float(val))
+            return ("h", float(val))
+
+    x_roi = _drag_reference_line_x_px(summary, trace_csv)
+    if x_roi is None:
+        return None
+    r = _drag_run_json_tracking_roi(summary)
+    if r:
+        if axis == "x":
+            return ("v", float(r[0] + x_roi))
+        return ("h", float(r[1] + x_roi))
+    if axis == "x":
+        return ("v", float(x_roi))
+    return ("h", float(x_roi))
+
+
+def _drag_crop_pad_center_vertical_line(
+    img: np.ndarray,
+    x_ref_full: float,
+    *,
+    crop_width_frac: float = 0.36,
+) -> tuple[np.ndarray, float]:
+    """
+    Pad horizontally then crop so the reference x sits near the horizontal center of the crop.
+
+    Returns (cropped_image, x_line_in_crop) for axvline after imshow.
+    """
+    if img.ndim < 2:
+        return img, 0.0
+    h, w = int(img.shape[0]), int(img.shape[1])
+    if w <= 1:
+        return img, 0.0
+    cw = int(max(120, min(w, round(float(w) * crop_width_frac))))
+    half = cw // 2
+    xr = float(np.clip(x_ref_full, 0.0, float(w - 1)))
+    pad_l = max(0, int(math.ceil(half - xr)))
+    xr_pad = xr + float(pad_l)
+    wp = w + pad_l
+    pad_r = max(0, int(math.ceil(xr_pad + float(cw - half) - float(wp))))
+    if img.ndim == 2:
+        padded = np.pad(img, ((0, 0), (pad_l, pad_r)), mode="edge")
+    else:
+        padded = np.pad(img, ((0, 0), (pad_l, pad_r), (0, 0)), mode="edge")
+    Wp = int(padded.shape[1])
+    x0 = int(round(xr_pad - half))
+    x0 = max(0, min(x0, Wp - cw))
+    x1 = x0 + cw
+    cropped = padded[:, x0:x1] if img.ndim == 2 else padded[:, x0:x1, :]
+    return cropped, float(xr_pad - float(x0))
+
+
+def _drag_crop_pad_center_horizontal_line(
+    img: np.ndarray,
+    y_ref_full: float,
+    *,
+    crop_height_frac: float = 0.36,
+) -> tuple[np.ndarray, float]:
+    """Pad vertically then crop so reference y is near the vertical center of the crop (imshow row index, top=0)."""
+    if img.ndim < 2:
+        return img, 0.0
+    h, w = int(img.shape[0]), int(img.shape[1])
+    if h <= 1:
+        return img, 0.0
+    ch = int(max(120, min(h, round(float(h) * crop_height_frac))))
+    half = ch // 2
+    yr = float(np.clip(y_ref_full, 0.0, float(h - 1)))
+    pad_t = max(0, int(math.ceil(half - yr)))
+    yr_pad = yr + float(pad_t)
+    hp = h + pad_t
+    pad_b = max(0, int(math.ceil(yr_pad + float(ch - half) - float(hp))))
+    if img.ndim == 2:
+        padded = np.pad(img, ((pad_t, pad_b), (0, 0)), mode="edge")
+    else:
+        padded = np.pad(img, ((pad_t, pad_b), (0, 0), (0, 0)), mode="edge")
+    Hp = int(padded.shape[0])
+    y0 = int(round(yr_pad - half))
+    y0 = max(0, min(y0, Hp - ch))
+    y1 = y0 + ch
+    cropped = padded[y0:y1, :] if img.ndim == 2 else padded[y0:y1, :, :]
+    return cropped, float(yr_pad - float(y0))
+
+
+def _drag_full_bead_xy_at_preview_index(
+    summary: dict[str, Any],
+    traj: dict[str, np.ndarray],
+    trace_csv: Path | None,
+    preview_idx: int,
+    n_prev: int,
+) -> tuple[float, float] | None:
+    """Bead center in full-frame image pixels for the preview index (trajectory or annotated trace)."""
+    if traj and "x_px" in traj and "y_px" in traj and len(traj["x_px"]):
+        ri = _drag_pick_trajectory_row_for_preview(traj, preview_idx, n_prev, summary)
+        ri = max(0, min(ri, len(traj["x_px"]) - 1))
+        rx, ry = _drag_roi_origin_at_trajectory_row(traj, ri, summary)
+        return float(rx + float(traj["x_px"][ri])), float(ry + float(traj["y_px"][ri]))
+    cols = _read_csv_columns(trace_csv)
+    t = cols.get("video_time_rel_s")
+    axp = cols.get("axis_px")
+    if t is None or axp is None or len(t) == 0:
+        return None
+    diagnostics = summary.get("diagnostics") or {}
+    elapsed = _parse_float(diagnostics.get("elapsed_time_s"))
+    elapsed_s = float(elapsed) if elapsed is not None and elapsed > 0 else float(max(1, n_prev - 1))
+    t_q = _drag_rel_time_for_preview_index(preview_idx, n_prev, elapsed_s)
+    finite = np.isfinite(t) & np.isfinite(axp)
+    if not np.any(finite):
+        return None
+    t2 = t[finite]
+    a2 = axp[finite]
+    order = np.argsort(t2)
+    t2 = t2[order]
+    a2 = a2[order]
+    t_qc = float(np.clip(t_q, float(t2[0]), float(t2[-1])))
+    val = float(np.interp(t_qc, t2, a2))
+    r = _drag_run_json_tracking_roi(summary)
+    if not r:
+        return None
+    axis = _drag_axis_key(summary)
+    if axis == "x":
+        return float(r[0] + val), float(r[1] + 0.5 * r[3])
+    return float(r[0] + 0.5 * r[2]), float(r[1] + val)
+
+
+def _drag_crop_vertical_ref_bead_fallback(
+    img: np.ndarray,
+    x_ref_full: float,
+    bead_x_full: float,
+    bead_y_full: float,
+    *,
+    margin_frac: float = 0.06,
+    crop_width_fracs: tuple[float, ...] = (0.28, 0.38, 0.50, 0.64, 0.82, 1.0),
+) -> tuple[np.ndarray, float, float, float]:
+    """
+    Crop columns centered on x_ref; widen until bead sits inside horizontal margins (or full width).
+
+    Returns (cropped_image, x_line_in_crop, bead_x_in_crop, bead_y_in_crop) for imshow + scatter.
+    """
+    if img.ndim < 2:
+        return img, 0.0, 0.0, 0.0
+    h, w = int(img.shape[0]), int(img.shape[1])
+    if w <= 1:
+        return img, 0.0, 0.0, 0.0
+    xr = float(np.clip(x_ref_full, 0.0, float(w - 1)))
+    bx = float(np.clip(bead_x_full, 0.0, float(w - 1)))
+    by = float(np.clip(bead_y_full, 0.0, float(h - 1)))
+
+    def _attempt(crop_frac: float) -> tuple[np.ndarray, float, float, float]:
+        cw = int(max(96, min(w, round(float(w) * crop_frac))))
+        half = cw // 2
+        pad_l = max(0, int(math.ceil(half - xr)))
+        xr_pad = xr + float(pad_l)
+        wp = w + pad_l
+        pad_r = max(0, int(math.ceil(xr_pad + float(cw - half) - float(wp))))
+        if img.ndim == 2:
+            padded = np.pad(img, ((0, 0), (pad_l, pad_r)), mode="edge")
+        else:
+            padded = np.pad(img, ((0, 0), (pad_l, pad_r), (0, 0)), mode="edge")
+        Wp = int(padded.shape[1])
+        x0 = int(round(xr_pad - half))
+        x0 = max(0, min(x0, Wp - cw))
+        cropped = padded[:, x0 : x0 + cw] if img.ndim == 2 else padded[:, x0 : x0 + cw, :]
+        x_line = float(xr_pad - float(x0))
+        bx_crop = bx + float(pad_l) - float(x0)
+        return cropped, x_line, bx_crop, by
+
+    best: tuple[np.ndarray, float, float, float] | None = None
+    for frac in crop_width_fracs:
+        cr, xl, bxc, byc = _attempt(frac)
+        ch, cw = int(cr.shape[0]), int(cr.shape[1])
+        if cw < 32 or ch < 32:
+            continue
+        ok = margin_frac * cw <= bxc <= (1.0 - margin_frac) * cw
+        if ok:
+            return cr, xl, bxc, byc
+        best = (cr, xl, bxc, byc)
+    return best if best is not None else _attempt(1.0)
+
+
+def _drag_crop_horizontal_ref_bead_fallback(
+    img: np.ndarray,
+    y_ref_full: float,
+    bead_x_full: float,
+    bead_y_full: float,
+    *,
+    margin_frac: float = 0.06,
+    crop_height_fracs: tuple[float, ...] = (0.28, 0.38, 0.50, 0.64, 0.82, 1.0),
+) -> tuple[np.ndarray, float, float, float]:
+    """Crop rows centered on y_ref; widen until bead sits inside vertical margins."""
+    if img.ndim < 2:
+        return img, 0.0, 0.0, 0.0
+    h, w = int(img.shape[0]), int(img.shape[1])
+    if h <= 1:
+        return img, 0.0, 0.0, 0.0
+    yr = float(np.clip(y_ref_full, 0.0, float(h - 1)))
+    bx = float(np.clip(bead_x_full, 0.0, float(w - 1)))
+    by = float(np.clip(bead_y_full, 0.0, float(h - 1)))
+
+    def _attempt(crop_frac: float) -> tuple[np.ndarray, float, float, float]:
+        ch = int(max(96, min(h, round(float(h) * crop_frac))))
+        half = ch // 2
+        pad_t = max(0, int(math.ceil(half - yr)))
+        yr_pad = yr + float(pad_t)
+        hp = h + pad_t
+        pad_b = max(0, int(math.ceil(yr_pad + float(ch - half) - float(hp))))
+        if img.ndim == 2:
+            padded = np.pad(img, ((pad_t, pad_b), (0, 0)), mode="edge")
+        else:
+            padded = np.pad(img, ((pad_t, pad_b), (0, 0), (0, 0)), mode="edge")
+        Hp = int(padded.shape[0])
+        y0 = int(round(yr_pad - half))
+        y0 = max(0, min(y0, Hp - ch))
+        cropped = padded[y0 : y0 + ch, :] if img.ndim == 2 else padded[y0 : y0 + ch, :, :]
+        y_line = float(yr_pad - float(y0))
+        by_crop = by + float(pad_t) - float(y0)
+        bx_crop = bx
+        return cropped, y_line, bx_crop, by_crop
+
+    best: tuple[np.ndarray, float, float, float] | None = None
+    for frac in crop_height_fracs:
+        cr, yl, bxc, byc = _attempt(frac)
+        ch, cw = int(cr.shape[0]), int(cr.shape[1])
+        if cw < 32 or ch < 32:
+            continue
+        ok = margin_frac * ch <= byc <= (1.0 - margin_frac) * ch
+        if ok:
+            return cr, yl, bxc, byc
+        best = (cr, yl, bxc, byc)
+    return best if best is not None else _attempt(1.0)
+
+
+def _drag_humanize_timing_source(raw: Any) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return "n/a"
+    if ";" in s:
+        s = s.split(";", 1)[0].strip()
+    if "timestamps_csv:" in s:
+        s = s.replace("timestamps_csv:", "Timestamps: ")
+    if len(s) > 64:
+        s = s[:61] + "…"
+    return s
+
+
+def _drag_humanize_kappa_source(raw: Any) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return "n/a"
+    if "brownian_calibration" in s.lower():
+        return "Brownian calibration (trap stiffness from paired run)"
+    if len(s) > 56:
+        return s[:53] + "…"
+    return s
+
+
+def _drag_format_rel_time_window(summary: dict[str, Any], start_key: str, end_key: str) -> str:
+    diagnostics = summary.get("diagnostics") or {}
+    t0 = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get(start_key)))
+    t1 = _drag_to_video_rel_s(summary, _parse_float(diagnostics.get(end_key)))
+    if not isinstance(t0, float) or not isinstance(t1, float):
+        return "n/a"
+    return f"{t0:.2f}–{t1:.2f} s (from video start)"
+
+
+def _drag_format_motion_window(summary: dict[str, Any]) -> str:
+    markers = _drag_resolve_primary_markers(summary, windows_csv=None, stage_trace_path=None)
+    raw = markers.get("raw") or {}
+    ms = raw.get("motion_start_s")
+    me = raw.get("motion_stop_s")
+    if isinstance(ms, float) and isinstance(me, float) and me > ms:
+        return f"{ms:.2f}–{me:.2f} s (stage truth)"
+    return "n/a"
+
+
+def _drag_pick_important_warning(summary: dict[str, Any]) -> str | None:
+    warnings = [str(w).strip() for w in (summary.get("warnings") or []) if str(w).strip()]
+    if not warnings:
+        return None
+    phys = [w for w in warnings if "PHYSICS_WARNING" in w.upper() or "FAIL" in w.upper()]
+    pick = phys[0] if phys else warnings[0]
+    pick = pick.replace("PHYSICS_WARNING:", "").strip()
+    if len(pick) > 120:
+        pick = pick[:117] + "…"
+    return pick
+
+
+def _render_drag_cover_page(
+    pdf,
+    summary: dict[str, Any],
+    *,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Drag-specific cover: summary table only (no video preview strip)."""
+    import matplotlib.pyplot as plt
+
+    left_rows, right_rows = _drag_cover_rows(summary)
+    title = f"DRAG Item Report: {summary.get('item_id')}"
+    subtitle = "Stage-truth-first diagnostic report (report-only rebuild)"
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, page_note=None, cover=True, page_counter=page_counter)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.axis("off")
+    ax.text(0.50, 0.812, "DRAG Summary", fontsize=10.5, color=ACCENT_COLOR, fontweight="bold", ha="center")
+    ax.text(0.50, 0.768, title, fontsize=24, fontweight="bold", color=TEXT_COLOR, ha="center")
+    ax.text(0.50, 0.729, subtitle, fontsize=11.2, color=MUTED_COLOR, ha="center")
+    ax.text(
+        0.50,
+        0.688,
+        "Primary truth is stage timing; trajectory onset is shown as QC-only.",
+        fontsize=10.4,
+        color=TEXT_COLOR,
+        ha="center",
+        wrap=True,
+    )
+
+    table_rows = _build_single_cover_table_rows(title, left_rows, right_rows)
+    # Larger table band when no preview strip: balanced whitespace above/below.
+    bounds = (DRAG_CONTENT_LEFT, 0.14, DRAG_CONTENT_RIGHT - DRAG_CONTENT_LEFT, 0.52)
+    _add_panel(fig, bounds, facecolor=CARD_BG)
+    ax_tbl = fig.add_axes([bounds[0] + 0.015, bounds[1] + 0.020, bounds[2] - 0.030, bounds[3] - 0.040])
+    ax_tbl.axis("off")
+    wrapped_rows = [[_cover_cell_text(r[0]), _cover_cell_text(r[1])] for r in table_rows]
+    table = ax_tbl.table(
+        cellText=wrapped_rows,
+        colLabels=["Field", "Value"],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[0.36, 0.64],
+        bbox=[0.0, 0.0, 1.0, 1.0],
+    )
+    table.auto_set_font_size(False)
+    nrows = len(wrapped_rows) + 1
+    row_h = 0.98 / max(1, nrows)
+    for (row_idx, col_idx), cell in table.get_celld().items():
+        text_obj = cell.get_text()
+        cell.PAD = 0.13
+        cell.set_edgecolor(LINE_COLOR)
+        cell.set_linewidth(0.45)
+        text_obj.set_wrap(True)
+        text_obj.set_ha("left")
+        text_obj.set_va("center")
+        if row_idx == 0:
+            cell.set_facecolor(BRAND_COLOR)
+            text_obj.set_color("white")
+            text_obj.set_fontweight("bold")
+            text_obj.set_fontsize(10.3)
+        else:
+            cell.set_facecolor("white" if row_idx % 2 else PANEL_BG)
+            text_obj.set_color(TEXT_COLOR)
+            text_obj.set_fontsize(9.2 if col_idx == 0 else 9.0)
+            if col_idx == 0:
+                text_obj.set_fontweight("bold")
+        cell.set_height(row_h)
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_drag_method_conditions_page(pdf, summary: dict[str, Any], *, page_counter: PageCounter | None = None) -> None:
+    diagnostics = summary.get("diagnostics") or {}
+    metrics = summary.get("metrics") or {}
+    um_px = _parse_float(metrics.get("um_per_px"))
+    lateral_nm = f"{um_px * 1000.0:.1f} nm" if um_px is not None else "n/a"
+    bd = _parse_float(metrics.get("bead_diameter_um"))
+    bead_s = f"{bd:.1f} µm" if bd is not None else "n/a"
+    tc = _parse_float(metrics.get("temperature_c"))
+    temp_s = f"{tc:.1f} °C" if tc is not None else "n/a"
+    req = diagnostics.get("drag_anchor_mode_requested")
+    eff = diagnostics.get("drag_anchor_mode_effective")
+    anchor_s = f"{req} → {eff}" if req is not None or eff is not None else "n/a"
+    onset_v = _parse_float(diagnostics.get("detected_stage_start_video_s"))
+    onset_rel = _drag_to_video_rel_s(summary, onset_v) if onset_v is not None else None
+    onset_s = f"{onset_rel:.2f} s (QC-only)" if isinstance(onset_rel, float) else "n/a (QC-only)"
+
+    timing_rows = [
+        ["Timing", _drag_humanize_timing_source(diagnostics.get("timing_source"))],
+        ["Anchor (req. → eff.)", str(anchor_s)],
+        ["Windows source", _wrap(diagnostics.get("primary_timing_source_for_windows"), 40)],
+        ["Motion (stage)", _drag_format_motion_window(summary)],
+        ["Baseline", _drag_format_rel_time_window(summary, "baseline_start_s", "baseline_end_s")],
+        ["Steady", _drag_format_rel_time_window(summary, "steady_start_s", "steady_end_s")],
+        ["Onset QC", str(onset_s)],
+    ]
+    cond_rows = [
+        ["Bead Ø", bead_s],
+        ["Temp.", temp_s],
+        ["Lateral scale", lateral_nm],
+        ["κ source", _drag_humanize_kappa_source(diagnostics.get("kappa_source"))],
+    ]
+    qc_rows = [
+        ["Alignment", _wrap(diagnostics.get("alignment_status"), 40)],
+        [
+            "Gates (phys / det / verdict)",
+            _wrap(
+                f"{diagnostics.get('physics_primary_gate')} / {diagnostics.get('detection_qc_gate')} / {diagnostics.get('final_drag_verdict')}",
+                40,
+            ),
+        ],
+    ]
+    warn = _drag_pick_important_warning(summary)
+
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Method + Conditions + Compact QC", subtitle="Compact blocks; audit on disk", page_counter=page_counter)
+
+    def _card(bounds: tuple[float, float, float, float], title: str, rows: list[list[str]]) -> None:
+        _add_panel(fig, bounds, facecolor=CARD_BG)
+        fig.text(
+            bounds[0] + 0.012,
+            bounds[1] + bounds[3] - 0.016,
+            title,
+            fontsize=10.2,
+            fontweight="bold",
+            color=BRAND_COLOR,
+            family=FONT_FAMILY,
+            va="top",
+            ha="left",
+        )
+        ax_tbl = fig.add_axes([bounds[0] + 0.02, bounds[1] + 0.016, bounds[2] - 0.04, bounds[3] - 0.052])
+        ax_tbl.axis("off")
+        tbl = ax_tbl.table(
+            cellText=rows,
+            colLabels=["Field", "Value"],
+            cellLoc="left",
+            colLoc="left",
+            colWidths=[0.34, 0.66],
+            bbox=[0, 0, 1, 1],
+        )
+        _style_table(tbl, body_font_size=8.2, header_font_size=9.2)
+
+    _w = DRAG_CONTENT_RIGHT - DRAG_CONTENT_LEFT
+    _card((DRAG_CONTENT_LEFT, 0.565, _w, 0.265), "Timing / anchoring", timing_rows)
+    _card((DRAG_CONTENT_LEFT, 0.365, _w, 0.165), "Conditions / calibration", cond_rows)
+    _card((DRAG_CONTENT_LEFT, 0.145, _w, 0.185), "QC / verdict", qc_rows)
+    if warn:
+        fig.text(
+            DRAG_CONTENT_LEFT + 0.01,
+            0.065,
+            f"Note: {warn}",
+            fontsize=8.0,
+            color=MUTED_COLOR,
+            family=FONT_FAMILY,
+            ha="left",
+            va="top",
+            wrap=True,
+            style="italic",
+            bbox=dict(boxstyle="round,pad=0.35", fc="#FAFAFA", ec=LINE_COLOR, lw=0.35, alpha=0.95),
+        )
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_drag_stage_diagnostics_pages(
+    pdf,
+    summary: dict[str, Any],
+    *,
+    trace_csv: Path | None,
+    windows_csv: Path | None,
+    stage_trace_path: Path | None,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Stage position and velocity stacked vertically; captions in dedicated rows; legend in bottom figure zone."""
+    import matplotlib.pyplot as plt
+
+    markers = _drag_resolve_primary_markers(summary, windows_csv=windows_csv, stage_trace_path=stage_trace_path)
+    prof = _drag_stage_profile_from_saved_data(
+        summary,
+        stage_trace_path=stage_trace_path,
+        trace_csv=None,
+        markers=markers,
+    )
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Secondary diagnostics", subtitle="Stage kinematics", page_counter=page_counter)
+    gs = fig.add_gridspec(
+        4,
+        1,
+        left=DRAG_CONTENT_LEFT,
+        right=DRAG_CONTENT_RIGHT,
+        top=DRAG_STACK_TOP,
+        bottom=DRAG_STACK_BOTTOM,
+        height_ratios=[2.0, 0.42, 2.0, 0.42],
+        hspace=0.46,
+    )
+    ax_pos = fig.add_subplot(gs[0, 0])
+    ax_cap1 = fig.add_subplot(gs[1, 0])
+    ax_vel = fig.add_subplot(gs[2, 0], sharex=ax_pos)
+    ax_cap2 = fig.add_subplot(gs[3, 0])
+    for ax in (ax_pos, ax_vel):
+        ax.set_facecolor(PANEL_BG)
+        ax.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR)
+    raw = markers.get("raw") or {}
+    derived = markers.get("derived") or {}
+    diagnostics = summary.get("diagnostics") or {}
+    v_rep = _parse_float(diagnostics.get("actual_speed_um_s"))
+    if prof is None:
+        ax_pos.text(0.5, 0.5, "Stage position unavailable.", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+        ax_vel.text(0.5, 0.5, "Stage velocity unavailable.", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+        ax_vel.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+    else:
+        t, pos, _v = prof
+        ax_pos.plot(t, pos, linewidth=1.6, color=PLOT_COLOR, label="Stage position")
+        ms = raw.get("motion_start_s")
+        mrc = derived.get("motion_running_confirmed_s")
+        dec = derived.get("deceleration_start_s")
+        me = raw.get("motion_stop_s")
+        if isinstance(ms, float) and isinstance(mrc, float) and mrc > ms:
+            ax_pos.axvspan(ms, mrc, color="#E3F2FD", alpha=0.25, label="Acceleration")
+        if isinstance(mrc, float) and isinstance(dec, float) and dec > mrc:
+            ax_pos.axvspan(mrc, dec, color="#E8F5E9", alpha=0.24, label="Steady-speed")
+        if isinstance(dec, float) and isinstance(me, float) and me > dec:
+            ax_pos.axvspan(dec, me, color="#FCE4EC", alpha=0.24, label="Deceleration")
+        _drag_plot_markers(ax_pos, markers, include_windows=True)
+        ax_pos.set_ylabel("Stage position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        _t, _p, v = prof
+        ax_vel.plot(_t, v, linewidth=1.6, color=PLOT_COLOR, label="Stage velocity")
+        if v_rep is not None and math.isfinite(float(v_rep)):
+            ax_vel.axhline(
+                float(v_rep),
+                color="#C62828",
+                linestyle="--",
+                linewidth=1.35,
+                zorder=4,
+                label="Steady speed (summary)",
+            )
+        _drag_plot_markers(ax_vel, markers, include_windows=True)
+        ax_vel.set_ylabel("Stage velocity [µm/s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_vel.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+
+    ax_pos.tick_params(labelbottom=False)
+    ax_pos.set_xlabel("")
+    ax_pos.margins(x=0.03, y=0.07)
+    ax_vel.margins(x=0.03, y=0.07)
+    ax_pos.tick_params(axis="y", which="major", pad=5)
+    ax_vel.tick_params(axis="both", which="major", pad=4)
+
+    _drag_caption_row_text(
+        ax_cap1,
+        "Stage position with motion-phase shading; window boundaries follow stage truth and match the bead page.",
+    )
+    _drag_caption_row_text(
+        ax_cap2,
+        "Stage velocity with summary steady-speed reference (dashed); markers repeat stage truth and QC-only trajectory timing.",
+    )
+    _drag_figure_legend_from_axes(fig, (ax_pos, ax_vel), ncol=4)
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_drag_bead_diagnostics_pages(
+    pdf,
+    summary: dict[str, Any],
+    *,
+    trace_csv: Path | None,
+    windows_csv: Path | None,
+    stage_trace_path: Path | None,
+    page_counter: PageCounter | None = None,
+) -> None:
+    """Primary diagnostic: full bead trace over full timeline, steady detail below; captions + bottom legend; vertical stack only."""
+    import matplotlib.pyplot as plt
+
+    markers = _drag_resolve_primary_markers(summary, windows_csv=windows_csv, stage_trace_path=stage_trace_path)
+    t, y_um = _drag_trace_time_and_signal_um(summary, trace_csv)
+    diagnostics = summary.get("diagnostics") or {}
+    offset_reported = _parse_float(diagnostics.get("offset_um"))
+
+    fig = plt.figure(figsize=PAGE_SIZE)
+    fig.patch.set_facecolor("white")
+    _add_brand_header(fig, "Main diagnostics", subtitle="Bead response vs stage-truth windows", page_counter=page_counter)
+
+    gs = fig.add_gridspec(
+        4,
+        1,
+        left=DRAG_CONTENT_LEFT,
+        right=DRAG_CONTENT_RIGHT,
+        top=DRAG_STACK_TOP,
+        bottom=DRAG_STACK_BOTTOM,
+        height_ratios=[2.38, 0.46, 1.08, 0.46],
+        hspace=0.44,
+    )
+    ax_bead = fig.add_subplot(gs[0, 0])
+    ax_cap1 = fig.add_subplot(gs[1, 0])
+    ax_steady = fig.add_subplot(gs[2, 0])
+    ax_cap2 = fig.add_subplot(gs[3, 0])
+    ax_bead.set_facecolor(PANEL_BG)
+    ax_steady.set_facecolor(PANEL_BG)
+    ax_bead.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR)
+    ax_steady.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR)
+
+    if t is not None and y_um is not None and len(t):
+        raw = markers.get("raw") or {}
+        b0 = raw.get("baseline_start_s")
+        b1 = raw.get("baseline_end_s")
+        s0 = raw.get("steady_start_s")
+        s1 = raw.get("steady_end_s")
+        baseline_mask = (t >= float(b0)) & (t <= float(b1)) if isinstance(b0, float) and isinstance(b1, float) else None
+        center = float(np.nanmedian(y_um[baseline_mask])) if (baseline_mask is not None and np.any(baseline_mask)) else float(np.nanmedian(y_um))
+        y_c = y_um - center
+        ax_bead.plot(t, y_c, linewidth=1.2, color="#0D47A1", label="Bead offset (baseline-centered)")
+        ax_bead.axhline(0.0, color="#424242", linestyle=":", linewidth=1.15, zorder=3, label="Baseline mean (0)")
+        steady_mean: float | None = None
+        if isinstance(s0, float) and isinstance(s1, float):
+            sm = (t >= float(s0)) & (t <= float(s1))
+            if np.any(sm):
+                steady_mean = float(np.nanmedian(y_c[sm]))
+                ax_bead.axhline(
+                    steady_mean,
+                    color="#AD1457",
+                    linestyle="--",
+                    linewidth=1.25,
+                    zorder=3,
+                    label="Steady-window mean",
+                )
+        if steady_mean is not None:
+            mid_t = 0.5 * (float(s0) + float(s1)) if isinstance(s0, float) and isinstance(s1, float) else float(t[len(t) // 2])
+            y0, y1 = (0.0, steady_mean) if steady_mean >= 0.0 else (steady_mean, 0.0)
+            ax_bead.annotate(
+                "",
+                xy=(mid_t, y1),
+                xytext=(mid_t, y0),
+                arrowprops=dict(arrowstyle="<->", color="#37474F", lw=1.0, shrinkA=0, shrinkB=0),
+            )
+            ax_bead.text(
+                mid_t,
+                0.5 * (y0 + y1),
+                r"$\Delta x$",
+                fontsize=8.5,
+                ha="center",
+                va="center",
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LINE_COLOR, lw=0.4, alpha=0.92),
+            )
+        if offset_reported is not None and math.isfinite(float(offset_reported)):
+            ax_bead.text(
+                0.99,
+                0.03,
+                f"|offset| (summary): {abs(float(offset_reported)):.3f} µm",
+                transform=ax_bead.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=7.2,
+                color=MUTED_COLOR,
+                family=FONT_FAMILY,
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LINE_COLOR, lw=0.35, alpha=0.88),
+            )
+        _drag_plot_markers(ax_bead, markers, include_windows=True)
+        ax_bead.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_bead.set_xlabel("")
+        ax_bead.tick_params(labelbottom=False)
+        ax_bead.margins(x=0.03, y=0.08)
+        ax_bead.tick_params(axis="y", which="major", pad=5)
+
+        # Steady-window detail: zoom + numeric summary
+        if isinstance(s0, float) and isinstance(s1, float) and (s1 > s0):
+            sm = (t >= float(s0)) & (t <= float(s1))
+            if np.any(sm):
+                t_s = t[sm]
+                y_s = y_c[sm]
+                ax_steady.plot(t_s, y_s, linewidth=1.35, color="#0D47A1", label="Bead offset")
+                ax_steady.axhline(0.0, color="#424242", linestyle=":", linewidth=1.15, zorder=3)
+                if steady_mean is not None:
+                    ax_steady.axhline(steady_mean, color="#AD1457", linestyle="--", linewidth=1.2, zorder=3)
+                span = float(s1 - s0)
+                margin = max(0.02 * span, 1e-6)
+                ax_steady.set_xlim(float(s0) - margin, float(s1) + margin)
+                y_min = float(np.nanmin(y_s))
+                y_max = float(np.nanmax(y_s))
+                pad = max(0.12 * max(abs(y_max - y_min), 1e-9), 1e-4)
+                ax_steady.set_ylim(y_min - pad, y_max + pad)
+                ax_steady.margins(x=0.035, y=0.09)
+                ax_steady.tick_params(axis="both", which="major", pad=4)
+                ax_steady.set_title("Steady window (detail)", fontsize=9.0, fontweight="bold", color=TEXT_COLOR, family=FONT_FAMILY)
+                ax_steady.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+                ax_steady.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+                sm_txt = f"{steady_mean:.4f}" if steady_mean is not None else "n/a"
+                dx_txt = f"{abs(steady_mean):.4f}" if steady_mean is not None else "n/a"
+                off_txt = f"{abs(float(offset_reported)):.4f}" if offset_reported is not None else "n/a"
+                ax_steady.text(
+                    0.04,
+                    0.97,
+                    "Medians (this window)\n"
+                    f"Baseline (ref): 0 µm\n"
+                    f"Steady: {sm_txt} µm\n"
+                    f"|Δx| (median): {dx_txt} µm\n"
+                    f"|offset| (summary): {off_txt} µm",
+                    transform=ax_steady.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=7.1,
+                    color=TEXT_COLOR,
+                    family=FONT_FAMILY,
+                    bbox=dict(boxstyle="round,pad=0.35", fc="white", ec=LINE_COLOR, lw=0.4, alpha=0.92),
+                )
+            else:
+                ax_steady.text(0.5, 0.5, "No samples in steady window.", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+                ax_steady.set_title("Steady window (detail)", fontsize=9.0, fontweight="bold", color=TEXT_COLOR, family=FONT_FAMILY)
+                ax_steady.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+                ax_steady.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        else:
+            ax_steady.text(
+                0.5,
+                0.5,
+                "Steady window not defined\nin saved timing.",
+                ha="center",
+                va="center",
+                color=MUTED_COLOR,
+                family=FONT_FAMILY,
+            )
+            ax_steady.set_title("Steady window (detail)", fontsize=9.0, fontweight="bold", color=TEXT_COLOR, family=FONT_FAMILY)
+            ax_steady.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax_steady.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+
+        _drag_caption_row_text(
+            ax_cap1,
+            "Full-timeline bead response: baseline-centred trace with stage-truth windows and QC-only trajectory markers; "
+            "Δx compares baseline and steady medians. Stage kinematics are on the next page.",
+        )
+        _drag_caption_row_text(
+            ax_cap2,
+            "Steady-window zoom with the same baseline and steady references; the box lists medians for Δx and summary offset check.",
+        )
+        _drag_figure_legend_from_axes(fig, (ax_bead,), ncol=3)
+    else:
+        ax_bead.text(0.5, 0.5, "Bead trace not available in µm.", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+        ax_bead.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_bead.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_steady.axis("off")
+        ax_steady.text(0.5, 0.5, "n/a", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+        _drag_caption_row_text(
+            ax_cap1,
+            "Bead response could not be loaded from saved trace artefacts; stage kinematics are on the following page.",
+        )
+        _drag_caption_row_text(ax_cap2, "No steady-window detail without a bead trace.")
+
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _render_drag_compact_qc_page(pdf, summary: dict[str, Any], *, page_counter: PageCounter | None = None) -> None:
+    diagnostics = summary.get("diagnostics") or {}
+    artifacts = summary.get("artifacts") or {}
+    windows_csv = Path(artifacts.get("drag_windows_csv")) if artifacts.get("drag_windows_csv") else None
+    stage_trace_path = Path(diagnostics.get("selected_stage_trace_path")) if diagnostics.get("selected_stage_trace_path") else None
+    markers = _drag_resolve_primary_markers(
+        summary,
+        windows_csv=windows_csv if (windows_csv and windows_csv.is_file()) else None,
+        stage_trace_path=stage_trace_path if (stage_trace_path and stage_trace_path.is_file()) else None,
+    )
+    raw = markers.get("raw") or {}
+    derived = markers.get("derived") or {}
+    rows = [
+        ["Expected motion start/stop (stage truth)", _wrap(f"{raw.get('motion_start_s')} s → {raw.get('motion_stop_s')} s", 52)],
+        ["Baseline / steady windows", _wrap(f"{raw.get('baseline_start_s')}–{raw.get('baseline_end_s')} s; {raw.get('steady_start_s')}–{raw.get('steady_end_s')} s", 52)],
+        ["Detected onset (QC-only)", _wrap(derived.get("detected_onset_qc_s"), 52)],
+        ["Stage–video delta", _wrap(f"start {diagnostics.get('stage_video_start_delta_s')} s; stop {diagnostics.get('stage_video_stop_delta_s')} s", 52)],
+        ["Alignment status / sanity", _wrap(f"{diagnostics.get('alignment_status')} / {diagnostics.get('alignment_sanity_flag')}", 52)],
+        ["Primary physics gate", _wrap(diagnostics.get("physics_primary_gate"), 52)],
+        ["Detection QC gate", _wrap(diagnostics.get("detection_qc_gate"), 52)],
+        ["Final drag verdict", _wrap(diagnostics.get("final_drag_verdict"), 52)],
+        ["Drag validation gate", _wrap(diagnostics.get("drag_validation_gate"), 52)],
+        ["Physics status", _wrap(diagnostics.get("physics_status"), 52)],
+        ["Confidence / warning", _wrap(f"{diagnostics.get('drag_physics_confidence')}; {diagnostics.get('drag_physics_warning')}", 52)],
+    ]
+    _render_paginated_table(
+        pdf,
+        "Compact QC and timing",
+        ["Field", "Value"],
+        rows,
+        rows_per_page=18,
+        page_counter=page_counter,
+    )
+
+
 def _render_image_pages(
     pdf,
     title: str,
@@ -3513,84 +5272,46 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
 
     with PdfPages(report_path) as pdf:
         if drag_mode:
-            left_rows, right_rows = _drag_cover_rows(summary)
-            _render_cover_page(
+            diagnostics = summary.get("diagnostics") or {}
+            page_counter.total = 5
+
+            # Cover / summary (Drag family)
+            trace_csv_p = Path(artifacts.get("drag_trace_annotated_csv")) if artifacts.get("drag_trace_annotated_csv") else None
+            _render_drag_cover_page(
                 pdf,
-                title=f"DRAG Item Report: {summary.get('item_id')}",
-                subtitle="Constant-velocity drag summary",
-                left_rows=left_rows,
-                right_rows=right_rows,
-                eyebrow="DRAG Summary",
+                summary,
                 page_counter=page_counter,
             )
+
+            # Theory page before diagnostics
             _render_drag_theory_page(pdf, page_counter=page_counter)
-            _render_paginated_table(
+
+            # Method + conditions + compact QC page
+            _render_drag_method_conditions_page(pdf, summary, page_counter=page_counter)
+
+            # Stage/trace sources
+            windows_csv_p = Path(artifacts.get("drag_windows_csv")) if artifacts.get("drag_windows_csv") else None
+            stage_trace_p = Path(diagnostics.get("selected_stage_trace_path")) if diagnostics.get("selected_stage_trace_path") else None
+
+            # Main diagnostic page
+            _render_drag_bead_diagnostics_pages(
                 pdf,
-                "Drag Provenance",
-                ["Field", "Value"],
-                _drag_provenance_rows(summary),
-                rows_per_page=18,
+                summary,
+                trace_csv=trace_csv_p if (trace_csv_p and trace_csv_p.is_file()) else None,
+                windows_csv=windows_csv_p if (windows_csv_p and windows_csv_p.is_file()) else None,
+                stage_trace_path=stage_trace_p if (stage_trace_p and stage_trace_p.is_file()) else None,
                 page_counter=page_counter,
             )
-            _render_paginated_table(
+
+            # Secondary compact diagnostics page
+            _render_drag_stage_diagnostics_pages(
                 pdf,
-                "Drag Timing and Alignment",
-                ["Field", "Value"],
-                _drag_timing_alignment_rows(summary),
-                rows_per_page=18,
+                summary,
+                trace_csv=trace_csv_p if (trace_csv_p and trace_csv_p.is_file()) else None,
+                windows_csv=windows_csv_p if (windows_csv_p and windows_csv_p.is_file()) else None,
+                stage_trace_path=stage_trace_p if (stage_trace_p and stage_trace_p.is_file()) else None,
                 page_counter=page_counter,
             )
-            _render_paginated_table(
-                pdf,
-                "Drag QC and Confidence",
-                ["Field", "Value"],
-                _drag_qc_confidence_rows(summary),
-                rows_per_page=18,
-                page_counter=page_counter,
-            )
-            _render_paginated_table(
-                pdf,
-                "Drag Warnings",
-                ["Field", "Value"],
-                _drag_warning_rows(summary),
-                rows_per_page=18,
-                page_counter=page_counter,
-            )
-            drag_diag = _build_image_entry("Drag diagnostic figure", artifacts.get("drag_diagnostic_png"))
-            if drag_diag is not None:
-                _render_image_pages(
-                    pdf,
-                    "Drag Diagnostic Figure",
-                    [drag_diag],
-                    layout="vertical",
-                    items_per_page=1,
-                    page_counter=page_counter,
-                )
-            _render_paginated_table(
-                pdf,
-                "Alignment Diagnostics Summary",
-                ["Field", "Value"],
-                _drag_alignment_rows(summary),
-                rows_per_page=18,
-                page_counter=page_counter,
-            )
-            windows_csv = artifacts.get("drag_windows_csv")
-            if windows_csv and Path(windows_csv).is_file():
-                _render_drag_windows_table_page(pdf, Path(windows_csv), page_counter=page_counter)
-            trace_entry = _build_plot_entry(
-                "Annotated drag trace",
-                artifacts.get("drag_trace_annotated_csv"),
-                ("video_time_rel_s", "video_time_s", "stage_time_aligned_s"),
-                ("axis_px",),
-                "Time from video start [s]",
-                "Axis position [px]",
-                False,
-                False,
-            )
-            if trace_entry is not None:
-                _render_drag_trace_page(pdf, trace_entry[1], summary, page_counter=page_counter)
-            if preview_paths:
-                _render_preview_grid_page(pdf, preview_paths, page_counter=page_counter)
         else:
             # Cover page - no page number
             _render_cover_page(
