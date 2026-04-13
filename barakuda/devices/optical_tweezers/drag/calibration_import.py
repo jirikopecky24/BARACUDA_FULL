@@ -13,6 +13,8 @@ class BrownianCalibration:
     base_name: str | None
     kappa_x_n_per_m: float | None
     kappa_y_n_per_m: float | None
+    kappa_x_n_per_m_se: float | None
+    kappa_y_n_per_m_se: float | None
     um_per_px: float | None
     # Selected calibration file path (for provenance).
     calibration_path: str | None = None
@@ -56,15 +58,23 @@ def load_brownian_calibration_from_folder(folder: Path | str) -> BrownianCalibra
     if not cal_files:
         raise FileNotFoundError(f"No *_calibration.json found in {audit_dir}")
 
-    viable: list[tuple[Path, float | None, float | None]] = []
+    viable: list[tuple[Path, float | None, float | None, float | None, float | None]] = []
     for p in cal_files:
         try:
             payload = json.loads(p.read_text(encoding="utf-8"))
             kappa_payload = payload.get("kappa") or {}
             kappa_x = _to_float_or_none(kappa_payload.get("kappa_x_n_per_m"))
             kappa_y = _to_float_or_none(kappa_payload.get("kappa_y_n_per_m"))
+            kappa_x_se = _to_float_or_none(kappa_payload.get("kappa_x_n_per_m_se"))
+            kappa_y_se = _to_float_or_none(kappa_payload.get("kappa_y_n_per_m_se"))
+            if kappa_x_se is None:
+                kappa_x_se_pn = _to_float_or_none(kappa_payload.get("kappa_x_pn_per_um_se"))
+                kappa_x_se = (kappa_x_se_pn * 1e-6) if kappa_x_se_pn is not None else None
+            if kappa_y_se is None:
+                kappa_y_se_pn = _to_float_or_none(kappa_payload.get("kappa_y_pn_per_um_se"))
+                kappa_y_se = (kappa_y_se_pn * 1e-6) if kappa_y_se_pn is not None else None
             if kappa_x is not None or kappa_y is not None:
-                viable.append((p, kappa_x, kappa_y))
+                viable.append((p, kappa_x, kappa_y, kappa_x_se, kappa_y_se))
         except Exception:  # noqa: BLE001
             continue
 
@@ -72,13 +82,13 @@ def load_brownian_calibration_from_folder(folder: Path | str) -> BrownianCalibra
         raise ValueError(f"No viable *_calibration.json found in {audit_dir} (missing kappa fields).")
 
     if len(viable) != 1:
-        names = ", ".join(p.name for p, _kx, _ky in viable)
+        names = ", ".join(p.name for p, _kx, _ky, _kxs, _kys in viable)
         raise ValueError(
             "Ambiguous Brownian calibration selection: expected exactly one viable *_calibration.json "
             f"in {audit_dir}, but found {len(viable)} viable candidates: {names}"
         )
 
-    cal_path, kappa_x, kappa_y = viable[0]
+    cal_path, kappa_x, kappa_y, kappa_x_se, kappa_y_se = viable[0]
     base_name = cal_path.stem.replace("_calibration", "")
 
     # Optional um_per_px from audit/run.json → config.calibration.um_per_px
@@ -97,6 +107,8 @@ def load_brownian_calibration_from_folder(folder: Path | str) -> BrownianCalibra
         base_name=base_name,
         kappa_x_n_per_m=kappa_x,
         kappa_y_n_per_m=kappa_y,
+        kappa_x_n_per_m_se=kappa_x_se,
+        kappa_y_n_per_m_se=kappa_y_se,
         um_per_px=um_per_px,
         calibration_path=str(cal_path),
     )

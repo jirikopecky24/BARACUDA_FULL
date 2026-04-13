@@ -1572,8 +1572,10 @@ class BatchController:
 
                             if axis == "x":
                                 kappa_n_per_m = brownian_cal.kappa_x_n_per_m
+                                kappa_n_per_m_se = brownian_cal.kappa_x_n_per_m_se
                             else:
                                 kappa_n_per_m = brownian_cal.kappa_y_n_per_m
+                                kappa_n_per_m_se = brownian_cal.kappa_y_n_per_m_se
 
                             if kappa_n_per_m is None or not np.isfinite(kappa_n_per_m) or kappa_n_per_m <= 0:
                                 raise ValueError("Valid kappa_n_per_m could not be loaded from Brownian calibration.")
@@ -1653,6 +1655,9 @@ class BatchController:
                                 um_per_px=drag_um_per_px,
                                 bead_diameter_um=float(pp.bead_diameter_um),
                                 kappa_n_per_m=float(kappa_n_per_m),
+                                kappa_n_per_m_se=(
+                                    float(kappa_n_per_m_se) if (kappa_n_per_m_se is not None and np.isfinite(kappa_n_per_m_se) and kappa_n_per_m_se > 0) else None
+                                ),
                                 stage_um_per_unit=drag_stage_um_per_unit,
                                 onset_threshold_sigma=float(
                                     post_params.get("drag_onset_threshold_sigma", 5.0)

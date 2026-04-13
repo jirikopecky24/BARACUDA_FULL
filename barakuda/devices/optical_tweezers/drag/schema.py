@@ -195,6 +195,7 @@ class DragAnalysisConfig:
     bead_diameter_um: float | None = None
     eta_pa_s: float | None = None
     kappa_n_per_m: float | None = None
+    kappa_n_per_m_se: float | None = None
     onset_threshold_sigma: float = 5.0
     onset_min_hold_s: float = 0.3
     window_params: DragWindowParams = field(default_factory=DragWindowParams)
@@ -273,9 +274,15 @@ class DragAnalysisResult:
 
     # Physics-level metrics (optional)
     drag_force_n: float | None = None
+    drag_force_n_se: float | None = None
     kappa_n_per_m: float | None = None
+    kappa_n_per_m_se: float | None = None
     kappa_pn_per_um: float | None = None
+    kappa_pn_per_um_se: float | None = None
     eta_pa_s: float | None = None
+    eta_pa_s_se: float | None = None
+    offset_um_se: float | None = None
+    actual_speed_um_s_se: float | None = None
 
     # Status and QC
     analysis_status: str = "ok"

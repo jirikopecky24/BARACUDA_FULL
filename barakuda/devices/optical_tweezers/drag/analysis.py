@@ -33,6 +33,36 @@ def _median_in_window(t: Sequence[float], y: Sequence[float], t0: float, t1: flo
     return float(0.5 * (vals_sorted[mid - 1] + vals_sorted[mid]))
 
 
+def _window_stats(
+    t: Sequence[float],
+    y: Sequence[float],
+    t0: float,
+    t1: float,
+) -> tuple[float, float, int, float]:
+    """Robust median stats in a time window (median, sigma_MAD, n, SE_median)."""
+    vals = [float(y[i]) for i in range(len(t)) if t0 <= t[i] <= t1 and math.isfinite(y[i])]
+    if not vals:
+        return float("nan"), float("nan"), 0, float("nan")
+    vals_sorted = sorted(vals)
+    m = len(vals_sorted)
+    mid = m // 2
+    if m % 2 == 1:
+        median = float(vals_sorted[mid])
+    else:
+        median = float(0.5 * (vals_sorted[mid - 1] + vals_sorted[mid]))
+    if m < 2:
+        return median, float("nan"), m, float("nan")
+    abs_dev = sorted(abs(v - median) for v in vals_sorted)
+    mad = abs_dev[mid] if (m % 2 == 1) else 0.5 * (abs_dev[mid - 1] + abs_dev[mid])
+    sigma_mad = 1.4826 * float(mad)
+    if not math.isfinite(sigma_mad) or sigma_mad <= 0:
+        mean = sum(vals_sorted) / float(m)
+        var = sum((v - mean) ** 2 for v in vals_sorted) / float(max(1, m - 1))
+        sigma_mad = math.sqrt(max(0.0, var))
+    se_median = 1.253314 * sigma_mad / math.sqrt(float(m)) if sigma_mad > 0 else float("nan")
+    return median, sigma_mad, m, se_median
+
+
 def _classify_onset_ambiguity(
     candidate_count: int,
     candidate_durations: Sequence[float],
@@ -621,8 +651,18 @@ def analyze_drag_run(
             raise DragWindowError("Steady window too short for strict mode.")
 
     # 5) Compute baseline / steady medians and offsets
-    baseline_px = _median_in_window(t_video, traj_px, windows.baseline_start_s, windows.baseline_end_s)
-    steady_px = _median_in_window(t_video, traj_px, windows.steady_start_s, windows.steady_end_s)
+    baseline_px, _baseline_sigma_px, _baseline_n, baseline_px_se = _window_stats(
+        t_video,
+        traj_px,
+        windows.baseline_start_s,
+        windows.baseline_end_s,
+    )
+    steady_px, _steady_sigma_px, _steady_n, steady_px_se = _window_stats(
+        t_video,
+        traj_px,
+        windows.steady_start_s,
+        windows.steady_end_s,
+    )
 
     if not (math.isfinite(baseline_px) and math.isfinite(steady_px)):
         qc.offset_detected = False
@@ -630,13 +670,20 @@ def analyze_drag_run(
         raise DragWindowError("Cannot compute baseline/steady medians.")
 
     offset_px_raw = steady_px - baseline_px
+    offset_px_se = (
+        math.sqrt((baseline_px_se**2) + (steady_px_se**2))
+        if (math.isfinite(baseline_px_se) and math.isfinite(steady_px_se))
+        else None
+    )
 
     # Convert to µm if possible
-    baseline_um = steady_um = offset_um_raw = None
+    baseline_um = steady_um = offset_um_raw = offset_um_se = None
     if um_per_px is not None and um_per_px > 0:
         baseline_um = baseline_px * um_per_px
         steady_um = steady_px * um_per_px
         offset_um_raw = offset_px_raw * um_per_px
+        if offset_px_se is not None and math.isfinite(offset_px_se):
+            offset_um_se = float(abs(offset_px_se * um_per_px))
     else:
         warnings.append("um_per_px not provided; µm-level positions and offsets are unavailable.")
 
@@ -787,6 +834,7 @@ def analyze_drag_run(
 
     # 7) Physics layer (optional)
     drag_force_n = kappa_n_per_m = kappa_pn_per_um = eta_pa_s = None
+    drag_force_n_se = kappa_n_per_m_se = kappa_pn_per_um_se = eta_pa_s_se = None
     physics_status = "incomplete_inputs"
 
     radius_um = None
@@ -844,8 +892,15 @@ def analyze_drag_run(
                     )
                     drag_force_n = compute_drag_force(eta_pa_s, radius_m, v_m_s)
                     kappa_n_per_m = config.kappa_n_per_m
+                    kappa_n_per_m_se = (
+                        float(config.kappa_n_per_m_se)
+                        if (config.kappa_n_per_m_se is not None and float(config.kappa_n_per_m_se) > 0)
+                        else None
+                    )
                     # N/m -> pN/µm: 1 N/m = 1e6 pN/µm
                     kappa_pn_per_um = abs(kappa_n_per_m) * 1e6
+                    if kappa_n_per_m_se is not None:
+                        kappa_pn_per_um_se = abs(kappa_n_per_m_se) * 1e6
                     physics_status = "ready"
                     qc.physics_ready = True
         except DragPhysicsError as e:
@@ -1019,11 +1074,44 @@ def analyze_drag_run(
     speed_stage_json = actual_speed_um_s
     speed_trace_derived = stage_speed_from_trace_um_s
     speed_used_for_physics = actual_speed_um_s
+    actual_speed_um_s_se = None
+    if (
+        actual_speed_um_s is not None
+        and stage_speed_from_trace_um_s is not None
+        and math.isfinite(actual_speed_um_s)
+        and math.isfinite(stage_speed_from_trace_um_s)
+    ):
+        actual_speed_um_s_se = abs(float(actual_speed_um_s) - float(stage_speed_from_trace_um_s))
+    elif (
+        actual_speed_um_s is not None
+        and stage_speed_relative_diff is not None
+        and math.isfinite(actual_speed_um_s)
+        and math.isfinite(stage_speed_relative_diff)
+        and stage_speed_relative_diff >= 0
+    ):
+        actual_speed_um_s_se = abs(float(actual_speed_um_s) * float(stage_speed_relative_diff))
     speed_consistency_error_pct = (
         (stage_speed_relative_diff * 100.0)
         if stage_speed_relative_diff is not None
         else None
     )
+
+    rel_terms_force: list[float] = []
+    rel_terms_eta: list[float] = []
+    if kappa_n_per_m is not None and kappa_n_per_m > 0 and kappa_n_per_m_se is not None and kappa_n_per_m_se > 0:
+        rel_terms_force.append(abs(kappa_n_per_m_se) / abs(kappa_n_per_m))
+        rel_terms_eta.append(abs(kappa_n_per_m_se) / abs(kappa_n_per_m))
+    if abs_offset_um is not None and abs_offset_um > 0 and offset_um_se is not None and offset_um_se > 0:
+        rel = abs(offset_um_se) / abs(abs_offset_um)
+        rel_terms_force.append(rel)
+        rel_terms_eta.append(rel)
+    if actual_speed_um_s is not None and actual_speed_um_s > 0 and actual_speed_um_s_se is not None and actual_speed_um_s_se > 0:
+        rel_terms_eta.append(abs(actual_speed_um_s_se) / abs(actual_speed_um_s))
+
+    if drag_force_n is not None and rel_terms_force:
+        drag_force_n_se = abs(float(drag_force_n)) * math.sqrt(sum(r * r for r in rel_terms_force))
+    if eta_pa_s is not None and rel_terms_eta:
+        eta_pa_s_se = abs(float(eta_pa_s)) * math.sqrt(sum(r * r for r in rel_terms_eta))
 
     expected_offset_if_eta_1mPas_um = None
     expected_offset_if_eta_from_baseline_um = None
@@ -1221,9 +1309,15 @@ def analyze_drag_run(
         actual_travel_um=actual_travel_um,
         actual_speed_um_s=actual_speed_um_s,
         drag_force_n=drag_force_n,
+        drag_force_n_se=drag_force_n_se,
         kappa_n_per_m=kappa_n_per_m,
+        kappa_n_per_m_se=kappa_n_per_m_se,
         kappa_pn_per_um=kappa_pn_per_um,
+        kappa_pn_per_um_se=kappa_pn_per_um_se,
         eta_pa_s=eta_pa_s,
+        eta_pa_s_se=eta_pa_s_se,
+        offset_um_se=offset_um_se,
+        actual_speed_um_s_se=actual_speed_um_s_se,
         analysis_status=analysis_status,
         alignment_status=alignment_status,
         physics_status=physics_status,
