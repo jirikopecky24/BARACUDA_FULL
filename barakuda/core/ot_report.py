@@ -70,6 +70,89 @@ def _load_json(path: Path | None) -> dict[str, Any] | None:
         return None
 
 
+def _drag_fill_uncertainty_fallbacks(metrics: dict[str, Any], diagnostics: dict[str, Any]) -> None:
+    """Populate Drag uncertainty fields from available legacy summary data."""
+    if diagnostics.get("drag_force_n_se") is not None and diagnostics.get("eta_pa_s_se") is not None:
+        return
+
+    kappa_se = _parse_float(metrics.get("kappa_drag_pn_per_um_se"))
+    if kappa_se is None:
+        cal_path_raw = diagnostics.get("selected_calibration_path")
+        axis = str(diagnostics.get("drag_axis") or diagnostics.get("drag_analysis_axis") or "x").strip().lower()
+        if cal_path_raw:
+            cal_json = _load_json(Path(str(cal_path_raw)))
+            if cal_json:
+                kappa_block = (cal_json.get("kappa") or {})
+                if axis == "y":
+                    kappa_se = _parse_float(kappa_block.get("kappa_y_pn_per_um_se"))
+                else:
+                    kappa_se = _parse_float(kappa_block.get("kappa_x_pn_per_um_se"))
+    if kappa_se is not None and kappa_se > 0:
+        metrics["kappa_drag_pn_per_um_se"] = kappa_se
+
+    offset_se = _parse_float(diagnostics.get("offset_um_se"))
+    if offset_se is None:
+        sigma_px = _parse_float(diagnostics.get("alignment_baseline_sigma"))
+        um_per_px = _parse_float(metrics.get("um_per_px"))
+        n_base = _parse_float(diagnostics.get("alignment_n_baseline_samples"))
+        if (
+            sigma_px is not None
+            and sigma_px > 0
+            and um_per_px is not None
+            and um_per_px > 0
+            and n_base is not None
+            and n_base > 2
+        ):
+            # Conservative SE(offset): two independent median windows using baseline-scale sigma.
+            sigma_um = sigma_px * um_per_px
+            se_med = 1.253314 * sigma_um / math.sqrt(float(n_base))
+            offset_se = math.sqrt(2.0) * se_med
+    if offset_se is None:
+        baseline_delta_um = _parse_float(diagnostics.get("baseline_median_delta_um"))
+        if baseline_delta_um is not None and baseline_delta_um != 0:
+            # Conservative fallback: baseline strategy disagreement as offset uncertainty.
+            offset_se = abs(baseline_delta_um)
+    if offset_se is not None and offset_se > 0:
+        diagnostics["offset_um_se"] = offset_se
+
+    speed_se = _parse_float(diagnostics.get("actual_speed_um_s_se"))
+    if speed_se is None:
+        v_json = _parse_float(diagnostics.get("speed_stage_json"))
+        v_trace = _parse_float(diagnostics.get("speed_trace_derived"))
+        if v_json is not None and v_trace is not None:
+            speed_se = abs(v_json - v_trace)
+        else:
+            rel = _parse_float(diagnostics.get("speed_consistency_error_pct"))
+            v = _parse_float(diagnostics.get("actual_speed_um_s"))
+            if rel is not None and v is not None:
+                speed_se = abs(v) * (abs(rel) / 100.0)
+    if speed_se is not None and speed_se > 0:
+        diagnostics["actual_speed_um_s_se"] = speed_se
+
+    kappa = _parse_float(metrics.get("kappa_drag_pn_per_um"))
+    kappa_u = _parse_float(metrics.get("kappa_drag_pn_per_um_se"))
+    offset = _parse_float(diagnostics.get("offset_um"))
+    offset_u = _parse_float(diagnostics.get("offset_um_se"))
+    speed = _parse_float(diagnostics.get("actual_speed_um_s"))
+    speed_u = _parse_float(diagnostics.get("actual_speed_um_s_se"))
+
+    rel_k = (abs(kappa_u) / abs(kappa)) if (kappa is not None and kappa_u is not None and kappa > 0 and kappa_u > 0) else None
+    rel_x = (abs(offset_u) / abs(offset)) if (offset is not None and offset_u is not None and offset > 0 and offset_u > 0) else None
+    rel_v = (abs(speed_u) / abs(speed)) if (speed is not None and speed_u is not None and speed > 0 and speed_u > 0) else None
+
+    force = _parse_float(diagnostics.get("drag_force_n"))
+    if diagnostics.get("drag_force_n_se") is None and force is not None and force > 0:
+        rel_terms = [r for r in (rel_k, rel_x) if r is not None and r > 0]
+        if rel_terms:
+            diagnostics["drag_force_n_se"] = abs(force) * math.sqrt(sum(r * r for r in rel_terms))
+
+    eta = _parse_float(diagnostics.get("eta_pa_s"))
+    if diagnostics.get("eta_pa_s_se") is None and eta is not None and eta > 0:
+        rel_terms = [r for r in (rel_k, rel_x, rel_v) if r is not None and r > 0]
+        if rel_terms:
+            diagnostics["eta_pa_s_se"] = abs(eta) * math.sqrt(sum(r * r for r in rel_terms))
+
+
 def _read_metric_csv(path: Path | None) -> dict[str, str]:
     if path is None or not Path(path).exists():
         return {}
@@ -1010,6 +1093,7 @@ def build_ot_item_summary(
         diagnostics["stage_speed_from_trace_um_s"] = _parse_float(drag_summary_json.get("stage_speed_from_trace_um_s"))
         diagnostics["stage_speed_relative_diff"] = _parse_float(drag_summary_json.get("stage_speed_relative_diff"))
         diagnostics["stage_speed_consistent"] = drag_summary_json.get("stage_speed_consistent")
+        _drag_fill_uncertainty_fallbacks(metrics, diagnostics)
         metrics["mode"] = "DRAG"
         diagnostics["timestamp_validation_pass"] = drag_summary_json.get(
             "timestamp_validation_pass",

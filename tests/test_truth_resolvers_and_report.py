@@ -147,6 +147,59 @@ def test_drag_summary_precedence_over_legacy(tmp_path: Path) -> None:
     assert metrics["kappa_drag_pn_per_um"] == pytest.approx(7.89)
 
 
+def test_drag_uncertainty_fallbacks_from_legacy_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "analysis"
+    audit = run_dir / "audit"
+    base = "drag_legacy_u"
+    _write(audit / "run.json", {"config": {"tracking": {"timing": {"effective_fps": 1000}}, "postprocess": {}, "calibration": {"um_per_px": 0.06042}}})
+    cal_path = audit / "brown_calibration.json"
+    _write(
+        cal_path,
+        {
+            "kappa": {
+                "kappa_x_pn_per_um_se": 0.043,
+            }
+        },
+    )
+    _write(
+        audit / f"{base}_drag_summary.json",
+        {
+            "axis": "x",
+            "kappa_pn_per_um": 10.52,
+            "drag_force_n": 2.627e-12,
+            "eta_pa_s": 1.058e-3,
+            "abs_offset_um": 0.2498,
+            "actual_speed_um_s": 131.71,
+            "speed_stage_json": 131.71,
+            "speed_trace_derived": 128.76,
+            "align_baseline_sigma": 0.39,
+            "align_n_baseline_samples": 6000,
+            "baseline_median_delta_um": -0.0043,
+            "selected_calibration_path": str(cal_path),
+            "report_source_kind": "drag_summary",
+        },
+    )
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name=base,
+        item_id="drag_legacy_u",
+        source_input_path="drag.raw",
+        status="success",
+    )
+    d = summary["diagnostics"]
+    m = summary["metrics"]
+    assert m.get("kappa_drag_pn_per_um_se") is not None
+    assert d.get("offset_um_se") is not None
+    assert d.get("drag_force_n_se") is not None
+    assert d.get("eta_pa_s_se") is not None
+    left, right = ot_report._drag_cover_rows(summary)
+    value_by_label = {k: v for k, v in (left + right)}
+    assert "±" in value_by_label["Viscosity"]
+    assert "±" in value_by_label["Drag stiffness"]
+    assert "±" in value_by_label["Absolute offset"]
+    assert "±" in value_by_label["Drag force"]
+
+
 def test_drag_report_reads_provenance_and_alignment_from_summary(tmp_path: Path) -> None:
     run_dir = tmp_path / "analysis"
     base = "drag_item"
