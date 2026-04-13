@@ -8,6 +8,9 @@ from barakuda.devices.acquisition.motion.metric_conversion import (
     MetricMotionCommand,
     convert_metric_intent_to_backend_command,
 )
+from barakuda.devices.acquisition.motion.stage_scale_audit import (
+    ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT,
+)
 from barakuda.devices.acquisition.motion.motion_run import (
     format_record_motion_start_log,
     resolve_unique_run_target,
@@ -440,6 +443,58 @@ def test_speed_audit_fields_are_persisted(tmp_path: Path):
     assert stage_meta["pre_motion_status_flags"] == 48
     assert stage_meta["speed_effect_suspect"] is True
     assert stage_meta["speed_control_validation_status"] == "suspect"
+
+
+def test_metric_travel_conversion_matches_calibration_grid_scale_chain() -> None:
+    backend = convert_metric_intent_to_backend_command(
+        legacy_travel_user=9999.0,
+        legacy_direction=1,
+        legacy_speed_reg=60.0,
+        legacy_accel_reg=120.0,
+        legacy_decel_reg=120.0,
+        metric_command=MetricMotionCommand(axis="x", direction=1, travel_um=10.0),
+        stage_um_per_unit=ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT,
+        ximc_metric_calibration=None,
+    )
+    # 10 µm at 0.0625 µm/unit -> 160 user units (matches validation run shape).
+    assert backend.travel_user == 160.0
+    assert backend.travel_source == "metric_travel_um_via_stage_um_per_unit"
+
+
+def test_stage_json_actual_metric_uses_chain_default_scale_consistently(tmp_path: Path):
+    output_dir = tmp_path / "run_chain_scale"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    camera = _FakeCamera(output_dir, "chain")
+    stage = _FakeStage(stage_um_per_unit=ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT)
+    recipe = ConstantVelocityDragRecipe(
+        axis="x",
+        direction=1,
+        travel=160.0,
+        speed=60.0,
+        accel=120.0,
+        decel=120.0,
+        pre_delay_s=0.0,
+        post_delay_s=0.0,
+    )
+    result = run_record_and_motion(
+        camera=camera,
+        stage=stage,
+        recipe=recipe,
+        output_dir=str(output_dir),
+        basename="chain",
+        duration_s=0.0,
+        roi=(0, 0, 100, 100),
+        exposure_us=1000.0,
+        gain=None,
+        fps_hint=100.0,
+        pixel_format="Mono8",
+        metric_command=MetricMotionCommand(axis="x", direction=1, travel_um=10.0),
+        metric_mapping_profile=None,
+    )
+    stage_meta = json.loads(Path(result.stage_json_path).read_text(encoding="utf-8"))
+    assert stage_meta["stage_um_per_unit"] == ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT
+    assert stage_meta["actual_metric"]["actual_travel_um"] == 10.0
+    assert stage_meta["actual_metric"]["actual_speed_um_s"] == 5.0
 
 
 def test_finalization_breadcrumbs_are_emitted_in_order(tmp_path: Path):
