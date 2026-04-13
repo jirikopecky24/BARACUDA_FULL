@@ -18,6 +18,7 @@ from barakuda.core.truth_resolvers import (
     resolve_scale_for_run,
     resolve_timing_truth_for_run,
 )
+from barakuda.devices.optical_tweezers.drag.calibration_import import load_brownian_calibration_from_folder
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -666,6 +667,81 @@ def test_drag_cover_source_prefers_real_path_over_placeholder() -> None:
         "run_json": {"input_path": "C:/datasets/Day2_Water_drag_rep01.raw"},
     }
     assert "Day2_Water_drag_rep01.raw" in ot_report._drag_cover_source_file_display(summary)
+
+
+def test_drag_cover_rows_show_uncertainties_when_available() -> None:
+    summary = {
+        "item_id": "drag_u",
+        "status": "success",
+        "run_id": "r1",
+        "metrics": {
+            "kappa_drag_pn_per_um": 10.52,
+            "kappa_drag_pn_per_um_se": 0.11,
+        },
+        "diagnostics": {
+            "drag_force_n": 2.627e-12,
+            "drag_force_n_se": 0.13e-12,
+            "eta_pa_s": 1.058e-3,
+            "eta_pa_s_se": 0.021e-3,
+            "actual_speed_um_s": 131.71,
+            "offset_um": 0.2498,
+            "offset_um_se": 0.0093,
+            "alignment_status": "detected",
+            "physics_status": "ready",
+            "physics_primary_gate": "pass",
+            "detection_qc_gate": "pass",
+            "final_drag_verdict": "pass",
+        },
+    }
+    left, right = ot_report._drag_cover_rows(summary)
+    value_by_label = {k: v for k, v in (left + right)}
+    assert "±" in value_by_label["Viscosity"]
+    assert "±" in value_by_label["Drag stiffness"]
+    assert "±" in value_by_label["Absolute offset"]
+    assert "±" in value_by_label["Drag force"]
+
+
+def test_drag_cover_rows_without_uncertainties_remain_stable() -> None:
+    summary = {
+        "item_id": "drag_no_u",
+        "status": "success",
+        "run_id": "r2",
+        "metrics": {"kappa_drag_pn_per_um": 10.52},
+        "diagnostics": {
+            "drag_force_n": 2.627e-12,
+            "eta_pa_s": 1.058e-3,
+            "actual_speed_um_s": 131.71,
+            "offset_um": 0.2498,
+            "alignment_status": "detected",
+            "physics_status": "ready",
+        },
+    }
+    left, right = ot_report._drag_cover_rows(summary)
+    value_by_label = {k: v for k, v in (left + right)}
+    assert "±" not in value_by_label["Viscosity"]
+    assert "±" not in value_by_label["Drag stiffness"]
+    assert "±" not in value_by_label["Absolute offset"]
+    assert "±" not in value_by_label["Drag force"]
+
+
+def test_brownian_calibration_import_keeps_kappa_uncertainty(tmp_path: Path) -> None:
+    audit = tmp_path / "analysis" / "audit"
+    audit.mkdir(parents=True, exist_ok=True)
+    _write(
+        audit / "item_calibration.json",
+        {
+            "kappa": {
+                "kappa_x_n_per_m": 0.0105,
+                "kappa_y_n_per_m": 0.0112,
+                "kappa_x_pn_per_um_se": 0.043,
+                "kappa_y_pn_per_um_se": 0.052,
+            }
+        },
+    )
+    _write(audit / "run.json", {"config": {"calibration": {"um_per_px": 0.06042}}})
+    cal = load_brownian_calibration_from_folder(tmp_path / "analysis")
+    assert cal.kappa_x_n_per_m_se == pytest.approx(0.043e-6)
+    assert cal.kappa_y_n_per_m_se == pytest.approx(0.052e-6)
 
 
 def test_drag_report_page3_split_into_readable_blocks(tmp_path: Path, monkeypatch) -> None:

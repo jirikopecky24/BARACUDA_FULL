@@ -830,12 +830,15 @@ def build_ot_item_summary(
             str((dir_audit / f"{base_name}_drag_summary.json")) if dir_audit else None
         )
         diagnostics["drag_force_n"] = _parse_float(drag_summary_json.get("drag_force_n"))
+        diagnostics["drag_force_n_se"] = _parse_float(drag_summary_json.get("drag_force_n_se"))
         diagnostics["offset_um"] = _parse_float(
             drag_summary_json.get("abs_offset_um")
             if drag_summary_json.get("abs_offset_um") is not None
             else drag_summary_json.get("offset_um_stage_signed")
         )
+        diagnostics["offset_um_se"] = _parse_float(drag_summary_json.get("offset_um_se"))
         metrics["kappa_drag_pn_per_um"] = _parse_float(drag_summary_json.get("kappa_pn_per_um"))
+        metrics["kappa_drag_pn_per_um_se"] = _parse_float(drag_summary_json.get("kappa_pn_per_um_se"))
         diagnostics["drag_axis"] = drag_summary_json.get("axis")
         diagnostics["drag_analysis_axis"] = drag_summary_json.get("analysis_axis")
         diagnostics["drag_stage_axis"] = drag_summary_json.get("stage_axis")
@@ -876,7 +879,9 @@ def build_ot_item_summary(
         diagnostics["actual_motion_duration_s"] = _parse_float(drag_summary_json.get("actual_motion_duration_s"))
         diagnostics["actual_travel_um"] = _parse_float(drag_summary_json.get("actual_travel_um"))
         diagnostics["actual_speed_um_s"] = _parse_float(drag_summary_json.get("actual_speed_um_s"))
+        diagnostics["actual_speed_um_s_se"] = _parse_float(drag_summary_json.get("actual_speed_um_s_se"))
         diagnostics["eta_pa_s"] = _parse_float(drag_summary_json.get("eta_pa_s"))
+        diagnostics["eta_pa_s_se"] = _parse_float(drag_summary_json.get("eta_pa_s_se"))
         diagnostics["analysis_status"] = drag_summary_json.get("analysis_status")
         diagnostics["physics_status"] = drag_summary_json.get("physics_status")
         diagnostics["drag_physics_confidence"] = drag_summary_json.get("drag_physics_confidence")
@@ -1476,46 +1481,65 @@ def _drag_cover_rows(summary: dict[str, Any]) -> tuple[list[list[str]], list[lis
     elif final_verdict in {"suspect", "pass_with_warnings"} or gate == "suspect" or "suspect" in physics_status:
         status_value = "suspect"
 
-    def _f_pn(val: Any) -> str:
+    def _f_with_unc(val: Any, unc: Any, *, scale: float, unit: str) -> str:
         v = _parse_float(val)
         if v is None:
             return "n/a"
-        return f"{v * 1e12:.3f} pN"
-
-    def _f_mpas(val: Any) -> str:
-        v = _parse_float(val)
-        if v is None:
-            return "n/a"
-        return f"{v * 1e3:.3f} mPa·s"
-
-    def _f_um(val: Any) -> str:
-        v = _parse_float(val)
-        if v is None:
-            return "n/a"
-        return f"{v:.4f} µm"
-
-    def _f_um_s(val: Any) -> str:
-        v = _parse_float(val)
-        if v is None:
-            return "n/a"
-        return f"{v:.2f} µm/s"
-
-    def _f_kappa(val: Any) -> str:
-        v = _parse_float(val)
-        if v is None:
-            return "n/a"
-        return f"{v:.2f} pN/µm"
+        u = _parse_float(unc)
+        if u is not None and u > 0:
+            return _fmt_measure_with_uncertainty(v * scale, u * scale, unit)
+        return _fmt_measure(v * scale, unit)
 
     rows = [
         ["Item", _wrap(summary.get("item_id"), 56)],
         ["Status", _fmt_status(status_value)],
         ["Run ID", _wrap(summary.get("run_id"), 56)],
         ["Source file", _wrap(source_name, 56)],
-        ["Drag force", _f_pn(diagnostics.get("drag_force_n"))],
-        ["Viscosity", _f_mpas(diagnostics.get("eta_pa_s"))],
-        ["Drag stiffness", _f_kappa(metrics.get("kappa_drag_pn_per_um"))],
-        ["Actual speed", _f_um_s(diagnostics.get("actual_speed_um_s"))],
-        ["Absolute offset", _f_um(diagnostics.get("offset_um"))],
+        [
+            "Drag force",
+            _f_with_unc(
+                diagnostics.get("drag_force_n"),
+                diagnostics.get("drag_force_n_se"),
+                scale=1e12,
+                unit="pN",
+            ),
+        ],
+        [
+            "Viscosity",
+            _f_with_unc(
+                diagnostics.get("eta_pa_s"),
+                diagnostics.get("eta_pa_s_se"),
+                scale=1e3,
+                unit="mPa*s",
+            ),
+        ],
+        [
+            "Drag stiffness",
+            _f_with_unc(
+                metrics.get("kappa_drag_pn_per_um"),
+                metrics.get("kappa_drag_pn_per_um_se"),
+                scale=1.0,
+                unit="pN/um",
+            ),
+        ],
+        [
+            "Actual speed",
+            _f_with_unc(
+                diagnostics.get("actual_speed_um_s"),
+                diagnostics.get("actual_speed_um_s_se"),
+                scale=1.0,
+                unit="um/s",
+            ),
+        ],
+        [
+            "Absolute offset",
+            _f_with_unc(
+                diagnostics.get("offset_um"),
+                diagnostics.get("offset_um_se"),
+                scale=1.0,
+                unit="um",
+            ),
+        ],
         ["Alignment status", _wrap(diagnostics.get("alignment_status"), 56)],
         ["Physics status", _wrap(diagnostics.get("physics_status"), 56)],
         ["Primary physics gate", _wrap(diagnostics.get("physics_primary_gate"), 56)],
@@ -1739,6 +1763,14 @@ def _drag_conditions_rows(summary: dict[str, Any]) -> list[list[str]]:
         ["Timing source", _wrap(diagnostics.get("timing_source"), 52)],
         ["Drag physics confidence", _wrap(diagnostics.get("drag_physics_confidence"), 52)],
         ["Drag physics warning", _wrap(diagnostics.get("drag_physics_warning"), 52)],
+        [
+            "Uncertainty source",
+            _wrap(
+                "kappa from Brownian calibration SE; offset from baseline/steady window variability; "
+                "speed from stage.json vs stage-trace consistency",
+                52,
+            ),
+        ],
         ["Drag validation gate", _wrap(diagnostics.get("drag_validation_gate"), 52)],
         ["Drag validation reason", _wrap(diagnostics.get("drag_validation_reason"), 52)],
         ["Video first timestamp [s]", _fmt_value(diagnostics.get("t_first_s"))],
