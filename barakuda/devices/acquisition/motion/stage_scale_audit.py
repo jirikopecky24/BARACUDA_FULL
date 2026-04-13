@@ -25,6 +25,17 @@ from __future__ import annotations
 
 from typing import Any
 
+# Standa 8MT167-25LS-MEn1 documentation gives 1.25 µm per full motor step
+# for a 0.25 mm lead screw with 200 full steps/rev.
+STANDA_8MT167_FULL_STEP_UM = 1.25
+# BARAKUDA acquisition chain consumes XIMC position units from the runtime path;
+# physical validation with calibration grid indicates this path corresponds to
+# 1/20 of the full-step value for the currently used hardware chain.
+XIMC_POSITION_UNITS_PER_FULL_STEP = 20.0
+ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT = (
+    STANDA_8MT167_FULL_STEP_UM / XIMC_POSITION_UNITS_PER_FULL_STEP
+)
+
 
 def build_stage_motion_audit_dict(stage_meta: dict[str, Any]) -> dict[str, Any]:
     """Return a JSON-serializable audit blob from acquisition ``*_stage.json`` content.

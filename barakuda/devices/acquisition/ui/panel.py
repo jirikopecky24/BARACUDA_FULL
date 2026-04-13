@@ -41,6 +41,9 @@ from barakuda.devices.acquisition.camera_factory import enumerate_all, create as
 # Motion integration (lazy — only imported if pyximc is available)
 from barakuda.devices.acquisition.motion.recipes import ConstantVelocityDragRecipe
 from barakuda.devices.acquisition.motion.stage_scale_audit import (
+    ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT,
+    STANDA_8MT167_FULL_STEP_UM,
+    XIMC_POSITION_UNITS_PER_FULL_STEP,
     build_stage_motion_audit_dict,
 )
 from barakuda.devices.acquisition.motion.motion_run import (
@@ -843,11 +846,13 @@ class AcquisitionPanel(QWidget):
 
         self._spin_stage_um_per_unit = _NoScrollDoubleSpinBox()
         self._spin_stage_um_per_unit.setRange(0.0, 10000.0)
-        self._spin_stage_um_per_unit.setValue(1.25)
+        self._spin_stage_um_per_unit.setValue(ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT)
         self._spin_stage_um_per_unit.setDecimals(4)
         self._spin_stage_um_per_unit.setToolTip(
             "Micrometers per XIMC position unit (get_position float).\n"
-            "Standa 8MT167-25LS-MEn1 (pitch 0.25 mm, 200 steps/rev): 1.25 µm/unit.\n"
+            f"Standa full-step reference: {STANDA_8MT167_FULL_STEP_UM:.2f} µm/full-step.\n"
+            f"Acquisition-chain default uses {int(XIMC_POSITION_UNITS_PER_FULL_STEP)} XIMC units per full-step "
+            f"→ {ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT:.4f} µm/unit.\n"
             "0 = unknown (omitted from *_stage.json).\n"
             "Validate: independently measure physical travel in µm for a known "
             "actual_travel_user (see *_stage.json / QC stage_motion_audit); "

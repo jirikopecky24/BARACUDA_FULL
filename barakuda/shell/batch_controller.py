@@ -71,6 +71,9 @@ from barakuda.devices.optical_tweezers.drag.active_umbrella.protocols.oscillator
     export_oscillatory_summary_csv,
     plot_oscillatory_diagnostic,
 )
+from barakuda.devices.acquisition.motion.stage_scale_audit import (
+    ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT,
+)
 
 
 
@@ -1006,7 +1009,12 @@ class BatchController:
             use_dataset_scale = bool(scale_params.get("use_dataset_scale", True))
             ui_um_per_px = float(scale_params.get("um_per_px", 0.0))
             use_dataset_stage_scale = bool(scale_params.get("use_dataset_stage_scale", True))
-            ui_stage_um_per_unit = float(scale_params.get("stage_um_per_unit", 1.25))
+            ui_stage_um_per_unit = float(
+                scale_params.get(
+                    "stage_um_per_unit",
+                    ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT,
+                )
+            )
 
             try:
                 reader = VideoReader(file_path)
@@ -1110,7 +1118,7 @@ class BatchController:
                     stage_um_per_unit = float(ui_stage_um_per_unit)
                     stage_um_per_unit_src = "ui_override"
                 if stage_um_per_unit is None:
-                    stage_um_per_unit = 1.25
+                    stage_um_per_unit = ACQUISITION_DEFAULT_STAGE_UM_PER_UNIT
                     stage_um_per_unit_src = "default"
 
                 config = {
