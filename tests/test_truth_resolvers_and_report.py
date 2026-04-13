@@ -607,6 +607,131 @@ def test_drag_bead_diagnostics_renders_combined_stacked_figure(tmp_path: Path, m
     assert saved["count"] == 1
 
 
+def test_drag_stacked_panels_each_have_own_x_label(tmp_path: Path, monkeypatch) -> None:
+    trace = tmp_path / "trace.csv"
+    trace.write_text("video_time_rel_s,axis_px\n0.0,10.0\n1.0,10.5\n2.0,11.0\n", encoding="utf-8")
+    stage_trace = tmp_path / "stage_trace.csv"
+    stage_trace.write_text(
+        "video_time_rel_s,stage_position_um,stage_velocity_um_s\n0.0,0.0,0.0\n1.0,5.0,5.0\n2.0,10.0,5.0\n",
+        encoding="utf-8",
+    )
+    summary = {
+        "item_id": "drag_axes",
+        "metrics": {"um_per_px": 0.2},
+        "diagnostics": {
+            "report_source_kind": "drag_summary",
+            "expected_stage_start_video_s": 10.0,
+            "expected_stage_stop_video_s": 12.0,
+            "t_first_s": 10.0,
+            "baseline_start_s": 10.0,
+            "baseline_end_s": 10.5,
+            "steady_start_s": 11.2,
+            "steady_end_s": 11.8,
+            "actual_travel_um": 5.0,
+        },
+        "artifacts": {},
+    }
+    xlabels: list[str] = []
+    import matplotlib.axes
+    original_set_xlabel = matplotlib.axes.Axes.set_xlabel
+
+    def _capture_set_xlabel(self, xlabel, *args, **kwargs):
+        if isinstance(xlabel, str) and "Time from video start [s]" in xlabel:
+            xlabels.append(xlabel)
+        return original_set_xlabel(self, xlabel, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "set_xlabel", _capture_set_xlabel)
+
+    class _DummyPdf:
+        def savefig(self, _fig):
+            return None
+
+    ot_report._render_drag_bead_diagnostics_pages(
+        _DummyPdf(),
+        summary,
+        trace_csv=trace,
+        windows_csv=None,
+        stage_trace_path=stage_trace,
+    )
+    ot_report._render_drag_stage_diagnostics_pages(
+        _DummyPdf(),
+        summary,
+        trace_csv=trace,
+        windows_csv=None,
+        stage_trace_path=stage_trace,
+    )
+    # Both stacked panels on each page should have their own x label.
+    assert len(xlabels) >= 4
+
+
+def test_drag_pdf_exports_solo_graph_files(tmp_path: Path) -> None:
+    run_dir = tmp_path / "analysis"
+    base = "drag_solo"
+    _write(
+        run_dir / "audit" / "run.json",
+        {"config": {"tracking": {}, "postprocess": {}, "calibration": {"um_per_px": 0.2}}, "provenance": {}},
+    )
+    _write(
+        run_dir / "audit" / f"{base}_drag_summary.json",
+        {
+            "drag_force_n": 1.0e-12,
+            "drag_force_n_se": 0.1e-12,
+            "abs_offset_um": 0.2,
+            "offset_um_se": 0.01,
+            "kappa_pn_per_um": 4.2,
+            "kappa_pn_per_um_se": 0.05,
+            "actual_speed_um_s": 6.5,
+            "actual_speed_um_s_se": 0.2,
+            "eta_pa_s": 0.0010,
+            "eta_pa_s_se": 0.00005,
+            "report_source_kind": "drag_summary",
+            "expected_stage_start_video_s": 10.0,
+            "expected_stage_stop_video_s": 12.0,
+            "t_first_s": 10.0,
+            "baseline_start_s": 10.0,
+            "baseline_end_s": 10.5,
+            "steady_start_s": 11.2,
+            "steady_end_s": 11.8,
+            "actual_travel_um": 5.0,
+            "selected_stage_trace_path": str(run_dir / "raw" / "drag_solo_stage_trace.csv"),
+        },
+    )
+    csv_dir = run_dir / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    (csv_dir / f"{base}_drag_trace_annotated.csv").write_text(
+        "video_time_rel_s,axis_px\n0.0,10.0\n1.0,10.5\n2.0,11.0\n",
+        encoding="utf-8",
+    )
+    (csv_dir / f"{base}_drag_windows.csv").write_text(
+        "window,start_s,end_s,duration_s\nbaseline,10.0,10.5,0.5\nsteady,11.2,11.8,0.6\n",
+        encoding="utf-8",
+    )
+    stage_trace_path = run_dir / "raw" / "drag_solo_stage_trace.csv"
+    stage_trace_path.parent.mkdir(parents=True, exist_ok=True)
+    stage_trace_path.write_text(
+        "video_time_rel_s,stage_position_um,stage_velocity_um_s\n0.0,0.0,0.0\n1.0,5.0,5.0\n2.0,10.0,5.0\n",
+        encoding="utf-8",
+    )
+    summary = build_ot_item_summary(
+        run_dir=run_dir,
+        base_name=base,
+        item_id=base,
+        source_input_path="drag.raw",
+        status="success",
+    )
+    out_pdf = run_dir / "results" / "drag_solo.pdf"
+    ot_report.export_ot_item_pdf(out_pdf, summary)
+    expected = [
+        run_dir / "results" / f"{base}-bead-full.png",
+        run_dir / "results" / f"{base}-bead-steady-detail.png",
+        run_dir / "results" / f"{base}-stage-position.png",
+        run_dir / "results" / f"{base}-stage-velocity.png",
+    ]
+    for p in expected:
+        assert p.is_file()
+        assert p.stat().st_size > 1000
+
+
 def test_drag_preview_selection_is_stage_truth_driven() -> None:
     summary = {
         "diagnostics": {
