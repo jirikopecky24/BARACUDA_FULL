@@ -4257,6 +4257,242 @@ def _drag_figure_legend_from_axes(
     )
 
 
+def _drag_add_axis_local_legend(
+    ax: Any,
+    *,
+    ncol: int = 3,
+    fontsize: float = 7.4,
+) -> None:
+    """Panel-local legend below axis (used for standalone figure exports)."""
+    lines, labels = ax.get_legend_handles_labels()
+    by_label: dict[str, Any] = {}
+    for ln, lb in zip(lines, labels):
+        if lb and lb not in by_label:
+            by_label[lb] = ln
+    if not by_label:
+        return
+    ax.legend(
+        list(by_label.values()),
+        list(by_label.keys()),
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.28),
+        ncol=ncol,
+        fontsize=fontsize,
+        frameon=True,
+        framealpha=0.97,
+        edgecolor=LINE_COLOR,
+        handlelength=1.55,
+        columnspacing=1.08,
+    )
+
+
+def _render_drag_solo_figure(
+    output_path: Path,
+    *,
+    title: str,
+    caption: str,
+    draw_fn: Any,
+) -> None:
+    """Figure-only export variant (no page header/footer)."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(8.4, 4.8))
+    fig.patch.set_facecolor("white")
+    gs = fig.add_gridspec(
+        2,
+        1,
+        left=0.10,
+        right=0.98,
+        top=0.90,
+        bottom=0.10,
+        height_ratios=[1.0, 0.22],
+        hspace=0.28,
+    )
+    ax = fig.add_subplot(gs[0, 0])
+    ax_cap = fig.add_subplot(gs[1, 0])
+    ax.set_facecolor(PANEL_BG)
+    ax.grid(True, linestyle="--", linewidth=0.5, color=LINE_COLOR)
+    ax.set_title(title, fontsize=10.0, fontweight="bold", color=TEXT_COLOR, family=FONT_FAMILY)
+    draw_fn(ax)
+    _drag_caption_row_text(ax_cap, caption, width=94)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=220, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def _export_drag_solo_graphs(
+    *,
+    summary: dict[str, Any],
+    output_dir: Path,
+    trace_csv: Path | None,
+    windows_csv: Path | None,
+    stage_trace_path: Path | None,
+) -> list[Path]:
+    """Export standalone drag figures used in the report."""
+    outputs: list[Path] = []
+    item_name = str(summary.get("item_id") or "item").strip() or "item"
+    diagnostics = summary.get("diagnostics") or {}
+    markers = _drag_resolve_primary_markers(summary, windows_csv=windows_csv, stage_trace_path=stage_trace_path)
+    raw = markers.get("raw") or {}
+    derived = markers.get("derived") or {}
+    t, y_um = _drag_trace_time_and_signal_um(summary, trace_csv)
+    offset_reported = _parse_float(diagnostics.get("offset_um"))
+
+    if t is not None and y_um is not None and len(t):
+        b0 = raw.get("baseline_start_s")
+        b1 = raw.get("baseline_end_s")
+        s0 = raw.get("steady_start_s")
+        s1 = raw.get("steady_end_s")
+        baseline_mask = (t >= float(b0)) & (t <= float(b1)) if isinstance(b0, float) and isinstance(b1, float) else None
+        center = float(np.nanmedian(y_um[baseline_mask])) if (baseline_mask is not None and np.any(baseline_mask)) else float(np.nanmedian(y_um))
+        y_c = y_um - center
+        steady_mean: float | None = None
+        if isinstance(s0, float) and isinstance(s1, float):
+            sm = (t >= float(s0)) & (t <= float(s1))
+            if np.any(sm):
+                steady_mean = float(np.nanmedian(y_c[sm]))
+
+        def _draw_bead_full(ax: Any) -> None:
+            ax.plot(t, y_c, linewidth=1.2, color="#0D47A1", label="Bead offset (baseline-centered)")
+            ax.axhline(0.0, color="#424242", linestyle=":", linewidth=1.15, zorder=3, label="Baseline mean (0)")
+            if steady_mean is not None:
+                ax.axhline(steady_mean, color="#AD1457", linestyle="--", linewidth=1.25, zorder=3, label="Steady-window mean")
+            _drag_plot_markers(ax, markers, include_windows=True)
+            ax.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.tick_params(labelbottom=True)
+            ax.margins(x=0.03, y=0.08)
+            _drag_add_axis_local_legend(ax, ncol=3)
+
+        p = output_dir / f"{item_name}-bead-full.png"
+        _render_drag_solo_figure(
+            p,
+            title="Bead response (full timeline)",
+            caption="Baseline-centred full trace with stage-truth windows and QC-only trajectory markers.",
+            draw_fn=_draw_bead_full,
+        )
+        outputs.append(p)
+
+        def _draw_bead_steady(ax: Any) -> None:
+            if isinstance(s0, float) and isinstance(s1, float):
+                sm = (t >= float(s0)) & (t <= float(s1))
+            else:
+                sm = None
+            if sm is None or not np.any(sm):
+                ax.text(0.5, 0.5, "No samples in steady window.", ha="center", va="center", color=MUTED_COLOR, family=FONT_FAMILY)
+                ax.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+                ax.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+                return
+            t_s = t[sm]
+            y_s = y_c[sm]
+            ax.plot(t_s, y_s, linewidth=1.35, color="#0D47A1", label="Bead offset")
+            ax.axhline(0.0, color="#424242", linestyle=":", linewidth=1.15, zorder=3, label="Baseline mean (0)")
+            if steady_mean is not None:
+                ax.axhline(steady_mean, color="#AD1457", linestyle="--", linewidth=1.2, zorder=3, label="Steady-window mean")
+            span = float(s1 - s0)
+            margin = max(0.02 * span, 1e-6)
+            ax.set_xlim(float(s0) - margin, float(s1) + margin)
+            y_min = float(np.nanmin(y_s))
+            y_max = float(np.nanmax(y_s))
+            pad = max(0.12 * max(abs(y_max - y_min), 1e-9), 1e-4)
+            ax.set_ylim(y_min - pad, y_max + pad)
+            sm_txt = f"{steady_mean:.4f}" if steady_mean is not None else "n/a"
+            off_txt = f"{abs(float(offset_reported)):.4f}" if offset_reported is not None else "n/a"
+            ax.text(
+                0.03,
+                0.97,
+                f"Steady median: {sm_txt} µm\n|offset| (summary): {off_txt} µm",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7.1,
+                color=TEXT_COLOR,
+                family=FONT_FAMILY,
+                bbox=dict(boxstyle="round,pad=0.32", fc="white", ec=LINE_COLOR, lw=0.4, alpha=0.92),
+            )
+            ax.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.tick_params(labelbottom=True)
+            ax.margins(x=0.035, y=0.09)
+            _drag_add_axis_local_legend(ax, ncol=3)
+
+        p = output_dir / f"{item_name}-bead-steady-detail.png"
+        _render_drag_solo_figure(
+            p,
+            title="Bead response (steady-window detail)",
+            caption="Steady-window zoom with baseline and steady references for standalone use.",
+            draw_fn=_draw_bead_steady,
+        )
+        outputs.append(p)
+
+    prof = _drag_stage_profile_from_saved_data(
+        summary,
+        stage_trace_path=stage_trace_path,
+        trace_csv=None,
+        markers=markers,
+    )
+    if prof is not None:
+        t, pos, vel = prof
+        v_rep = _parse_float(diagnostics.get("actual_speed_um_s"))
+
+        def _draw_stage_position(ax: Any) -> None:
+            ax.plot(t, pos, linewidth=1.6, color=PLOT_COLOR, label="Stage position")
+            ms = raw.get("motion_start_s")
+            mrc = derived.get("motion_running_confirmed_s")
+            dec = derived.get("deceleration_start_s")
+            me = raw.get("motion_stop_s")
+            if isinstance(ms, float) and isinstance(mrc, float) and mrc > ms:
+                ax.axvspan(ms, mrc, color="#E3F2FD", alpha=0.25, label="Acceleration")
+            if isinstance(mrc, float) and isinstance(dec, float) and dec > mrc:
+                ax.axvspan(mrc, dec, color="#E8F5E9", alpha=0.24, label="Steady-speed")
+            if isinstance(dec, float) and isinstance(me, float) and me > dec:
+                ax.axvspan(dec, me, color="#FCE4EC", alpha=0.24, label="Deceleration")
+            _drag_plot_markers(ax, markers, include_windows=True)
+            ax.set_ylabel("Stage position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.tick_params(labelbottom=True)
+            ax.margins(x=0.03, y=0.07)
+            _drag_add_axis_local_legend(ax, ncol=4)
+
+        p = output_dir / f"{item_name}-stage-position.png"
+        _render_drag_solo_figure(
+            p,
+            title="Stage position (timeline)",
+            caption="Stage-truth timing markers and phase shading with standalone axis labels.",
+            draw_fn=_draw_stage_position,
+        )
+        outputs.append(p)
+
+        def _draw_stage_velocity(ax: Any) -> None:
+            ax.plot(t, vel, linewidth=1.6, color=PLOT_COLOR, label="Stage velocity")
+            if v_rep is not None and math.isfinite(float(v_rep)):
+                ax.axhline(
+                    float(v_rep),
+                    color="#C62828",
+                    linestyle="--",
+                    linewidth=1.35,
+                    zorder=4,
+                    label="Steady speed (summary)",
+                )
+            _drag_plot_markers(ax, markers, include_windows=True)
+            ax.set_ylabel("Stage velocity [µm/s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+            ax.tick_params(labelbottom=True)
+            ax.margins(x=0.03, y=0.07)
+            _drag_add_axis_local_legend(ax, ncol=4)
+
+        p = output_dir / f"{item_name}-stage-velocity.png"
+        _render_drag_solo_figure(
+            p,
+            title="Stage velocity (timeline)",
+            caption="Velocity profile with stage-truth and QC-only markers, legend placed below the plot.",
+            draw_fn=_draw_stage_velocity,
+        )
+        outputs.append(p)
+
+    return outputs
+
+
 def _drag_pick_preview_index(target_rel_s: float, elapsed_s: float, n: int) -> int:
     if n <= 1 or elapsed_s <= 0:
         return 0
@@ -4965,7 +5201,7 @@ def _render_drag_stage_diagnostics_pages(
     )
     ax_pos = fig.add_subplot(gs[0, 0])
     ax_cap1 = fig.add_subplot(gs[1, 0])
-    ax_vel = fig.add_subplot(gs[2, 0], sharex=ax_pos)
+    ax_vel = fig.add_subplot(gs[2, 0])
     ax_cap2 = fig.add_subplot(gs[3, 0])
     for ax in (ax_pos, ax_vel):
         ax.set_facecolor(PANEL_BG)
@@ -5008,8 +5244,8 @@ def _render_drag_stage_diagnostics_pages(
         ax_vel.set_ylabel("Stage velocity [µm/s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
         ax_vel.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
 
-    ax_pos.tick_params(labelbottom=False)
-    ax_pos.set_xlabel("")
+    ax_pos.tick_params(labelbottom=True)
+    ax_pos.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
     ax_pos.margins(x=0.03, y=0.07)
     ax_vel.margins(x=0.03, y=0.07)
     ax_pos.tick_params(axis="y", which="major", pad=5)
@@ -5125,8 +5361,8 @@ def _render_drag_bead_diagnostics_pages(
             )
         _drag_plot_markers(ax_bead, markers, include_windows=True)
         ax_bead.set_ylabel("Bead position [µm]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
-        ax_bead.set_xlabel("")
-        ax_bead.tick_params(labelbottom=False)
+        ax_bead.set_xlabel("Time from video start [s]", fontsize=FONT_SIZE_SMALL, family=FONT_FAMILY)
+        ax_bead.tick_params(labelbottom=True)
         ax_bead.margins(x=0.03, y=0.08)
         ax_bead.tick_params(axis="y", which="major", pad=5)
 
@@ -5373,6 +5609,13 @@ def export_ot_item_pdf(report_path: Path | str, summary: dict[str, Any]) -> Path
                 windows_csv=windows_csv_p if (windows_csv_p and windows_csv_p.is_file()) else None,
                 stage_trace_path=stage_trace_p if (stage_trace_p and stage_trace_p.is_file()) else None,
                 page_counter=page_counter,
+            )
+            _export_drag_solo_graphs(
+                summary=summary,
+                output_dir=report_path.parent,
+                trace_csv=trace_csv_p if (trace_csv_p and trace_csv_p.is_file()) else None,
+                windows_csv=windows_csv_p if (windows_csv_p and windows_csv_p.is_file()) else None,
+                stage_trace_path=stage_trace_p if (stage_trace_p and stage_trace_p.is_file()) else None,
             )
         else:
             # Cover page - no page number
