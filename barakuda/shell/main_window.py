@@ -760,6 +760,8 @@ class ShellMainWindow(QMainWindow):
                     mid = str(self.method_combo.currentData())
                     if hasattr(self._device_panel, "set_calibration_mode"):
                         self._device_panel.set_calibration_mode(mid)
+                    # Persist mode switch immediately so per-item params do not keep stale mode.
+                    self._on_ot_panel_value_changed()
                 self.method_combo.currentIndexChanged.connect(_on_method_changed)
 
             finally:

@@ -44,6 +44,16 @@ class MockPanel:
             out.update(item_pp)
         else:
             out = fb
+        ui_mode = str(fb.get("calibration_mode", "Brownian"))
+        item_mode = str((item_pp or {}).get("calibration_mode", ui_mode))
+        # Method selector is global in the OT UI; honor UI snapshot mode for runtime.
+        out["requested_calibration_mode_from_ui"] = ui_mode
+        out["calibration_mode_item_snapshot"] = item_mode
+        if item_mode != ui_mode:
+            out["calibration_mode"] = ui_mode
+            out["calibration_mode_forced_from_ui"] = True
+        else:
+            out["calibration_mode_forced_from_ui"] = False
         # Per-item dump often lacks brownian_baseline_folder updates (LineEdit was not wired).
         # Prefer non-empty baseline from UI snapshot at Start.
         bi = str(out.get("brownian_baseline_folder") or "").strip()

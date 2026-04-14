@@ -143,6 +143,22 @@ class BatchController:
         normalized["bead_fallback_used"] = bool(bead.fallback_used)
         return normalized
 
+    @staticmethod
+    def _resolve_calibration_mode_runtime(post_params: dict[str, Any]) -> tuple[str, str]:
+        requested = str(
+            post_params.get("requested_calibration_mode_from_ui")
+            or post_params.get("calibration_mode")
+            or "Brownian"
+        ).strip()
+        requested_norm = requested.capitalize()
+        if requested_norm not in {"Brownian", "Drag"}:
+            requested_norm = "Brownian"
+        effective = requested_norm
+        post_params["requested_calibration_mode_from_ui"] = requested_norm
+        post_params["effective_calibration_mode_runtime"] = effective
+        post_params["physics_mode"] = "DRAGGING" if effective == "Drag" else "BROWNIAN"
+        return requested_norm, effective
+
     def _parse_capture_tokens(self, p: Path) -> dict[str, Any]:
         """
         Expected filename (stem) format:
@@ -942,7 +958,12 @@ class BatchController:
 
             post_params = self._normalize_ot_postprocess_params(post_params_raw)
             post_params.setdefault("temperature_c", 25.0)
-            calibration_mode = str(post_params.get("calibration_mode", "Brownian"))
+            requested_calibration_mode, calibration_mode = self._resolve_calibration_mode_runtime(post_params)
+            if bool(post_params.get("calibration_mode_forced_from_ui", False)):
+                self._log(
+                    "[OT mode sync] item calibration_mode was overridden by current UI mode "
+                    f"({post_params.get('calibration_mode_item_snapshot')} -> {calibration_mode})."
+                )
             ot_runtime = self._resolve_ot_runtime(tracking_params)
             shadow_mode = self._get_ot_shadow_mode()
             ot_runtime["shadow_mode"] = shadow_mode
@@ -1163,6 +1184,13 @@ class BatchController:
                     },
                     "postprocess": {
                         "enabled": pp_enabled,
+                        "calibration_mode": str(calibration_mode),
+                        "requested_calibration_mode_from_ui": str(requested_calibration_mode),
+                        "effective_calibration_mode_runtime": str(calibration_mode),
+                        "calibration_mode_item_snapshot": post_params.get("calibration_mode_item_snapshot"),
+                        "calibration_mode_forced_from_ui": bool(
+                            post_params.get("calibration_mode_forced_from_ui", False)
+                        ),
                         "qc_enabled": pp.qc_enabled,
                         "q_min": pp.q_min,
                         "jump_max_px": pp.jump_max_px,
