@@ -335,3 +335,64 @@ def test_marker_provenance_appears_in_export_and_report_rows(tmp_path: Path) -> 
     assert "steady_start_marker_source" in keys
     assert "steady_end_marker_source" in keys
     assert "deceleration_start_source" in keys
+
+
+def test_manual_steady_end_override_caps_auto_window(tmp_path: Path) -> None:
+    timing = SyntheticTiming(fps=100.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=12.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "manual_end_cap",
+        basename="manual_end_cap",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(
+            analysis_axis="x",
+            um_per_px=0.1,
+            eta_pa_s=0.001,
+            bead_radius_um=1.0,
+            steady_window_override_end_rel_s=9.0,
+            steady_window_override_source="visual_stage_stability_by_concentration",
+        ),
+        allow_discovered_trajectory=True,
+    )
+    t0 = float(result.t_first_s or 0.0)
+    assert result.windows.steady_end_s == pytest.approx(t0 + 9.0, abs=1e-6)
+    assert result.steady_window_mode == "manual_override"
+    assert result.steady_window_override_source == "visual_stage_stability_by_concentration"
+    exported = drag_result_to_dict(result)
+    assert exported["steady_window_mode"] == "manual_override"
+
+
+def test_manual_steady_window_full_override_sets_start_and_end(tmp_path: Path) -> None:
+    timing = SyntheticTiming(fps=100.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=20.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "manual_window_full",
+        basename="manual_window_full",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(
+            analysis_axis="x",
+            um_per_px=0.1,
+            eta_pa_s=0.001,
+            bead_radius_um=1.0,
+            steady_window_override_start_rel_s=8.0,
+            steady_window_override_end_rel_s=23.0,
+            steady_window_override_source="visual_stage_stability_by_concentration",
+        ),
+        allow_discovered_trajectory=True,
+    )
+    t0 = float(result.t_first_s or 0.0)
+    assert result.windows.steady_start_s == pytest.approx(t0 + 8.0, abs=1e-6)
+    assert result.windows.steady_end_s == pytest.approx(t0 + 23.0, abs=1e-6)
+    assert result.steady_window_mode == "manual_override"

@@ -843,6 +843,58 @@ def analyze_drag_run(
         steady_start_s=steady_window_clipped_start_s,
         steady_end_s=steady_window_clipped_end_s,
     )
+    steady_window_mode = "auto"
+    steady_window_override_source = None
+    steady_window_override_start_rel_s = (
+        float(config.steady_window_override_start_rel_s)
+        if config.steady_window_override_start_rel_s is not None
+        else None
+    )
+    steady_window_override_end_rel_s = (
+        float(config.steady_window_override_end_rel_s)
+        if config.steady_window_override_end_rel_s is not None
+        else None
+    )
+    if (
+        math.isfinite(t_first_s)
+        and (
+            steady_window_override_start_rel_s is not None
+            or steady_window_override_end_rel_s is not None
+        )
+    ):
+        steady_window_mode = "manual_override"
+        steady_window_override_source = (
+            str(config.steady_window_override_source)
+            if config.steady_window_override_source
+            else "manual_override_unspecified"
+        )
+        o_start = windows.steady_start_s
+        o_end = windows.steady_end_s
+        if steady_window_override_start_rel_s is not None:
+            o_start = float(t_first_s) + float(steady_window_override_start_rel_s)
+        if steady_window_override_end_rel_s is not None:
+            override_end_abs = float(t_first_s) + float(steady_window_override_end_rel_s)
+            if steady_window_override_start_rel_s is None:
+                # End-only override acts as a hard cap for concentration-specific runs.
+                o_end = min(o_end, override_end_abs)
+            else:
+                o_end = override_end_abs
+        o_start, o_end, _ = _clip_window_to_video(o_start, o_end, t_first_s, t_last_s)
+        if o_end <= o_start:
+            raise DragWindowError(
+                "Steady window override produced non-positive length after clipping."
+            )
+        windows = DragWindows(
+            baseline_start_s=windows.baseline_start_s,
+            baseline_end_s=windows.baseline_end_s,
+            steady_start_s=o_start,
+            steady_end_s=o_end,
+        )
+        warnings.append(
+            "PHYSICS_WARNING: steady window manual override applied "
+            f"(source={steady_window_override_source}, start_rel_s={steady_window_override_start_rel_s}, "
+            f"end_rel_s={steady_window_override_end_rel_s})."
+        )
 
     window_clipping_message = ", ".join(window_clip_reasons) if window_clip_reasons else None
     if window_clipping_applied:
@@ -1702,6 +1754,10 @@ def analyze_drag_run(
             if isinstance(trace_usable_for_windowing, bool)
             else None
         ),
+        steady_window_mode=steady_window_mode,
+        steady_window_override_source=steady_window_override_source,
+        steady_window_override_start_rel_s=steady_window_override_start_rel_s,
+        steady_window_override_end_rel_s=steady_window_override_end_rel_s,
         trajectory_source_kind=_traj_kind,
         trajectory_generated_in_this_workflow=_traj_gen,
     )

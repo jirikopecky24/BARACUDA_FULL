@@ -1004,6 +1004,14 @@ def build_ot_item_summary(
         diagnostics["deceleration_start_video_s"] = _parse_float(drag_summary_json.get("deceleration_start_video_s"))
         diagnostics["steady_state_start_stage_s"] = _parse_float(drag_summary_json.get("steady_state_start_stage_s"))
         diagnostics["steady_state_start_video_s"] = _parse_float(drag_summary_json.get("steady_state_start_video_s"))
+        diagnostics["steady_window_mode"] = drag_summary_json.get("steady_window_mode")
+        diagnostics["steady_window_override_source"] = drag_summary_json.get("steady_window_override_source")
+        diagnostics["steady_window_override_start_rel_s"] = _parse_float(
+            drag_summary_json.get("steady_window_override_start_rel_s")
+        )
+        diagnostics["steady_window_override_end_rel_s"] = _parse_float(
+            drag_summary_json.get("steady_window_override_end_rel_s")
+        )
         diagnostics["detected_onset_video_s"] = _parse_float(drag_summary_json.get("detected_onset_video_s"))
         diagnostics["detected_onset_diagnostic_only"] = drag_summary_json.get("detected_onset_diagnostic_only")
         diagnostics["detected_onset_consistency_flag"] = drag_summary_json.get(
@@ -1348,6 +1356,14 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
                 diagnostics.get("deceleration_start_source"),
                 "",
                 "deceleration_start_source",
+            ),
+            ("Drag", "Steady window mode", diagnostics.get("steady_window_mode"), "", "steady_window_mode"),
+            (
+                "Drag",
+                "Steady override source",
+                diagnostics.get("steady_window_override_source"),
+                "",
+                "steady_window_override_source",
             ),
             (
                 "Drag",
@@ -5117,12 +5133,16 @@ def _render_drag_method_conditions_page(pdf, summary: dict[str, Any], *, page_co
         f"end={diagnostics.get('steady_end_marker_source') or 'n/a'}; "
         f"decel={diagnostics.get('deceleration_start_source') or 'n/a'}"
     )
+    override_mode = diagnostics.get("steady_window_mode") or "auto"
+    override_source = diagnostics.get("steady_window_override_source") or "n/a"
+    override_s = f"{override_mode}; src={override_source}"
 
     timing_rows = [
         ["Timing", _drag_humanize_timing_source(diagnostics.get("timing_source"))],
         ["Anchor (req. → eff.)", str(anchor_s)],
         ["Windows source", _wrap(diagnostics.get("primary_timing_source_for_windows"), 40)],
         ["Window markers", _wrap(marker_s, 40)],
+        ["Window mode", _wrap(override_s, 40)],
         ["Motion (stage)", _drag_format_motion_window(summary)],
         ["Baseline", _drag_format_rel_time_window(summary, "baseline_start_s", "baseline_end_s")],
         ["Steady", _drag_format_rel_time_window(summary, "steady_start_s", "steady_end_s")],
