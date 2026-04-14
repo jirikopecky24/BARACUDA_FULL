@@ -11,6 +11,9 @@ def compute_windows(
     motion_start_video_s: float,
     motion_stop_video_s_stage_aligned: float | None,
     params: DragWindowParams,
+    *,
+    steady_state_start_video_s: float | None = None,
+    deceleration_start_video_s: float | None = None,
 ) -> DragWindows:
     """Compute baseline and steady-state windows on the video time axis.
 
@@ -37,13 +40,21 @@ def compute_windows(
     if not (baseline_end <= ms):
         raise DragWindowError("Baseline window must end before motion_start_video_s.")
 
+    steady_anchor = (
+        float(steady_state_start_video_s)
+        if steady_state_start_video_s is not None
+        else ms
+    )
     if motion_stop_video_s_stage_aligned is None:
         # We still define a nominal steady window relative to start only.
-        steady_start = ms + s_delay
+        steady_start = steady_anchor + s_delay
         steady_end = steady_start + params.min_steady_duration_s
     else:
-        steady_start = ms + s_delay
-        steady_end = me - s_guard
+        steady_start = steady_anchor + s_delay
+        if deceleration_start_video_s is not None:
+            steady_end = float(deceleration_start_video_s) - s_guard
+        else:
+            steady_end = me - s_guard
 
     if steady_end <= steady_start:
         raise DragWindowError("Steady window has non-positive length.")

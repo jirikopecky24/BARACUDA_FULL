@@ -15,6 +15,7 @@ from .schema import (
     DragAnalysisResult,
     DragQCFlags,
     DragRunLoaded,
+    DragStageTiming,
     DragWindowParams,
     DragWindows,
 )
@@ -171,6 +172,60 @@ def _extract_axis_series(
         sig_um = None
 
     return frames, sig_px, sig_um
+
+
+def _safe_positive_float(raw: object) -> float | None:
+    try:
+        val = float(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    if not math.isfinite(val) or val <= 0:
+        return None
+    return val
+
+
+def _estimate_stage_markers(
+    timing: DragStageTiming,
+    protocol_params: dict[str, object],
+) -> tuple[float | None, str, float | None, str]:
+    steady_state_start_s = None
+    steady_source = "motion_start_anchor"
+    if timing.steady_state_start_stage_s is not None:
+        steady_state_start_s = float(timing.steady_state_start_stage_s)
+        steady_source = "stage_trace_steady_state_start"
+    elif timing.motion_running_confirmed_s is not None:
+        steady_state_start_s = float(timing.motion_running_confirmed_s)
+        steady_source = "stage_trace_motion_running_confirmed"
+    elif timing.motion_start_stage_s is not None:
+        steady_state_start_s = float(timing.motion_start_stage_s)
+        steady_source = "stage_trace_motion_start"
+    elif timing.motion_command_issued_s is not None:
+        steady_state_start_s = float(timing.motion_command_issued_s)
+        steady_source = "stage_trace_motion_command_issued"
+
+    decel_start_s = None
+    decel_source = "motion_stop_fallback"
+    if timing.deceleration_start_stage_s is not None:
+        decel_start_s = float(timing.deceleration_start_stage_s)
+        decel_source = "stage_trace_deceleration_start"
+        return steady_state_start_s, steady_source, decel_start_s, decel_source
+
+    if timing.motion_stop_stage_s is None:
+        return steady_state_start_s, steady_source, decel_start_s, decel_source
+
+    commanded_speed = _safe_positive_float(protocol_params.get("speed_user_s_commanded"))
+    commanded_decel = _safe_positive_float(protocol_params.get("decel_user_s2_commanded"))
+    if commanded_speed is not None and commanded_decel is not None:
+        decel_duration_s = commanded_speed / commanded_decel
+        if math.isfinite(decel_duration_s) and decel_duration_s > 0:
+            candidate = float(timing.motion_stop_stage_s) - decel_duration_s
+            lower_bound = (
+                float(steady_state_start_s) if steady_state_start_s is not None else float("-inf")
+            )
+            if candidate > lower_bound:
+                decel_start_s = candidate
+                decel_source = "estimated_from_commanded_speed_decel"
+    return steady_state_start_s, steady_source, decel_start_s, decel_source
 
 
 def analyze_drag_run(
@@ -541,6 +596,37 @@ def analyze_drag_run(
     ):
         stage_anchor_breaking_reasons.append("expected_stage_window_invalid")
 
+    (
+        stage_steady_start_s,
+        steady_start_marker_source,
+        stage_deceleration_start_s,
+        deceleration_start_source,
+    ) = _estimate_stage_markers(
+        loaded.stage_timing,
+        loaded.stage_meta.protocol_params,
+    )
+    steady_state_start_video_s = (
+        (t_first_s + float(stage_steady_start_s))
+        if (stage_steady_start_s is not None and math.isfinite(t_first_s))
+        else None
+    )
+    if not use_stage_validated_anchor:
+        # Keep detected_onset behavior stable: steady start remains onset-anchored.
+        steady_state_start_video_s = None
+    deceleration_start_video_s = (
+        (t_first_s + float(stage_deceleration_start_s))
+        if (stage_deceleration_start_s is not None and math.isfinite(t_first_s))
+        else None
+    )
+    if (
+        deceleration_start_video_s is not None
+        and expected_stage_stop_video_s is not None
+        and deceleration_start_video_s >= expected_stage_stop_video_s
+    ):
+        deceleration_start_video_s = None
+        stage_deceleration_start_s = None
+        deceleration_start_source = "motion_stop_fallback"
+
     # 4) Windows
     try:
         primary_motion_start_video_s = (
@@ -557,6 +643,8 @@ def analyze_drag_run(
             motion_start_video_s=primary_motion_start_video_s,
             motion_stop_video_s_stage_aligned=primary_motion_stop_video_s,
             params=config.window_params,
+            steady_state_start_video_s=steady_state_start_video_s,
+            deceleration_start_video_s=deceleration_start_video_s,
         )
         qc.baseline_window_ok = True
         qc.steady_window_ok = True
@@ -1147,10 +1235,23 @@ def analyze_drag_run(
             plausibility_flag = "fail"
 
     clipping_flag = "pass"
-    if baseline_clip_fraction > 0.35 or steady_clip_fraction > 0.35:
+    baseline_duration_after_clip = windows.baseline_end_s - windows.baseline_start_s
+    min_baseline_duration_s = max(0.1, float(config.window_params.min_baseline_duration_s))
+    baseline_clip_hard_fail = baseline_duration_after_clip < min_baseline_duration_s
+    if steady_clip_fraction > 0.35 or baseline_clip_hard_fail:
         clipping_flag = "fail"
-    elif baseline_clip_fraction > 0.1 or steady_clip_fraction > 0.1 or baseline_window_outside_video or steady_window_outside_video:
+    elif (
+        steady_clip_fraction > 0.1
+        or baseline_clip_fraction > 0.1
+        or baseline_window_outside_video
+        or steady_window_outside_video
+    ):
         clipping_flag = "suspect"
+    if baseline_clip_hard_fail:
+        warnings.append(
+            "PHYSICS_WARNING: baseline window after clipping is too short "
+            f"({baseline_duration_after_clip:.3f}s < min_baseline_duration_s={min_baseline_duration_s:.3f}s)."
+        )
 
     physics_primary_reasons: list[str] = []
     if not alignment_sanity_flag:
@@ -1440,6 +1541,17 @@ def analyze_drag_run(
         detected_onset_consistency_message=detected_onset_consistency_message,
         stage_anchor_confidence=stage_anchor_confidence,
         stage_anchor_reason=stage_anchor_reason,
+        steady_start_marker_source=steady_start_marker_source,
+        steady_end_marker_source=(
+            "deceleration_start_minus_guard"
+            if deceleration_start_video_s is not None
+            else "motion_stop_minus_guard"
+        ),
+        deceleration_start_stage_s=stage_deceleration_start_s,
+        deceleration_start_video_s=deceleration_start_video_s,
+        deceleration_start_source=deceleration_start_source,
+        steady_state_start_stage_s=stage_steady_start_s,
+        steady_state_start_video_s=steady_state_start_video_s,
         physics_primary_gate=physics_primary_gate,
         detection_qc_gate=detection_qc_gate,
         final_drag_verdict=final_drag_verdict,

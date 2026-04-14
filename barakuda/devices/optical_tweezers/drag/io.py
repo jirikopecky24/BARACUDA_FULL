@@ -663,6 +663,10 @@ def _load_stage_trace(stage_trace_path: Path) -> tuple[list[DragStageTraceEvent]
             timing = DragStageTiming(**{**timing.__dict__, "motion_command_issued_s": e.t_s})
         elif name == "motion_running_confirmed":
             timing = DragStageTiming(**{**timing.__dict__, "motion_running_confirmed_s": e.t_s})
+        elif name in {"steady_state_start", "steady_start"}:
+            timing = DragStageTiming(**{**timing.__dict__, "steady_state_start_stage_s": e.t_s})
+        elif name in {"deceleration_start", "motion_deceleration_start", "decel_start"}:
+            timing = DragStageTiming(**{**timing.__dict__, "deceleration_start_stage_s": e.t_s})
         elif name == "motion_start":
             timing = DragStageTiming(**{**timing.__dict__, "motion_start_stage_s": e.t_s})
         elif name == "motion_stop":

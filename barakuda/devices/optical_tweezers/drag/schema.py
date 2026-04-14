@@ -104,6 +104,8 @@ class DragStageTiming:
     pre_hold_end_s: float | None = None
     motion_command_issued_s: float | None = None
     motion_running_confirmed_s: float | None = None
+    steady_state_start_stage_s: float | None = None
+    deceleration_start_stage_s: float | None = None
     motion_start_stage_s: float | None = None
     motion_stop_stage_s: float | None = None
     post_hold_start_s: float | None = None
@@ -120,6 +122,7 @@ class DragWindowParams:
     steady_start_delay_s: float = 2.0
     steady_end_guard_s: float = 1.0
     min_steady_duration_s: float = 5.0
+    min_baseline_duration_s: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -411,6 +414,13 @@ class DragAnalysisResult:
     detected_onset_consistency_message: str | None = None
     stage_anchor_confidence: str | None = None
     stage_anchor_reason: str | None = None
+    steady_start_marker_source: str | None = None
+    steady_end_marker_source: str | None = None
+    deceleration_start_stage_s: float | None = None
+    deceleration_start_video_s: float | None = None
+    deceleration_start_source: str | None = None
+    steady_state_start_stage_s: float | None = None
+    steady_state_start_video_s: float | None = None
     physics_primary_gate: str | None = None
     detection_qc_gate: str | None = None
     final_drag_verdict: str | None = None
