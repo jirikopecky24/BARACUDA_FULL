@@ -997,6 +997,13 @@ def build_ot_item_summary(
             "primary_timing_source_for_windows"
         )
         diagnostics["motion_timing_primary_source"] = drag_summary_json.get("motion_timing_primary_source")
+        diagnostics["steady_start_marker_source"] = drag_summary_json.get("steady_start_marker_source")
+        diagnostics["steady_end_marker_source"] = drag_summary_json.get("steady_end_marker_source")
+        diagnostics["deceleration_start_source"] = drag_summary_json.get("deceleration_start_source")
+        diagnostics["deceleration_start_stage_s"] = _parse_float(drag_summary_json.get("deceleration_start_stage_s"))
+        diagnostics["deceleration_start_video_s"] = _parse_float(drag_summary_json.get("deceleration_start_video_s"))
+        diagnostics["steady_state_start_stage_s"] = _parse_float(drag_summary_json.get("steady_state_start_stage_s"))
+        diagnostics["steady_state_start_video_s"] = _parse_float(drag_summary_json.get("steady_state_start_video_s"))
         diagnostics["detected_onset_video_s"] = _parse_float(drag_summary_json.get("detected_onset_video_s"))
         diagnostics["detected_onset_diagnostic_only"] = drag_summary_json.get("detected_onset_diagnostic_only")
         diagnostics["detected_onset_consistency_flag"] = drag_summary_json.get(
@@ -1320,6 +1327,27 @@ def build_ot_summary_rows(summary: dict[str, Any]) -> list[tuple[str, str, Any, 
                 diagnostics.get("motion_timing_primary_source"),
                 "",
                 "motion_timing_primary_source",
+            ),
+            (
+                "Drag",
+                "Steady start marker source",
+                diagnostics.get("steady_start_marker_source"),
+                "",
+                "steady_start_marker_source",
+            ),
+            (
+                "Drag",
+                "Steady end marker source",
+                diagnostics.get("steady_end_marker_source"),
+                "",
+                "steady_end_marker_source",
+            ),
+            (
+                "Drag",
+                "Deceleration marker source",
+                diagnostics.get("deceleration_start_source"),
+                "",
+                "deceleration_start_source",
             ),
             (
                 "Drag",
@@ -5084,11 +5112,17 @@ def _render_drag_method_conditions_page(pdf, summary: dict[str, Any], *, page_co
     onset_v = _parse_float(diagnostics.get("detected_stage_start_video_s"))
     onset_rel = _drag_to_video_rel_s(summary, onset_v) if onset_v is not None else None
     onset_s = f"{onset_rel:.2f} s (QC-only)" if isinstance(onset_rel, float) else "n/a (QC-only)"
+    marker_s = (
+        f"start={diagnostics.get('steady_start_marker_source') or 'n/a'}; "
+        f"end={diagnostics.get('steady_end_marker_source') or 'n/a'}; "
+        f"decel={diagnostics.get('deceleration_start_source') or 'n/a'}"
+    )
 
     timing_rows = [
         ["Timing", _drag_humanize_timing_source(diagnostics.get("timing_source"))],
         ["Anchor (req. → eff.)", str(anchor_s)],
         ["Windows source", _wrap(diagnostics.get("primary_timing_source_for_windows"), 40)],
+        ["Window markers", _wrap(marker_s, 40)],
         ["Motion (stage)", _drag_format_motion_window(summary)],
         ["Baseline", _drag_format_rel_time_window(summary, "baseline_start_s", "baseline_end_s")],
         ["Steady", _drag_format_rel_time_window(summary, "steady_start_s", "steady_end_s")],
