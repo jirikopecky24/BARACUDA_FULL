@@ -1264,15 +1264,20 @@ def analyze_drag_run(
         physics_primary_reasons.append("kinematics_fail")
     elif kinematics_robustness_flag == "suspect":
         physics_primary_reasons.append("kinematics_suspect")
+    baseline_minor_problem = (
+        baseline_clip_fraction > 0.1
+        and baseline_duration_after_clip < max(min_baseline_duration_s, 0.6)
+    )
+    steady_minor_problem = steady_clip_fraction > 0.1 or steady_window_outside_video
     if clipping_flag == "fail":
         physics_primary_reasons.append("window_clipping_severe")
-    elif clipping_flag == "suspect":
+    elif clipping_flag == "suspect" and (baseline_minor_problem or steady_minor_problem):
         physics_primary_reasons.append("window_clipping_minor")
     if physics_status != "ready":
         physics_primary_reasons.append("physics_not_ready")
     if plausibility_flag == "fail":
         physics_primary_reasons.append("plausibility_fail")
-    elif plausibility_flag == "suspect":
+    elif plausibility_flag == "suspect" and drag_anchor_mode != "stage_validated":
         physics_primary_reasons.append("plausibility_suspect")
 
     if any(
@@ -1299,7 +1304,9 @@ def analyze_drag_run(
         detection_qc_reasons_final.append("onset_fail")
     elif onset_robustness_flag == "suspect":
         detection_qc_reasons_final.append("onset_suspect")
-    if used_relaxed_onset:
+    if used_relaxed_onset and (
+        drag_anchor_mode != "stage_validated" or not detected_onset_consistency_flag
+    ):
         detection_qc_reasons_final.append("relaxed_onset_used")
     if any(
         reason in detection_qc_reasons_final
