@@ -28,3 +28,17 @@ This means the fix must:
 1. Prefer real trace velocity-profile detection when telemetry exists.
 2. Keep explicit `deceleration_start` event as secondary trace fallback.
 3. Use commanded estimate only as last fallback.
+
+## Root cause in acquisition chain
+
+`run_record_and_motion()` logs only sparse orchestration events into `StageTraceRecorder`.
+Even though `XimcStage.move_constant_velocity()` polls motion status repeatedly, those
+polled samples were not exported back into the trace recorder and therefore never
+written to `*_stage_trace.csv`.
+
+Result on real day05 runs:
+
+- `velocity_samples = 0`
+- `position_samples = 1` (only motion_stop row with final travel)
+
+So downstream DRAG had no dense trace profile to infer deceleration from.
