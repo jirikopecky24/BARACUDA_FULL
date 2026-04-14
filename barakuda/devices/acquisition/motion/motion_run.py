@@ -415,6 +415,17 @@ def run_record_and_motion(
                     t_override=motion_running_confirmed_s,
                     state="moving_confirmed",
                 )
+        for sample in motion_result.motion_profile_samples:
+            sample_t = t_motion_command_issued + float(sample.t_offset_s)
+            if sample_t < t_motion_command_issued:
+                continue
+            trace.log(
+                "motion_profile",
+                t_override=sample_t,
+                position_user=sample.position_user,
+                velocity_user_s=sample.velocity_user_s,
+                state=sample.state or "moving",
+            )
         motion_stop_s = trace.log(
             "motion_stop",
             position_user=motion_result.actual_travel_user,
@@ -716,6 +727,14 @@ def run_record_and_motion(
     }
     if stage_um_per_unit is not None:
         stage_meta["stage_um_per_unit"] = stage_um_per_unit
+
+    profile_rows = [row for row in trace.rows if row.event == "motion_profile"]
+    vel_samples = sum(1 for row in profile_rows if row.velocity_user_s is not None)
+    pos_samples = sum(1 for row in profile_rows if row.position_user is not None)
+    stage_meta["stage_trace_sample_count"] = len(profile_rows)
+    stage_meta["stage_trace_velocity_sample_count"] = vel_samples
+    stage_meta["stage_trace_position_sample_count"] = pos_samples
+    stage_meta["stage_trace_usable_for_windowing"] = bool(vel_samples >= 5 or pos_samples >= 6)
 
     _tr("writing stage JSON")  # #region agent log  #endregion
     try:

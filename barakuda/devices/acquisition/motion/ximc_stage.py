@@ -19,7 +19,7 @@ import threading
 from ctypes import byref
 from typing import Optional
 
-from .stage_base import AbstractStage, MotionResult, StageDeviceInfo
+from .stage_base import AbstractStage, MotionResult, MotionTraceSample, StageDeviceInfo
 
 try:
     # Preferred: PyPI libximc
@@ -365,6 +365,7 @@ class XimcStage(AbstractStage):
         _dbg("command_move", "H-SPEED", {"pos_before": pos_before, "target": target, "signed_travel": signed_travel, "commanded_speed": speed})
         # #endregion
         t_command_issued = time.perf_counter()
+        motion_profile_samples: list[MotionTraceSample] = []
         if _BACKEND == "libximc":
             r = _ll.lib.command_move(self._device_id, target, 0)
             if r != _ll.Result.Ok:
@@ -413,6 +414,16 @@ class XimcStage(AbstractStage):
         # t_start is captured once MVCMD_RUNNING is confirmed set
         t_start = time.perf_counter()
         running_confirmed_delay_s = max(0.0, t_start - t_command_issued)
+        motion_profile_samples.append(
+            MotionTraceSample(
+                t_offset_s=running_confirmed_delay_s,
+                position_user=float(getattr(status, "CurPosition", 0))
+                + (float(getattr(status, "uCurPosition", 0)) / 256.0),
+                velocity_user_s=float(getattr(status, "CurSpeed", 0))
+                + (float(getattr(status, "uCurSpeed", 0)) / 256.0),
+                state="moving_confirmed",
+            )
+        )
 
         # ------------------------------------------------------------------
         # Phase 2: wait for MVCMD_RUNNING to clear (move finished).
@@ -441,6 +452,17 @@ class XimcStage(AbstractStage):
                     "MvCmdSts": int(status.MvCmdSts),
                 })
             _p2_n += 1
+            t_now = time.perf_counter()
+            motion_profile_samples.append(
+                MotionTraceSample(
+                    t_offset_s=max(0.0, t_now - t_command_issued),
+                    position_user=float(getattr(status, "CurPosition", 0))
+                    + (float(getattr(status, "uCurPosition", 0)) / 256.0),
+                    velocity_user_s=float(getattr(status, "CurSpeed", 0))
+                    + (float(getattr(status, "uCurSpeed", 0)) / 256.0),
+                    state="moving",
+                )
+            )
             # #endregion
             if not (status.MvCmdSts & _running_flag):
                 break
@@ -489,6 +511,7 @@ class XimcStage(AbstractStage):
             pre_motion_gpio_flags=pre_motion_gpio_flags,
             pre_motion_mv_cmd_sts=pre_motion_mv_cmd_sts,
             pre_motion_alarm_nonfatal_allowed=pre_motion_alarm_nonfatal_allowed,
+            motion_profile_samples=tuple(motion_profile_samples),
         )
 
     def stop(self) -> None:

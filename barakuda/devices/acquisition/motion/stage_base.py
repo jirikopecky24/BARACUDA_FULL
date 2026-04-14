@@ -22,6 +22,15 @@ class StageDeviceInfo:
 
 
 @dataclass
+class MotionTraceSample:
+    """Single motion-profile sample captured during stage motion."""
+    t_offset_s: float                # seconds since command issuance
+    position_user: Optional[float] = None
+    velocity_user_s: Optional[float] = None
+    state: Optional[str] = None
+
+
+@dataclass
 class MotionResult:
     """Outcome reported after a move command completes."""
     actual_travel_user: float        # in stage user units
@@ -39,6 +48,8 @@ class MotionResult:
     pre_motion_gpio_flags: Optional[int] = None
     pre_motion_mv_cmd_sts: Optional[int] = None
     pre_motion_alarm_nonfatal_allowed: Optional[bool] = None
+    # Optional dense profile samples captured during motion polling.
+    motion_profile_samples: tuple[MotionTraceSample, ...] = ()
 
 
 class AbstractStage(ABC):

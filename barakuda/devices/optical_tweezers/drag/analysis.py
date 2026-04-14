@@ -506,6 +506,21 @@ def analyze_drag_run(
             "PROVENANCE_WARNING: Using fallback stage metadata sidecar "
             f"({loaded.paths.used_fallbacks['stage_meta_path']}); sign/protocol context may differ."
         )
+    trace_velocity_samples = _safe_float(loaded.stage_meta.protocol_params.get("stage_trace_velocity_sample_count"))
+    trace_position_samples = _safe_float(loaded.stage_meta.protocol_params.get("stage_trace_position_sample_count"))
+    trace_sample_count = _safe_float(loaded.stage_meta.protocol_params.get("stage_trace_sample_count"))
+    trace_usable_for_windowing = loaded.stage_meta.protocol_params.get("stage_trace_usable_for_windowing")
+    if trace_usable_for_windowing is False or (
+        trace_velocity_samples is not None
+        and trace_position_samples is not None
+        and trace_velocity_samples <= 0
+        and trace_position_samples <= 1
+    ):
+        warnings.append(
+            "PHYSICS_WARNING: stage trace profile is sparse for windowing "
+            f"(velocity_samples={trace_velocity_samples}, position_samples={trace_position_samples}); "
+            "deceleration detection may fall back to commanded estimate."
+        )
 
     if onset_video_s is None and config.manual_offset_s is None and not use_stage_validated_anchor:
         qc.alignment_confident = False
@@ -1675,6 +1690,18 @@ def analyze_drag_run(
         stage_validated_physics_acceptable=stage_validated_physics_acceptable,
         detected_onset_qc_only=detected_onset_qc_only,
         detected_onset_veto_applied=detected_onset_veto_applied,
+        stage_trace_sample_count=int(trace_sample_count) if trace_sample_count is not None else None,
+        stage_trace_velocity_sample_count=(
+            int(trace_velocity_samples) if trace_velocity_samples is not None else None
+        ),
+        stage_trace_position_sample_count=(
+            int(trace_position_samples) if trace_position_samples is not None else None
+        ),
+        stage_trace_usable_for_windowing=(
+            bool(trace_usable_for_windowing)
+            if isinstance(trace_usable_for_windowing, bool)
+            else None
+        ),
         trajectory_source_kind=_traj_kind,
         trajectory_generated_in_this_workflow=_traj_gen,
     )
