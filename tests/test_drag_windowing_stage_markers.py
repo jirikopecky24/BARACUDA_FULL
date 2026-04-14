@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 from barakuda.devices.optical_tweezers.drag.analysis import analyze_drag_run
+from barakuda.devices.optical_tweezers.drag.export import drag_result_to_dict
 from barakuda.devices.optical_tweezers.drag.schema import DragAnalysisConfig, DragWindowParams
 from barakuda.devices.optical_tweezers.drag.synthetic.harness import (
     SyntheticTiming,
     create_synthetic_constant_velocity_run,
 )
 from barakuda.devices.optical_tweezers.drag.windows import compute_windows
+from barakuda.core.ot_report import build_ot_summary_rows
 
 
 def _rewrite_stage_trace_with_deceleration(path: Path, decel_start_s: float) -> None:
@@ -135,4 +137,104 @@ def test_baseline_clipping_no_longer_hard_fails_when_duration_is_usable(tmp_path
     )
     assert result.window_clipping_applied is True
     assert "window_clipping_severe" not in str(result.final_drag_reason)
+    assert "window_clipping_minor" not in str(result.final_drag_reason)
     assert result.physics_primary_gate in {"pass", "suspect"}
+
+
+def test_stage_validated_relaxed_onset_is_qc_only_when_consistent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timing = SyntheticTiming(fps=100.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "relaxed_qc_only",
+        basename="relaxed_qc_only",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    from barakuda.devices.optical_tweezers.drag import analysis as analysis_mod
+
+    orig = analysis_mod.detect_motion_onset
+    state = {"calls": 0}
+
+    def _mock_onset(*args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            _onset, diag = orig(*args, **kwargs)
+            diag = type(diag)(
+                baseline_end_s=diag.baseline_end_s,
+                baseline_median=diag.baseline_median,
+                baseline_mad=diag.baseline_mad,
+                baseline_sigma=diag.baseline_sigma,
+                onset_threshold_sigma=diag.onset_threshold_sigma,
+                onset_threshold_abs=diag.onset_threshold_abs,
+                onset_min_hold_s=diag.onset_min_hold_s,
+                n_baseline_samples=diag.n_baseline_samples,
+                n_total_samples=diag.n_total_samples,
+                n_frames_outside_baseline=diag.n_frames_outside_baseline,
+                candidate_onset_times_s=diag.candidate_onset_times_s,
+                candidate_durations_s=diag.candidate_durations_s,
+                failure_reason="no_segment_long_enough",
+                message="forced first-pass failure",
+            )
+            return None, diag
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(analysis_mod, "detect_motion_onset", _mock_onset)
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.1, eta_pa_s=0.001, bead_radius_um=1.0),
+        allow_discovered_trajectory=True,
+    )
+    assert result.drag_anchor_mode == "stage_validated"
+    assert result.relaxed_onset_used is True
+    assert result.detection_qc_gate == "pass"
+    assert "relaxed_onset_used" not in (result.final_drag_reason or "")
+
+
+def test_marker_provenance_appears_in_export_and_report_rows(tmp_path: Path) -> None:
+    timing = SyntheticTiming(fps=80.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "marker_export",
+        basename="marker_export",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    stage_json = run_dir / "marker_export_stage.json"
+    payload = json.loads(stage_json.read_text(encoding="utf-8"))
+    payload["speed_user_s_commanded"] = 20.0
+    payload["decel_user_s2_commanded"] = 100.0
+    stage_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.1, eta_pa_s=0.001, bead_radius_um=1.0),
+        allow_discovered_trajectory=True,
+    )
+    summary_dict = drag_result_to_dict(result)
+    assert summary_dict["steady_start_marker_source"] is not None
+    assert summary_dict["steady_end_marker_source"] is not None
+    assert summary_dict["deceleration_start_source"] is not None
+
+    summary_for_report = {
+        "item_id": "marker_export",
+        "status": "ok",
+        "run_id": "marker_export",
+        "source_input_path": str(run_dir / "marker_export.raw"),
+        "metrics": {"mode": "DRAG", "kappa_drag_pn_per_um": 1.0},
+        "diagnostics": {
+            "report_source_kind": "drag_summary",
+            "steady_start_marker_source": summary_dict["steady_start_marker_source"],
+            "steady_end_marker_source": summary_dict["steady_end_marker_source"],
+            "deceleration_start_source": summary_dict["deceleration_start_source"],
+        },
+    }
+    rows = build_ot_summary_rows(summary_for_report)
+    keys = {row[4] for row in rows}
+    assert "steady_start_marker_source" in keys
+    assert "steady_end_marker_source" in keys
+    assert "deceleration_start_source" in keys
