@@ -5,6 +5,8 @@ import math
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+
 from barakuda.core.trajectory_csv_io import read_trajectory_csv
 
 from .alignment import detect_motion_onset, build_alignment_result, DragAlignmentError
@@ -15,6 +17,7 @@ from .schema import (
     DragAnalysisResult,
     DragQCFlags,
     DragRunLoaded,
+    DragStageTraceEvent,
     DragStageTiming,
     DragWindowParams,
     DragWindows,
@@ -184,7 +187,104 @@ def _safe_positive_float(raw: object) -> float | None:
     return val
 
 
+def _safe_float(raw: object) -> float | None:
+    try:
+        val = float(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    if not math.isfinite(val):
+        return None
+    return val
+
+
+def _estimate_deceleration_from_trace_profile(
+    stage_events: Sequence[DragStageTraceEvent],
+    timing: DragStageTiming,
+    steady_state_start_s: float | None,
+) -> float | None:
+    if timing.motion_stop_stage_s is None:
+        return None
+    motion_stop_s = float(timing.motion_stop_stage_s)
+    motion_start_s = (
+        float(steady_state_start_s)
+        if steady_state_start_s is not None
+        else (
+            float(timing.motion_start_stage_s)
+            if timing.motion_start_stage_s is not None
+            else (
+                float(timing.motion_command_issued_s)
+                if timing.motion_command_issued_s is not None
+                else None
+            )
+        )
+    )
+    if motion_start_s is None or motion_stop_s <= motion_start_s:
+        return None
+
+    vel_samples: list[tuple[float, float]] = []
+    pos_samples: list[tuple[float, float]] = []
+    for ev in stage_events:
+        t = float(ev.t_s)
+        if t < motion_start_s or t > motion_stop_s:
+            continue
+        v = _safe_float(ev.extra.get("velocity_user_s"))
+        if v is not None:
+            vel_samples.append((t, abs(v)))
+        p = _safe_float(ev.extra.get("position_user"))
+        if p is not None:
+            pos_samples.append((t, p))
+
+    if len(vel_samples) < 6 and len(pos_samples) >= 6:
+        pos_samples.sort(key=lambda x: x[0])
+        for i in range(1, len(pos_samples)):
+            t0, p0 = pos_samples[i - 1]
+            t1, p1 = pos_samples[i]
+            dt = t1 - t0
+            if dt <= 1e-9:
+                continue
+            v = abs((p1 - p0) / dt)
+            if math.isfinite(v):
+                vel_samples.append((t1, v))
+
+    if len(vel_samples) < 6:
+        return None
+    vel_samples.sort(key=lambda x: x[0])
+    t_arr = [x[0] for x in vel_samples]
+    v_arr = [x[1] for x in vel_samples]
+
+    steady_vals = [
+        v_arr[i]
+        for i in range(len(v_arr))
+        if (motion_start_s + 0.02) <= t_arr[i] <= (motion_stop_s - 0.02)
+    ]
+    if len(steady_vals) < 5:
+        steady_vals = v_arr
+    if len(steady_vals) < 5:
+        return None
+    steady_vals_sorted = sorted(steady_vals)
+    q75_idx = int(0.75 * (len(steady_vals_sorted) - 1))
+    v_ref = max(steady_vals_sorted[q75_idx], 1e-9)
+    drop_threshold = 0.96 * v_ref
+    dt_med = float(np.median(np.diff(np.asarray(t_arr, dtype=np.float64)))) if len(t_arr) > 2 else 0.01
+    if not math.isfinite(dt_med) or dt_med <= 0:
+        dt_med = 0.01
+    hold_s = max(0.04, 4.0 * dt_med)
+    hold_n = max(3, int(round(hold_s / dt_med)))
+    if len(v_arr) < hold_n + 2:
+        return None
+    for i in range(len(t_arr) - hold_n):
+        if t_arr[i] >= motion_stop_s:
+            break
+        window = v_arr[i : i + hold_n]
+        if not window:
+            continue
+        if float(np.median(np.asarray(window, dtype=np.float64))) <= drop_threshold:
+            return float(t_arr[i])
+    return None
+
+
 def _estimate_stage_markers(
+    stage_events: Sequence[DragStageTraceEvent],
     timing: DragStageTiming,
     protocol_params: dict[str, object],
 ) -> tuple[float | None, str, float | None, str]:
@@ -203,18 +303,26 @@ def _estimate_stage_markers(
         steady_state_start_s = float(timing.motion_command_issued_s)
         steady_source = "stage_trace_motion_command_issued"
 
-    decel_start_s = None
-    decel_source = "motion_stop_fallback"
+    decel_start_s = _estimate_deceleration_from_trace_profile(
+        stage_events=stage_events,
+        timing=timing,
+        steady_state_start_s=steady_state_start_s,
+    )
+    decel_source = "stage_trace_velocity_profile"
+    if decel_start_s is not None:
+        return steady_state_start_s, steady_source, decel_start_s, decel_source
     if timing.deceleration_start_stage_s is not None:
         decel_start_s = float(timing.deceleration_start_stage_s)
         decel_source = "stage_trace_deceleration_start"
         return steady_state_start_s, steady_source, decel_start_s, decel_source
 
     if timing.motion_stop_stage_s is None:
+        decel_source = "motion_stop_fallback"
         return steady_state_start_s, steady_source, decel_start_s, decel_source
 
     commanded_speed = _safe_positive_float(protocol_params.get("speed_user_s_commanded"))
     commanded_decel = _safe_positive_float(protocol_params.get("decel_user_s2_commanded"))
+    decel_source = "motion_stop_fallback"
     if commanded_speed is not None and commanded_decel is not None:
         decel_duration_s = commanded_speed / commanded_decel
         if math.isfinite(decel_duration_s) and decel_duration_s > 0:
@@ -602,6 +710,7 @@ def analyze_drag_run(
         stage_deceleration_start_s,
         deceleration_start_source,
     ) = _estimate_stage_markers(
+        loaded.stage_events,
         loaded.stage_timing,
         loaded.stage_meta.protocol_params,
     )
