@@ -32,6 +32,62 @@ def _rewrite_stage_trace_with_deceleration(path: Path, decel_start_s: float) -> 
         w.writerows(out)
 
 
+def _rewrite_stage_trace_with_velocity_profile(
+    path: Path,
+    *,
+    motion_start_s: float,
+    running_s: float,
+    decel_start_s: float,
+    motion_stop_s: float,
+) -> None:
+    rows: list[dict[str, str]] = []
+    rows.append({"t_s": "0.0", "event": "script_start", "position_user": "", "velocity_user_s": "", "state": ""})
+    rows.append({"t_s": f"{motion_start_s:.6f}", "event": "motion_start", "position_user": "", "velocity_user_s": "", "state": "moving"})
+    rows.append(
+        {
+            "t_s": f"{running_s:.6f}",
+            "event": "motion_running_confirmed",
+            "position_user": "",
+            "velocity_user_s": "",
+            "state": "moving_confirmed",
+        }
+    )
+    # synthetic profile points (steady then decel)
+    t = running_s + 0.05
+    pos = 0.0
+    dt = 0.02
+    while t < motion_stop_s - 0.01:
+        if t < decel_start_s:
+            vel = 20.0
+        else:
+            frac = min(1.0, (t - decel_start_s) / max(0.05, motion_stop_s - decel_start_s))
+            vel = max(0.0, 20.0 * (1.0 - frac))
+        pos += vel * dt
+        rows.append(
+            {
+                "t_s": f"{t:.6f}",
+                "event": "motion_profile",
+                "position_user": f"{pos:.6f}",
+                "velocity_user_s": f"{vel:.6f}",
+                "state": "moving",
+            }
+        )
+        t += dt
+    rows.append(
+        {
+            "t_s": f"{motion_stop_s:.6f}",
+            "event": "motion_stop",
+            "position_user": f"{pos:.6f}",
+            "velocity_user_s": "0.0",
+            "state": "idle",
+        }
+    )
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["t_s", "event", "position_user", "velocity_user_s", "state"])
+        w.writeheader()
+        w.writerows(rows)
+
+
 def test_compute_windows_uses_deceleration_marker_for_steady_end() -> None:
     params = DragWindowParams(
         baseline_duration_s=3.0,
@@ -83,6 +139,47 @@ def test_analysis_estimates_deceleration_start_from_stage_profile(tmp_path: Path
     assert result.deceleration_start_video_s is not None
     assert result.expected_stage_stop_video_s is not None
     assert (result.expected_stage_stop_video_s - result.deceleration_start_video_s) == pytest.approx(0.2, abs=0.05)
+    assert result.steady_end_marker_source == "deceleration_start_minus_guard"
+
+
+def test_analysis_prefers_trace_velocity_profile_over_commanded_estimate(tmp_path: Path) -> None:
+    timing = SyntheticTiming(fps=80.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "trace_profile_decel",
+        basename="trace_profile_decel",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    trace = run_dir / "trace_profile_decel_stage_trace.csv"
+    _rewrite_stage_trace_with_velocity_profile(
+        trace,
+        motion_start_s=timing.motion_start_s,
+        running_s=timing.motion_start_s + 0.06,
+        decel_start_s=timing.motion_start_s + 6.4,
+        motion_stop_s=timing.motion_start_s + timing.motion_duration_s,
+    )
+    stage_json = run_dir / "trace_profile_decel_stage.json"
+    payload = json.loads(stage_json.read_text(encoding="utf-8"))
+    payload["speed_user_s_commanded"] = 20.0
+    payload["decel_user_s2_commanded"] = 100.0
+    stage_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(
+            analysis_axis="x",
+            um_per_px=0.1,
+            eta_pa_s=0.001,
+            bead_radius_um=1.0,
+            window_params=DragWindowParams(steady_end_guard_s=0.1),
+        ),
+        allow_discovered_trajectory=True,
+    )
+    assert result.deceleration_start_source == "stage_trace_velocity_profile"
+    assert result.deceleration_start_stage_s is not None
+    assert result.deceleration_start_stage_s == pytest.approx(timing.motion_start_s + 6.4, abs=0.15)
     assert result.steady_end_marker_source == "deceleration_start_minus_guard"
 
 
