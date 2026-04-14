@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -17,7 +18,11 @@ from barakuda.devices.acquisition.motion.motion_run import (
     run_record_and_motion,
 )
 from barakuda.devices.acquisition.motion.recipes import ConstantVelocityDragRecipe
-from barakuda.devices.acquisition.motion.stage_base import AbstractStage, MotionResult
+from barakuda.devices.acquisition.motion.stage_base import (
+    AbstractStage,
+    MotionResult,
+    MotionTraceSample,
+)
 
 
 class _FakeCamera:
@@ -119,6 +124,35 @@ class _FakeStageWithDiag(_FakeStage):
             pre_motion_gpio_flags=16,
             pre_motion_mv_cmd_sts=1,
             pre_motion_alarm_nonfatal_allowed=True,
+        )
+
+
+class _FakeStageWithProfile(_FakeStage):
+    def move_constant_velocity(
+        self,
+        direction: int,
+        travel: float,
+        speed: float,
+        accel: float,
+        decel: float,
+        stop_event=None,
+    ) -> MotionResult:
+        base = super().move_constant_velocity(direction, travel, speed, accel, decel, stop_event)
+        samples = (
+            MotionTraceSample(t_offset_s=0.01, position_user=0.0, velocity_user_s=20.0, state="moving"),
+            MotionTraceSample(t_offset_s=0.03, position_user=0.6, velocity_user_s=20.0, state="moving"),
+            MotionTraceSample(t_offset_s=0.05, position_user=1.2, velocity_user_s=20.0, state="moving"),
+            MotionTraceSample(t_offset_s=0.07, position_user=1.7, velocity_user_s=18.0, state="moving"),
+            MotionTraceSample(t_offset_s=0.09, position_user=2.0, velocity_user_s=12.0, state="moving"),
+            MotionTraceSample(t_offset_s=0.11, position_user=2.2, velocity_user_s=8.0, state="moving"),
+        )
+        return MotionResult(
+            actual_travel_user=base.actual_travel_user,
+            actual_duration_s=base.actual_duration_s,
+            actual_speed_user_s=base.actual_speed_user_s,
+            controller=base.controller,
+            stage_um_per_unit=base.stage_um_per_unit,
+            motion_profile_samples=samples,
         )
 
 
@@ -543,3 +577,48 @@ def test_finalization_breadcrumbs_are_emitted_in_order(tmp_path: Path):
     positions = [merged.find(token) for token in order]
     assert all(pos >= 0 for pos in positions)
     assert positions == sorted(positions)
+
+
+def test_stage_trace_writes_motion_profile_samples_and_trace_audit_counts(tmp_path: Path):
+    output_dir = tmp_path / "run_profile"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    camera = _FakeCamera(output_dir, "profile")
+    stage = _FakeStageWithProfile(stage_um_per_unit=1.0)
+    recipe = ConstantVelocityDragRecipe(
+        axis="x",
+        direction=1,
+        travel=1000.0,
+        speed=5000.0,
+        accel=5000.0,
+        decel=5000.0,
+        pre_delay_s=0.0,
+        post_delay_s=0.0,
+    )
+    result = run_record_and_motion(
+        camera=camera,
+        stage=stage,
+        recipe=recipe,
+        output_dir=str(output_dir),
+        basename="profile",
+        duration_s=0.0,
+        roi=(0, 0, 100, 100),
+        exposure_us=1000.0,
+        gain=None,
+        fps_hint=100.0,
+        pixel_format="Mono8",
+        metric_command=MetricMotionCommand(axis="x", direction=1, travel_um=1000.0),
+        metric_mapping_profile=None,
+    )
+    trace_rows = list(csv.DictReader(Path(result.stage_trace_path).open("r", encoding="utf-8", newline="")))
+    profile_rows = [row for row in trace_rows if row.get("event") == "motion_profile"]
+    assert len(profile_rows) >= 5
+    vel_count = sum(1 for row in profile_rows if str(row.get("velocity_user_s", "")).strip())
+    pos_count = sum(1 for row in profile_rows if str(row.get("position_user", "")).strip())
+    assert vel_count >= 5
+    assert pos_count >= 5
+
+    stage_meta = json.loads(Path(result.stage_json_path).read_text(encoding="utf-8"))
+    assert stage_meta["stage_trace_sample_count"] >= 5
+    assert stage_meta["stage_trace_velocity_sample_count"] >= 5
+    assert stage_meta["stage_trace_position_sample_count"] >= 5
+    assert stage_meta["stage_trace_usable_for_windowing"] is True
