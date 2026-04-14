@@ -815,6 +815,12 @@ def test_main_window_uses_inherit_for_new_item() -> None:
     assert "pms is None" in mw_src
 
 
+def test_main_window_persists_mode_switch_to_item_params() -> None:
+    """Method combo switch must trigger per-item OT param persistence."""
+    mw_src = Path("C:/Work/BARAKUDA_FULL/barakuda/shell/main_window.py").read_text(encoding="utf-8")
+    assert "self._on_ot_panel_value_changed()" in mw_src
+
+
 def test_preflight_passes_brownian_items_unconditionally(tmp_path: Path) -> None:
     brown_raw = tmp_path / "Gly20_brown.raw"
     brown_raw.write_text("x")
