@@ -8,6 +8,7 @@ from pathlib import Path
 
 from barakuda.core.export_xlsx import export_ot_results_xlsx
 from barakuda.core.ot_report import build_ot_item_summary, export_ot_item_pdf
+from barakuda.core.run_protocol import load_protocol, merge_protocol, save_protocol
 from barakuda.devices.optical_tweezers.drag.export import (
     export_drag_summary_csv,
     export_drag_summary_json,
@@ -45,6 +46,71 @@ def _build_config(run_payload: dict, old_summary: dict, rule: dict) -> DragAnaly
         steady_window_override_end_rel_s=rule["end"],
         steady_window_override_source=OVERRIDE_SOURCE,
     )
+
+
+def _sync_protocol_and_preview(
+    *,
+    analysis_dir: Path,
+    base: str,
+    pdf_path: Path,
+    summary_json_path: Path,
+    summary_csv_path: Path,
+    xlsx_path: Path,
+    diagnostic_png_path: str | None,
+    alignment_json_path: str | None,
+    windows_csv_path: Path,
+    trace_annotated_csv_path: Path,
+    trajectory_path: Path,
+    source_input_path: str,
+) -> dict:
+    protocol_path = analysis_dir / "run_protocol.json"
+    existing = load_protocol(protocol_path)
+    updates = {
+        "analysis": {
+            "report_source_kind": "drag_summary",
+            "report_source_path": str(summary_json_path),
+            "summary_references": {
+                "trajectory": str(trajectory_path),
+                "summary_json": str(summary_json_path),
+                "summary_csv": str(summary_csv_path),
+                "windows_csv": str(windows_csv_path),
+                "trace_annotated_csv": str(trace_annotated_csv_path),
+                "diagnostic_png": diagnostic_png_path,
+                "alignment_diagnostics_json": alignment_json_path,
+                "current_drag_report_path": str(pdf_path),
+            },
+        },
+        "provenance": {
+            "report_source_kind": "drag_summary",
+            "report_source_path": str(summary_json_path),
+            "current_drag_output_root": str(analysis_dir),
+            "current_drag_report_path": str(pdf_path),
+            "current_drag_summary_json_path": str(summary_json_path),
+            "current_drag_summary_csv_path": str(summary_csv_path),
+            "current_drag_diagnostic_png_path": diagnostic_png_path,
+            "current_drag_alignment_json_path": alignment_json_path,
+        },
+    }
+    merged = merge_protocol(existing, updates, allow_manual_overwrite=True)
+    saved_protocol = save_protocol(merged, protocol_path)
+    audit_protocol = analysis_dir / "audit" / "run_protocol.json"
+    audit_protocol.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(saved_protocol, audit_protocol)
+
+    item_summary = build_ot_item_summary(
+        run_dir=analysis_dir,
+        base_name=base,
+        item_id=base,
+        source_input_path=source_input_path,
+        status="success",
+    )
+    item_summary.setdefault("artifacts", {})["xlsx"] = str(xlsx_path)
+    item_summary.setdefault("artifacts", {})["current_drag_report_path"] = str(pdf_path)
+    (analysis_dir / "audit" / "preview_report.json").write_text(
+        json.dumps(item_summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return item_summary
 
 
 def main() -> int:
@@ -96,21 +162,21 @@ def main() -> int:
         acq_run_dir = ACQ_ROOT / base
         if not acq_run_dir.exists():
             continue
-        result, _outputs = finalize_drag_run_from_trajectory(
+        result, outputs = finalize_drag_run_from_trajectory(
             run_dir=acq_run_dir,
             trajectory_path=traj_path,
             drag_config=cfg,
             output_root=analysis_dir,
         )
-        item_summary = build_ot_item_summary(
+        pdf_path = results_dir / f"{report_date}-OT-{base}-report.pdf"
+        item_summary_for_pdf = build_ot_item_summary(
             run_dir=analysis_dir,
             base_name=base,
             item_id=base,
             source_input_path=str(acq_run_dir / f"{base}.raw"),
             status="success",
         )
-        pdf_path = results_dir / f"{report_date}-OT-{base}-report.pdf"
-        export_ot_item_pdf(pdf_path, item_summary)
+        export_ot_item_pdf(pdf_path, item_summary_for_pdf)
         xlsx_path = export_ot_results_xlsx(
             output_dir=results_dir,
             base_name=base,
@@ -119,9 +185,19 @@ def main() -> int:
         result = replace(result, current_drag_report_path=str(pdf_path))
         summary_json = export_drag_summary_json(result, audit_dir)
         summary_csv = export_drag_summary_csv(result, csv_dir)
-        (audit_dir / "preview_report.json").write_text(
-            json.dumps(item_summary, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        item_summary = _sync_protocol_and_preview(
+            analysis_dir=analysis_dir,
+            base=base,
+            pdf_path=pdf_path,
+            summary_json_path=summary_json,
+            summary_csv_path=summary_csv,
+            xlsx_path=xlsx_path,
+            diagnostic_png_path=result.current_drag_diagnostic_png_path,
+            alignment_json_path=result.current_drag_alignment_json_path,
+            windows_csv_path=Path(outputs["windows_csv"]),
+            trace_annotated_csv_path=Path(outputs["trace_annotated_csv"]),
+            trajectory_path=Path(outputs["trajectory"]),
+            source_input_path=str(acq_run_dir / f"{base}.raw"),
         )
         new_summary = json.loads(summary_json.read_text(encoding="utf-8"))
         processed.append(
