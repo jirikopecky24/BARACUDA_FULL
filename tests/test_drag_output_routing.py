@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from barakuda.core.ot_report import build_ot_item_summary
+from barakuda.core.ot_report import build_ot_item_summary, export_ot_item_pdf
 from barakuda.devices.optical_tweezers.drag.pipeline import run_drag_from_raw
 from barakuda.devices.optical_tweezers.drag.schema import (
     AlignmentDiagnostics,
@@ -221,6 +221,40 @@ def test_report_assembly_reads_standalone_drag_summary(tmp_path: Path, monkeypat
     assert diagnostics.get("report_source_kind") == "drag_summary"
     assert diagnostics.get("drag_force_n") is not None
     assert diagnostics.get("report_source_path") is not None
+
+
+def test_drag_finalize_populates_protocol_analysis_and_pdf_inputs(tmp_path: Path, monkeypatch) -> None:
+    in_run = tmp_path / "DragProtocolAndPdf"
+    basename = "DragProtocolAndPdf"
+    _prepare_input_run(in_run, basename)
+    _patch_pipeline(monkeypatch, basename)
+    output_root = in_run / "analysis"
+
+    cfg = DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=1e-6)
+    _, outputs = run_drag_from_raw(in_run, cfg, output_root=output_root)
+
+    protocol = json.loads((output_root / "run_protocol.json").read_text(encoding="utf-8"))
+    analysis = protocol.get("analysis") or {}
+    assert analysis
+    assert analysis.get("analysis_type") == "drag"
+    summary_refs = analysis.get("summary_references") or {}
+    assert summary_refs.get("summary_json") == str(outputs["summary_json"])
+    assert summary_refs.get("summary_csv") == str(outputs["summary_csv"])
+    assert summary_refs.get("trace_annotated_csv") == str(outputs["trace_annotated_csv"])
+
+    summary = build_ot_item_summary(
+        run_dir=output_root,
+        base_name=basename,
+        item_id="it",
+        source_input_path=str(in_run / f"{basename}.raw"),
+        status="success",
+    )
+    assert summary["diagnostics"].get("drag_force_n") is not None
+
+    pdf_path = output_root / "results" / "drag-protocol-and-pdf-report.pdf"
+    export_ot_item_pdf(pdf_path, summary)
+    assert pdf_path.is_file()
+    assert pdf_path.stat().st_size > 0
 
 
 def test_provenance_paths_are_written_to_run_protocol(tmp_path: Path, monkeypatch) -> None:

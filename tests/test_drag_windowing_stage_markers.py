@@ -88,6 +88,65 @@ def _rewrite_stage_trace_with_velocity_profile(
         w.writerows(rows)
 
 
+def _rewrite_stage_trace_with_accel_plateau_decel_profile(
+    path: Path,
+    *,
+    motion_start_s: float,
+    running_s: float,
+    motion_stop_s: float,
+) -> None:
+    rows: list[dict[str, str]] = []
+    rows.append({"t_s": "0.0", "event": "script_start", "position_user": "", "velocity_user_s": "", "state": ""})
+    rows.append({"t_s": f"{motion_start_s:.6f}", "event": "motion_start", "position_user": "", "velocity_user_s": "", "state": "moving"})
+    rows.append(
+        {
+            "t_s": f"{running_s:.6f}",
+            "event": "motion_running_confirmed",
+            "position_user": "",
+            "velocity_user_s": "",
+            "state": "moving_confirmed",
+        }
+    )
+    dt = 0.02
+    t = running_s + dt
+    pos = 0.0
+    accel_end = running_s + 0.8
+    decel_start = motion_stop_s - 1.0
+    while t < motion_stop_s - 0.01:
+        if t < accel_end:
+            frac = max(0.0, min(1.0, (t - running_s) / max(1e-6, accel_end - running_s)))
+            vel = 20.0 * frac
+        elif t < decel_start:
+            vel = 20.0
+        else:
+            frac = max(0.0, min(1.0, (t - decel_start) / max(1e-6, motion_stop_s - decel_start)))
+            vel = 20.0 * (1.0 - frac)
+        pos += vel * dt
+        rows.append(
+            {
+                "t_s": f"{t:.6f}",
+                "event": "motion_profile",
+                "position_user": f"{pos:.6f}",
+                "velocity_user_s": f"{vel:.6f}",
+                "state": "moving",
+            }
+        )
+        t += dt
+    rows.append(
+        {
+            "t_s": f"{motion_stop_s:.6f}",
+            "event": "motion_stop",
+            "position_user": f"{pos:.6f}",
+            "velocity_user_s": "0.0",
+            "state": "idle",
+        }
+    )
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["t_s", "event", "position_user", "velocity_user_s", "state"])
+        w.writeheader()
+        w.writerows(rows)
+
+
 def test_compute_windows_uses_deceleration_marker_for_steady_end() -> None:
     params = DragWindowParams(
         baseline_duration_s=3.0,
@@ -181,6 +240,42 @@ def test_analysis_prefers_trace_velocity_profile_over_commanded_estimate(tmp_pat
     assert result.deceleration_start_stage_s is not None
     assert result.deceleration_start_stage_s == pytest.approx(timing.motion_start_s + 6.4, abs=0.15)
     assert result.steady_end_marker_source == "deceleration_start_minus_guard"
+
+
+def test_analysis_ignores_acceleration_as_false_deceleration(tmp_path: Path) -> None:
+    timing = SyntheticTiming(fps=80.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "accel_plateau_decel",
+        basename="accel_plateau_decel",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    trace = run_dir / "accel_plateau_decel_stage_trace.csv"
+    _rewrite_stage_trace_with_accel_plateau_decel_profile(
+        trace,
+        motion_start_s=timing.motion_start_s,
+        running_s=timing.motion_start_s + 0.06,
+        motion_stop_s=timing.motion_start_s + timing.motion_duration_s,
+    )
+
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(
+            analysis_axis="x",
+            um_per_px=0.1,
+            eta_pa_s=0.001,
+            bead_radius_um=1.0,
+            window_params=DragWindowParams(steady_end_guard_s=0.1),
+        ),
+        allow_discovered_trajectory=True,
+    )
+    assert result.deceleration_start_source == "stage_trace_velocity_profile"
+    assert result.deceleration_start_stage_s is not None
+    assert result.deceleration_start_stage_s > (timing.motion_start_s + 6.0)
+    assert result.windows.steady_end_s > result.windows.steady_start_s
 
 
 def test_analysis_falls_back_to_motion_stop_when_deceleration_unknown(tmp_path: Path) -> None:
