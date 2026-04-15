@@ -1942,7 +1942,9 @@ class BatchController:
                                     f"{run_dir_drag / f'{stem}_alignment_debug.png'}"
                                 )
                         except Exception as e:
+                            import traceback
                             self._log(f"WARN: DRAG calibration failed ({file_path.name}): {e!r}")
+                            self._log(traceback.format_exc())
                     else:
                         try:
                             post_started = time.perf_counter()
