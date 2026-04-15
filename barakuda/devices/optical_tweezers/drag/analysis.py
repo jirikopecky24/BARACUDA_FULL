@@ -272,13 +272,23 @@ def _estimate_deceleration_from_trace_profile(
     hold_n = max(3, int(round(hold_s / dt_med)))
     if len(v_arr) < hold_n + 2:
         return None
+    # Guard against false "deceleration" picks during the early acceleration ramp.
+    # We only accept a velocity drop after a stable high-speed plateau is observed.
+    plateau_threshold = 0.98 * v_ref
+    seen_plateau = False
     for i in range(len(t_arr) - hold_n):
         if t_arr[i] >= motion_stop_s:
             break
         window = v_arr[i : i + hold_n]
         if not window:
             continue
-        if float(np.median(np.asarray(window, dtype=np.float64))) <= drop_threshold:
+        window_med = float(np.median(np.asarray(window, dtype=np.float64)))
+        if window_med >= plateau_threshold:
+            seen_plateau = True
+            continue
+        if not seen_plateau:
+            continue
+        if window_med <= drop_threshold:
             return float(t_arr[i])
     return None
 
