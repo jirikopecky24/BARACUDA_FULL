@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -201,6 +202,7 @@ def _estimate_deceleration_from_trace_profile(
     stage_events: Sequence[DragStageTraceEvent],
     timing: DragStageTiming,
     steady_state_start_s: float | None,
+    protocol_params: dict[str, object] | None = None,
 ) -> float | None:
     if timing.motion_stop_stage_s is None:
         return None
@@ -219,6 +221,9 @@ def _estimate_deceleration_from_trace_profile(
         )
     )
     if motion_start_s is None or motion_stop_s <= motion_start_s:
+        return None
+    motion_duration_s = float(motion_stop_s - motion_start_s)
+    if motion_duration_s <= 0:
         return None
 
     vel_samples: list[tuple[float, float]] = []
@@ -272,6 +277,34 @@ def _estimate_deceleration_from_trace_profile(
     hold_n = max(3, int(round(hold_s / dt_med)))
     if len(v_arr) < hold_n + 2:
         return None
+    commanded_speed = _safe_positive_float((protocol_params or {}).get("speed_user_s_commanded"))
+    commanded_decel = _safe_positive_float((protocol_params or {}).get("decel_user_s2_commanded"))
+    commanded_decel_duration_s = (
+        float(commanded_speed / commanded_decel)
+        if (commanded_speed is not None and commanded_decel is not None and commanded_decel > 0)
+        else None
+    )
+    # Physical guardrail:
+    # deceleration must be in the terminal motion portion, not near motion start.
+    # For legacy register paths, commanded decel can be unrealistically short, so keep
+    # a minimum terminal tail while still allowing slower ramps.
+    min_terminal_tail_s = max(
+        0.50,
+        min(
+            2.0,
+            0.20 * motion_duration_s,
+        ),
+    )
+    if commanded_decel_duration_s is not None and math.isfinite(commanded_decel_duration_s):
+        min_terminal_tail_s = max(
+            min_terminal_tail_s,
+            min(3.0, 4.0 * float(commanded_decel_duration_s)),
+        )
+    earliest_allowed_decel_s = motion_stop_s - min_terminal_tail_s
+    earliest_allowed_decel_s = max(
+        earliest_allowed_decel_s,
+        motion_start_s + min(0.35 * motion_duration_s, 2.0),
+    )
     # Guard against false "deceleration" picks during the early acceleration ramp.
     # We only accept a velocity drop after a stable high-speed plateau is observed.
     plateau_threshold = 0.98 * v_ref
@@ -289,7 +322,10 @@ def _estimate_deceleration_from_trace_profile(
         if not seen_plateau:
             continue
         if window_med <= drop_threshold:
-            return float(t_arr[i])
+            candidate_t = float(t_arr[i])
+            if candidate_t < earliest_allowed_decel_s:
+                continue
+            return candidate_t
     return None
 
 
@@ -317,6 +353,7 @@ def _estimate_stage_markers(
         stage_events=stage_events,
         timing=timing,
         steady_state_start_s=steady_state_start_s,
+        protocol_params=protocol_params,
     )
     decel_source = "stage_trace_velocity_profile"
     if decel_start_s is not None:
@@ -762,31 +799,168 @@ def analyze_drag_run(
         deceleration_start_source = "motion_stop_fallback"
 
     # 4) Windows
-    try:
-        primary_motion_start_video_s = (
-            float(expected_stage_start_video_s)
-            if use_stage_validated_anchor and math.isfinite(expected_stage_start_video_s)
-            else alignment.motion_start_video_s_detected
-        )
-        primary_motion_stop_video_s = (
-            float(expected_stage_stop_video_s)
-            if use_stage_validated_anchor and expected_stage_stop_video_s is not None
-            else alignment.motion_stop_video_s_stage_aligned
-        )
-        windows_original = compute_windows(
-            motion_start_video_s=primary_motion_start_video_s,
-            motion_stop_video_s_stage_aligned=primary_motion_stop_video_s,
-            params=config.window_params,
-            steady_state_start_video_s=steady_state_start_video_s,
-            deceleration_start_video_s=deceleration_start_video_s,
-        )
+    primary_motion_start_video_s = (
+        float(expected_stage_start_video_s)
+        if use_stage_validated_anchor and math.isfinite(expected_stage_start_video_s)
+        else alignment.motion_start_video_s_detected
+    )
+    primary_motion_stop_video_s = (
+        float(expected_stage_stop_video_s)
+        if use_stage_validated_anchor and expected_stage_stop_video_s is not None
+        else alignment.motion_stop_video_s_stage_aligned
+    )
+
+    auto_window_guard_attempts: list[float] = []
+    auto_window_guard_used_s: float | None = None
+    auto_window_recovered = False
+    auto_window_recovery_reason: str | None = None
+
+    def _is_valid_window_candidate(candidate: DragWindows) -> tuple[bool, str | None]:
+        baseline_len = float(candidate.baseline_end_s) - float(candidate.baseline_start_s)
+        steady_len = float(candidate.steady_end_s) - float(candidate.steady_start_s)
+        if baseline_len <= 0:
+            return False, "baseline_non_positive_length"
+        if steady_len <= 0:
+            return False, "steady_non_positive_length"
+        # Keep a small but non-trivial steady segment for robust median estimation.
+        if steady_len < max(0.25, min(1.0, float(config.window_params.min_steady_duration_s) * 0.1)):
+            return False, "steady_window_too_short_for_safe_auto"
+        if candidate.steady_start_s <= candidate.baseline_end_s:
+            return False, "steady_window_overlaps_baseline"
+        return True, None
+
+    guard_chain = [1.0, 0.75, 0.5, 0.25]
+    auto_window_error_messages: list[str] = []
+    windows_original: DragWindows | None = None
+    if deceleration_start_video_s is not None:
+        for guard_s in guard_chain:
+            auto_window_guard_attempts.append(float(guard_s))
+            try:
+                window_params_try = replace(config.window_params, steady_end_guard_s=float(guard_s))
+                candidate = compute_windows(
+                    motion_start_video_s=primary_motion_start_video_s,
+                    motion_stop_video_s_stage_aligned=primary_motion_stop_video_s,
+                    params=window_params_try,
+                    steady_state_start_video_s=steady_state_start_video_s,
+                    deceleration_start_video_s=deceleration_start_video_s,
+                )
+                is_valid, invalid_reason = _is_valid_window_candidate(candidate)
+                if is_valid:
+                    windows_original = candidate
+                    auto_window_guard_used_s = float(guard_s)
+                    break
+                auto_window_error_messages.append(
+                    f"guard={guard_s:.2f}s invalid:{invalid_reason}"
+                )
+            except DragWindowError as e:
+                auto_window_error_messages.append(f"guard={guard_s:.2f}s error:{e}")
+    if windows_original is None:
+        try:
+            windows_original = compute_windows(
+                motion_start_video_s=primary_motion_start_video_s,
+                motion_stop_video_s_stage_aligned=primary_motion_stop_video_s,
+                params=config.window_params,
+                steady_state_start_video_s=steady_state_start_video_s,
+                deceleration_start_video_s=deceleration_start_video_s,
+            )
+            is_valid, invalid_reason = _is_valid_window_candidate(windows_original)
+            if not is_valid:
+                raise DragWindowError(
+                    f"Default auto window invalid for safe use: {invalid_reason}"
+                )
+        except DragWindowError as e:
+            auto_window_error_messages.append(f"default error:{e}")
+
+    if windows_original is not None:
         qc.baseline_window_ok = True
         qc.steady_window_ok = True
-    except DragWindowError as e:
-        qc.baseline_window_ok = False
-        qc.steady_window_ok = False
-        warnings.append(str(e))
-        raise
+    else:
+        override_start_rel = (
+            float(config.steady_window_override_start_rel_s)
+            if config.steady_window_override_start_rel_s is not None
+            else None
+        )
+        override_end_rel = (
+            float(config.steady_window_override_end_rel_s)
+            if config.steady_window_override_end_rel_s is not None
+            else None
+        )
+        can_manual_recover = (
+            math.isfinite(t_first_s)
+            and override_start_rel is not None
+            and override_end_rel is not None
+        )
+        if can_manual_recover:
+            baseline_start = primary_motion_start_video_s - float(config.window_params.baseline_duration_s)
+            baseline_end = primary_motion_start_video_s - float(config.window_params.baseline_guard_s)
+            steady_start = float(t_first_s) + override_start_rel
+            steady_end = float(t_first_s) + override_end_rel
+            candidate = DragWindows(
+                baseline_start_s=baseline_start,
+                baseline_end_s=baseline_end,
+                steady_start_s=steady_start,
+                steady_end_s=steady_end,
+            )
+            is_valid, invalid_reason = _is_valid_window_candidate(candidate)
+            if not is_valid:
+                qc.baseline_window_ok = False
+                qc.steady_window_ok = False
+                warnings.extend([f"AUTO_WINDOW_DEBUG: {m}" for m in auto_window_error_messages])
+                warnings.append(
+                    f"Manual steady window override invalid after auto failure: {invalid_reason}."
+                )
+                raise DragWindowError("Steady window has non-positive length.")
+            windows_original = candidate
+            warnings.append(
+                "Auto windowing failed; recovered with manual steady window override."
+            )
+            qc.baseline_window_ok = True
+            qc.steady_window_ok = True
+        else:
+            # Last-resort recovered window: keep pipeline auditable and complete,
+            # but force suspect semantics via explicit provenance and QC flags.
+            baseline_start = primary_motion_start_video_s - float(config.window_params.baseline_duration_s)
+            baseline_end = primary_motion_start_video_s - float(config.window_params.baseline_guard_s)
+            steady_anchor = (
+                float(steady_state_start_video_s)
+                if steady_state_start_video_s is not None
+                else float(primary_motion_start_video_s)
+            )
+            steady_start = float(steady_anchor) + float(config.window_params.steady_start_delay_s)
+            safe_end_anchor = None
+            if deceleration_start_video_s is not None:
+                safe_end_anchor = float(deceleration_start_video_s)
+            elif primary_motion_stop_video_s is not None:
+                safe_end_anchor = float(primary_motion_stop_video_s)
+            elif math.isfinite(t_last_s):
+                safe_end_anchor = float(t_last_s)
+            if safe_end_anchor is None:
+                safe_end_anchor = steady_start + 0.30
+            steady_end = safe_end_anchor - 0.05
+            if math.isfinite(t_last_s):
+                steady_end = min(steady_end, float(t_last_s) - 0.01)
+            if steady_end <= steady_start:
+                steady_end = steady_start + 0.30
+            windows_original = DragWindows(
+                baseline_start_s=baseline_start,
+                baseline_end_s=baseline_end,
+                steady_start_s=steady_start,
+                steady_end_s=steady_end,
+            )
+            auto_window_recovered = True
+            auto_window_recovery_reason = (
+                "safe auto steady window could not be formed after guard-chain attempts"
+            )
+            qc.baseline_window_ok = True
+            qc.steady_window_ok = False
+            qc.sufficient_steady_duration = False
+            warnings.extend([f"AUTO_WINDOW_DEBUG: {m}" for m in auto_window_error_messages])
+            warnings.append(
+                "PHYSICS_WARNING: auto-windowing failed for all safe guards "
+                "(1.00s, 0.75s, 0.50s, 0.25s); recovered with constrained steady window. "
+                "Treat result as suspect."
+            )
+            stage_anchor_breaking_reasons.append("safe_auto_steady_window_unavailable")
 
     baseline_window_original_start_s = windows_original.baseline_start_s
     baseline_window_original_end_s = windows_original.baseline_end_s
@@ -905,6 +1079,9 @@ def analyze_drag_run(
             f"(source={steady_window_override_source}, start_rel_s={steady_window_override_start_rel_s}, "
             f"end_rel_s={steady_window_override_end_rel_s})."
         )
+    if auto_window_recovered:
+        steady_window_mode = "recovered_auto_suspect"
+        steady_window_override_source = "auto_guard_chain_exhausted"
 
     window_clipping_message = ", ".join(window_clip_reasons) if window_clip_reasons else None
     if window_clipping_applied:
@@ -1411,11 +1588,18 @@ def analyze_drag_run(
                 offset_underestimation_ratio_vs_baseline = measured_offset_um / expected_offset_if_eta_from_baseline_um
 
     plausibility_flag = "unknown"
-    if offset_underestimation_ratio_vs_water is not None:
-        ratio = float(offset_underestimation_ratio_vs_water)
-        if 0.4 <= ratio <= 2.5:
+    plausibility_ratio = None
+    # Use baseline-referenced plausibility whenever available: it compares measured
+    # offset against the offset predicted from the paired Brown calibration.
+    # Water-referenced ratio remains a fallback diagnostic only.
+    if offset_underestimation_ratio_vs_baseline is not None:
+        plausibility_ratio = float(offset_underestimation_ratio_vs_baseline)
+    elif offset_underestimation_ratio_vs_water is not None:
+        plausibility_ratio = float(offset_underestimation_ratio_vs_water)
+    if plausibility_ratio is not None:
+        if 0.4 <= plausibility_ratio <= 2.5:
             plausibility_flag = "pass"
-        elif 0.25 <= ratio <= 4.0:
+        elif 0.25 <= plausibility_ratio <= 4.0:
             plausibility_flag = "suspect"
         else:
             plausibility_flag = "fail"
@@ -1481,6 +1665,9 @@ def analyze_drag_run(
         physics_primary_gate = "suspect"
     else:
         physics_primary_gate = "pass"
+    if auto_window_recovered and physics_primary_gate == "pass":
+        physics_primary_gate = "suspect"
+        physics_primary_reasons.append("auto_window_recovered_suspect")
 
     detection_qc_reasons_final: list[str] = []
     if not detected_onset_consistency_flag:
@@ -1768,6 +1955,10 @@ def analyze_drag_run(
         steady_window_override_source=steady_window_override_source,
         steady_window_override_start_rel_s=steady_window_override_start_rel_s,
         steady_window_override_end_rel_s=steady_window_override_end_rel_s,
+        auto_window_recovered=auto_window_recovered,
+        auto_window_guard_chain=list(auto_window_guard_attempts),
+        auto_window_guard_used_s=auto_window_guard_used_s,
+        auto_window_recovery_reason=auto_window_recovery_reason,
         trajectory_source_kind=_traj_kind,
         trajectory_generated_in_this_workflow=_traj_gen,
     )

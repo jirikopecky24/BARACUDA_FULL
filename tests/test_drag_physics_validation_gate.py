@@ -166,6 +166,32 @@ def test_replay_audit_fixture_flags_baseline_sensitivity(tmp_path: Path) -> None
     assert result.drag_validation_gate in {"suspect", "fail"}
 
 
+def test_high_viscosity_stage_validated_uses_baseline_plausibility(tmp_path: Path) -> None:
+    run_dir = tmp_path / "drag_high_viscosity_baseline_plausibility"
+    create_synthetic_constant_velocity_run(
+        run_dir,
+        basename="drag_hi_eta",
+        timing=SyntheticTiming(fps=100.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0),
+        offset_um=0.02,
+        noise_px=0.003,
+        drift_px_per_s=0.0,
+        stage_um_per_unit=0.06,
+        stage_speed_user_s=14.0,
+    )
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(analysis_axis="x", um_per_px=0.06, kappa_n_per_m=2e-5, bead_radius_um=0.5),
+        allow_discovered_trajectory=True,
+    )
+    assert result.drag_anchor_mode == "stage_validated"
+    assert result.offset_underestimation_ratio_vs_baseline is not None
+    assert 0.25 <= float(result.offset_underestimation_ratio_vs_baseline) <= 4.0
+    assert result.offset_underestimation_ratio_vs_water is not None
+    assert float(result.offset_underestimation_ratio_vs_water) > 4.0
+    assert "plausibility_fail" not in (result.final_drag_reason or "")
+    assert result.physics_primary_gate in {"pass", "suspect"}
+
+
 def test_expected_stage_markers_follow_video_timing_truth(tmp_path: Path) -> None:
     run_dir = tmp_path / "drag_stage_markers"
     create_synthetic_constant_velocity_run(

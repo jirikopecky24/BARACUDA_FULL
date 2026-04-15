@@ -1622,24 +1622,14 @@ class BatchController:
                             )
 
                             # stage_um_per_unit precedence for Drag:
-                            # 1) UI/config (already resolved above as stage_um_per_unit)
-                            # 2) *_stage.json — DragIo reads this internally; DragAnalysisConfig
-                            #    value is used as fallback when *_stage.json lacks the field.
-                            # 3) dataset *.scale.json — already in stage_um_per_unit
-                            # 4) default 1.25 — already in stage_um_per_unit
-                            self._log(
-                                f"[DRAG] stage_um_per_unit={stage_um_per_unit:.4f} "
-                                f"(source={stage_um_per_unit_src})"
-                            )
-
-                            # Drag physics should prefer stage_um_per_unit from stage metadata
-                            # when available in *_stage.json (new Acquisition runs).
-                            # Otherwise keep UI/dataset-scale fallback so legacy runs
-                            # still remain analyzable.
+                            # 1) *_stage.json metric mapping (authoritative when present/valid)
+                            # 2) resolved UI/dataset/default fallback
                             drag_stage_um_per_unit: float | None = stage_um_per_unit
                             stage_protocol_type = "constant_velocity"
                             stage_payload: dict[str, Any] = {}
                             stage_um_per_unit_for_drag_source = stage_um_per_unit_src
+                            stage_um_for_log = stage_um_per_unit
+                            stage_um_for_log_source = stage_um_per_unit_src
                             try:
                                 stage_json_path = run_dir_drag / f"{stem}_stage.json"
                                 if stage_json_path.is_file():
@@ -1660,11 +1650,22 @@ class BatchController:
                                         and np.isfinite(stage_um_from_stage_f)
                                         and stage_um_from_stage_f > 0
                                     ):
+                                        stage_um_for_log = stage_um_from_stage_f
+                                        stage_um_for_log_source = "stage_json"
                                         drag_stage_um_per_unit = None  # force DragIo/analysis to use stage.json
                                         stage_um_per_unit_for_drag_source = "stage_json"
                             except Exception:
                                 # Best-effort only: on any parse/load error keep resolved fallback.
                                 pass
+                            if stage_um_for_log is None:
+                                self._log(
+                                    f"[DRAG] stage_um_per_unit=n/a (source={stage_um_for_log_source})"
+                                )
+                            else:
+                                self._log(
+                                    f"[DRAG] stage_um_per_unit={stage_um_for_log:.4f} "
+                                    f"(source={stage_um_for_log_source})"
+                                )
 
                             _mo_raw = post_params.get("drag_manual_offset_s")
                             _manual_off: float | None = None
@@ -1941,10 +1942,12 @@ class BatchController:
                                     f"[DRAG alignment] See {run_dir_drag / f'{stem}_alignment_failure.json'} and "
                                     f"{run_dir_drag / f'{stem}_alignment_debug.png'}"
                                 )
+                            raise
                         except Exception as e:
                             import traceback
                             self._log(f"WARN: DRAG calibration failed ({file_path.name}): {e!r}")
                             self._log(traceback.format_exc())
+                            raise
                     else:
                         try:
                             post_started = time.perf_counter()

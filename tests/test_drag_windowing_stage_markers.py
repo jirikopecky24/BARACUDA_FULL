@@ -147,6 +147,65 @@ def _rewrite_stage_trace_with_accel_plateau_decel_profile(
         w.writerows(rows)
 
 
+def _rewrite_stage_trace_with_quantized_plateau(
+    path: Path,
+    *,
+    motion_start_s: float,
+    running_s: float,
+    motion_stop_s: float,
+    plateau_speed_user_s: float,
+) -> None:
+    rows: list[dict[str, str]] = []
+    rows.append({"t_s": "0.0", "event": "script_start", "position_user": "", "velocity_user_s": "", "state": ""})
+    rows.append({"t_s": f"{motion_start_s:.6f}", "event": "motion_start", "position_user": "", "velocity_user_s": "", "state": "moving"})
+    rows.append(
+        {
+            "t_s": f"{running_s:.6f}",
+            "event": "motion_running_confirmed",
+            "position_user": "",
+            "velocity_user_s": "",
+            "state": "moving_confirmed",
+        }
+    )
+    dt = 0.02
+    t = running_s + dt
+    pos = 0.0
+    decel_start = motion_stop_s - 0.40
+    idx = 0
+    while t < motion_stop_s - 0.01:
+        if t < decel_start:
+            # Quantized plateau oscillation (legacy-like 8/9 user units)
+            vel = plateau_speed_user_s if (idx % 5) else max(0.0, plateau_speed_user_s - 1.0)
+        else:
+            frac = max(0.0, min(1.0, (t - decel_start) / max(1e-6, motion_stop_s - decel_start)))
+            vel = max(0.0, plateau_speed_user_s * (1.0 - frac))
+        pos += vel * dt
+        rows.append(
+            {
+                "t_s": f"{t:.6f}",
+                "event": "motion_profile",
+                "position_user": f"{pos:.6f}",
+                "velocity_user_s": f"{vel:.6f}",
+                "state": "moving",
+            }
+        )
+        t += dt
+        idx += 1
+    rows.append(
+        {
+            "t_s": f"{motion_stop_s:.6f}",
+            "event": "motion_stop",
+            "position_user": f"{pos:.6f}",
+            "velocity_user_s": "0.0",
+            "state": "idle",
+        }
+    )
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["t_s", "event", "position_user", "velocity_user_s", "state"])
+        w.writeheader()
+        w.writerows(rows)
+
+
 def test_compute_windows_uses_deceleration_marker_for_steady_end() -> None:
     params = DragWindowParams(
         baseline_duration_s=3.0,
@@ -275,6 +334,50 @@ def test_analysis_ignores_acceleration_as_false_deceleration(tmp_path: Path) -> 
     assert result.deceleration_start_source == "stage_trace_velocity_profile"
     assert result.deceleration_start_stage_s is not None
     assert result.deceleration_start_stage_s > (timing.motion_start_s + 6.0)
+    assert result.windows.steady_end_s > result.windows.steady_start_s
+
+
+def test_analysis_rejects_early_deceleration_from_quantized_plateau(tmp_path: Path) -> None:
+    timing = SyntheticTiming(fps=80.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=18.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "quantized_plateau",
+        basename="quantized_plateau",
+        timing=timing,
+        stage_um_per_unit=0.06,
+        stage_speed_user_s=8.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    trace = run_dir / "quantized_plateau_stage_trace.csv"
+    _rewrite_stage_trace_with_quantized_plateau(
+        trace,
+        motion_start_s=timing.motion_start_s,
+        running_s=timing.motion_start_s + 0.06,
+        motion_stop_s=timing.motion_start_s + timing.motion_duration_s,
+        plateau_speed_user_s=9.0,
+    )
+    stage_json = run_dir / "quantized_plateau_stage.json"
+    payload = json.loads(stage_json.read_text(encoding="utf-8"))
+    payload["speed_user_s_commanded"] = 8.0
+    payload["decel_user_s2_commanded"] = 120.0
+    stage_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(
+            analysis_axis="x",
+            um_per_px=0.06,
+            eta_pa_s=0.001,
+            bead_radius_um=1.0,
+            window_params=DragWindowParams(steady_end_guard_s=1.0, steady_start_delay_s=2.0),
+        ),
+        allow_discovered_trajectory=True,
+    )
+    assert result.deceleration_start_source in {"stage_trace_velocity_profile", "estimated_from_commanded_speed_decel"}
+    assert result.deceleration_start_stage_s is not None
+    # Must stay in terminal segment; early-mid picks are invalid.
+    assert result.motion_stop_stage_s is not None
+    assert result.deceleration_start_stage_s >= (result.motion_stop_stage_s - 3.0)
     assert result.windows.steady_end_s > result.windows.steady_start_s
 
 
@@ -491,3 +594,81 @@ def test_manual_steady_window_full_override_sets_start_and_end(tmp_path: Path) -
     assert result.windows.steady_start_s == pytest.approx(t0 + 8.0, abs=1e-6)
     assert result.windows.steady_end_s == pytest.approx(t0 + 23.0, abs=1e-6)
     assert result.steady_window_mode == "manual_override"
+
+
+def test_auto_window_guard_chain_recovers_without_manual_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timing = SyntheticTiming(fps=80.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "guard_chain_recovery",
+        basename="guard_chain_recovery",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    from barakuda.devices.optical_tweezers.drag import analysis as analysis_mod
+
+    def _markers(*_args, **_kwargs):
+        # steady_start + delay => start at ~5.0s; guard=1.0 yields zero-length,
+        # guard=0.75 yields positive steady length and should be selected.
+        return 3.0, "stage_trace_steady_state_start", 6.0, "stage_trace_deceleration_start"
+
+    monkeypatch.setattr(analysis_mod, "_estimate_stage_markers", _markers)
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(
+            analysis_axis="x",
+            um_per_px=0.1,
+            eta_pa_s=0.001,
+            bead_radius_um=1.0,
+            window_params=DragWindowParams(steady_start_delay_s=2.0, steady_end_guard_s=1.0),
+        ),
+        allow_discovered_trajectory=True,
+    )
+    assert result.auto_window_recovered is False
+    assert result.auto_window_guard_used_s in {0.75, 0.5, 0.25}
+    assert 1.0 in result.auto_window_guard_chain
+    assert result.steady_window_mode == "auto"
+    assert result.windows.steady_end_s > result.windows.steady_start_s
+
+
+def test_auto_window_exhaustion_returns_recovered_suspect_with_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timing = SyntheticTiming(fps=80.0, baseline_end_s=2.0, motion_start_s=3.0, motion_duration_s=8.0)
+    run_dir = create_synthetic_constant_velocity_run(
+        tmp_path / "guard_chain_exhausted",
+        basename="guard_chain_exhausted",
+        timing=timing,
+        stage_um_per_unit=0.1,
+        stage_speed_user_s=20.0,
+        offset_um=0.04,
+        noise_px=0.005,
+    )
+    from barakuda.devices.optical_tweezers.drag import analysis as analysis_mod
+
+    def _markers(*_args, **_kwargs):
+        # steady_start + delay => start at ~5.0s; even 0.25s guard remains invalid.
+        return 3.0, "stage_trace_steady_state_start", 5.2, "stage_trace_deceleration_start"
+
+    monkeypatch.setattr(analysis_mod, "_estimate_stage_markers", _markers)
+    result = analyze_drag_run(
+        run_dir,
+        DragAnalysisConfig(
+            analysis_axis="x",
+            um_per_px=0.1,
+            eta_pa_s=0.001,
+            bead_radius_um=1.0,
+            window_params=DragWindowParams(steady_start_delay_s=2.0, steady_end_guard_s=1.0),
+        ),
+        allow_discovered_trajectory=True,
+    )
+    assert result.auto_window_recovered is True
+    assert result.steady_window_mode == "recovered_auto_suspect"
+    assert result.auto_window_recovery_reason is not None
+    assert result.qc_flags.sufficient_steady_duration is False
+    assert result.final_drag_verdict in {"suspect", "fail"}
+    assert any("auto-windowing failed for all safe guards" in w for w in result.warnings)
