@@ -1,0 +1,25 @@
+# CP01 Scope Rules
+
+## Active checkpoint
+
+CP01 is focused on BARAKUDA v1 laboratory deployment and PhD Talent acceleration.
+
+## Allowed work in CP01
+
+- v1 app split preparation (Acquisition mode vs Analysis mode)
+- deployment preparation
+- timing audit
+- batch summary hardening
+- report consistency and reporting safety improvements
+- documentation and project governance
+- tests and validation scaffolding
+
+## Forbidden work for now
+
+- viscoelasticity expansion
+- Raman modules
+- IR modules
+- AFM expansion beyond CP01-safe stabilization
+- hydrogel cooling material modules
+- BARAKUDA v2 implementation
+- broad UI redesign

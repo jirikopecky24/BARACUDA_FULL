@@ -1,0 +1,10 @@
+# Testing and Git Rules
+
+- Inspect git status before making changes.
+- Keep changes small, scoped, and reviewable.
+- Do not commit automatically.
+- Suggest concrete tests to run after changes.
+- Do not normalize line endings without a dedicated task.
+- Do not edit generated or cache files unless explicitly requested.
+- Report the modified file list at the end of each task.
+- Before creating a new docs/agent_tasks file, check whether an existing related file should be updated.
