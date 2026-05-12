@@ -1,0 +1,9 @@
+# BARAKUDA Core Rules
+
+- BARAKUDA is a scientific research software platform and correctness is higher priority than speed of edits.
+- Preserve deterministic scientific behavior unless a task explicitly asks for scientific changes.
+- Keep changes narrowly scoped and aligned to one clear goal per task.
+- Treat launch flow, run protocol, report generation, and device registry boundaries as sensitive system contracts.
+- Preserve consistency between Acquisition, Optical Tweezers, and AFM module interfaces.
+- Prefer explicit assumptions and written rationale over implicit behavior changes.
+- When uncertain about domain meaning (timing, units, calibration, report values), stop and ask.

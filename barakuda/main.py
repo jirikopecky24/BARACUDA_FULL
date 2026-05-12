@@ -1,13 +1,8 @@
-import sys
-from PyQt6.QtWidgets import QApplication
-from barakuda.shell.main_window import ShellMainWindow
+from barakuda.startup import run_app
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
-    win = ShellMainWindow()
-    win.show()
-    return app.exec()
+    return run_app()
 
 
 if __name__ == "__main__":

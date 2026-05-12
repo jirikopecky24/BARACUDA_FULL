@@ -1,0 +1,10 @@
+# Agent Safety Rules
+
+- Do not rewrite unrelated code.
+- Do not change scientific logic unless explicitly requested.
+- Do not touch large or risky files casually; require explicit permission for high-impact files.
+- Do not delete files unless explicitly requested.
+- Do not mix refactor and feature work in the same task.
+- Do not make assumptions about physics, units, calibration, or timing semantics.
+- Stop and report uncertainty when requirements or scientific meaning are unclear.
+- Do not create documentation sprawl. Prefer updating existing task documents.
