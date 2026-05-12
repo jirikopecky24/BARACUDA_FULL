@@ -44,9 +44,22 @@ from barakuda.devices.optical_tweezers.ui.batch_tools import (
 )
 
 
+def _apply_mode_device_filter(
+    devices: list[DeviceSpec], app_mode: str
+) -> list[DeviceSpec]:
+    """Return the device list visible for the requested BARAKUDA app mode."""
+    if app_mode == "acquisition":
+        return [d for d in devices if d.device_id == "acquisition"]
+    if app_mode == "analysis":
+        return [d for d in devices if d.device_id != "acquisition"]
+    return devices
+
+
 class ShellMainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, app_mode: str = "full") -> None:
         super().__init__()
+
+        self._app_mode = app_mode
 
         self.setWindowTitle("BARAKUDA Analysis Suite — Modular")
         self.resize(1400, 860)
@@ -61,6 +74,7 @@ class ShellMainWindow(QMainWindow):
         self.dataset.item_selected.connect(self._on_item_selected)
 
         self._devices: list[DeviceSpec] = list_devices()
+        self._devices = _apply_mode_device_filter(self._devices, self._app_mode)
         self._active_device: Optional[DeviceSpec] = None
         self._active_device_id: str = ""
         self._device_panel: Optional[QWidget] = None
