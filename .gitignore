@@ -195,9 +195,9 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
 #   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#   and can be added to the global gitignore or merged into this file. However, if you prefer,
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
@@ -231,3 +231,27 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 *.stackdump
+
+# ----------------------------------------------------------------------
+# BARAKUDA local AFM/JPK diagnostic artifacts
+# Generated during exploratory AFM hydrogel/JPK-QI investigations.
+# These are local results, previews, arrays, reports, and scratch scripts.
+# They are intentionally not part of the open-source production codebase.
+# ----------------------------------------------------------------------
+
+/diagnostics/
+
+# One-off local AFM/JPK diagnostic scripts
+/scripts/build_jpk_channel_descriptors.py
+/scripts/inspect_official_afm_export.py
+/scripts/list_jpk_archive_entries.py
+/scripts/render_all_jpk_channels_gallery.py
+/scripts/render_jpk_height_candidates.py
+/scripts/render_jpk_height_leveled.py
+/scripts/render_topography_roi_diagnostic.py
+/scripts/export_provisional_topography_roi_candidates.py
+/scripts/export_aligned_roi_all_channels.py
+/scripts/export_provisional_topography_roi.py
+
+# Temporary cleanup/status files
+/cleanup_status_porcelain.txt
