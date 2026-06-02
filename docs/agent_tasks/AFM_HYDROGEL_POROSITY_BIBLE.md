@@ -1669,3 +1669,111 @@ barakuda/devices/afm/io/jpk\_qi\_diagnostic.py
 
 Do not proceed to production implementation until diagnostics are reviewed.
 
+
+---
+
+## Update 2026-06-02 — AFM-A1 JPK/QI loading validation freeze
+
+- Decision:
+  - AFM-A1 diagnostics are paused in a validated pre-segmentation state.
+  - Current work stops before segmentation feasibility.
+  - No final production channel has been selected.
+
+- Repository state:
+  - Branch: feature/afm-hydrogel-porosity
+  - Last relevant pushed commits:
+    - d15e4a6 docs: add AFM hydrogel porosity bible
+    - 14da5ce chore: ignore local AFM diagnostic artifacts
+  - diagnostics/ is local ignored output and must not be committed.
+  - One-off diagnostic scripts are local ignored scripts and must not be committed.
+
+- Validated JPK source:
+  - Source file: C:\Work\1-prct-AG-10x10-512x512.jpk-qi-data
+  - Internal image: data-image.jpk-qi-image
+  - Internal image SHA256: 73467f56e4e738066ee38cce12e1a9063e72c1f9cd4858cdf84b24ef8e4e23f8
+  - Grid: 512 x 512 px
+  - Scan size: 10 x 10 µm
+  - Pixel size: 0.01953125 µm/px
+  - Page 0: 64 x 64 preview
+  - Pages 1–5: 512 x 512 int32 full-resolution channels
+
+- Verified channel mapping:
+  - Page 1 = vDeflection, role auxiliary_contrast_qc, default slot force, unit N
+  - Page 2 = adhesion, role auxiliary_contrast_qc, default slot force, unit N
+  - Page 3 = slope, role auxiliary_contrast_qc, default slot volts, unit V
+  - Page 4 = measuredHeight, role provisional_topography_candidate, default slot nominal, unit m
+  - Page 5 = height, role provisional_topography_candidate, default slot calibrated, unit m
+
+- Calibration values:
+  - Page 1 vDeflection:
+    multiplier = 1.1372479554597193e-18
+    offset = -9.179100973056714e-10
+    unit = N
+  - Page 2 adhesion:
+    multiplier = 8.195939290254133e-19
+    offset = 7.386039963348108e-10
+    unit = N
+  - Page 3 slope:
+    multiplier = 2.459201689976086e-12
+    offset = 0.005676285999597853
+    unit = V
+  - Page 4 measuredHeight:
+    multiplier = 1.6007394836112993e-15
+    offset = 1.3295399523850161e-05
+    unit = m
+  - Page 5 height:
+    multiplier = -1.1024078717794967e-15
+    offset = 9.628506312840996e-06
+    unit = m
+  - Conversion formula:
+    physical = raw_int32 * multiplier + offset
+  - Sentinels:
+    -2147483648 and 2147483647 are masked as NaN
+
+- ROI decision:
+  - Central ROI: y=40:340, x=20:492
+  - Shape: 300 x 472 px
+  - Physical size: approximately 9.2188 x 5.8594 µm
+  - Reason: excludes lower horizontal artifact band and lateral edge margins
+  - Page 4/Page 5 central ROI has zero NaNs
+
+- Current interpretation:
+  - Primary provisional topography candidate: Page 5 height calibrated
+  - Control topography candidate: Page 4 measuredHeight nominal
+  - Auxiliary channels retained:
+    - Page 1 vDeflection for QC
+    - Page 2 adhesion for possible pore-boundary contrast
+    - Page 3 slope for possible edge/sidewall contrast
+  - Page 1–3 must not be treated as height/topography.
+
+- Loading validation:
+  - TIFF page validation passed.
+  - Page 4 measuredHeight tag validation passed.
+  - Page 5 height/calibrated tag validation passed.
+  - All saved NPY ROI arrays matched recomputation from raw JPK.
+  - index/ sampled entries indicate per-pixel QI force-curve storage, not ready 2D image.
+  - shared-data is not present as a direct ZIP entry in the loading validation; record this as a non-blocking warning.
+
+- Local diagnostic evidence files:
+  - diagnostics/afm_jpk_qi/1-prct-AG-10x10-512x512/AFM_A1_CHANNEL_AUDIT_MANIFEST.md
+  - diagnostics/afm_jpk_qi/1-prct-AG-10x10-512x512/loading_validation_audit/loading_validation_audit.md
+  - diagnostics/afm_jpk_qi/1-prct-AG-10x10-512x512/aligned_roi_all_channels/aligned_roi_all_channels_summary.md
+  - These files are intentionally local/ignored and should not be committed.
+
+- Stop state:
+  - Do not continue with production implementation yet.
+  - Do not run final porosity.
+  - Do not compute pore metrics.
+  - Do not compute roughness.
+  - Do not claim bulk porosity.
+  - Do not claim viscosity, modulus, permeability, mesh size, or diffusion coefficient from the static AFM height map.
+
+- Resume task after pause:
+  - First verify:
+    git status --short --branch
+  - Confirm local diagnostics still exist.
+  - Then run AFM-A1r segmentation feasibility only on copies of the aligned central ROI.
+  - Use Page 5 height calibrated as primary provisional input.
+  - Use Page 4 measuredHeight nominal as control.
+  - Optionally compare Page 2 adhesion and Page 3 slope as auxiliary overlays.
+  - AFM-A1r must remain diagnostic-only and must not produce final scientific claims.
