@@ -253,6 +253,7 @@ Desktop.ini
 /scripts/export_aligned_roi_all_channels.py
 /scripts/export_provisional_topography_roi.py
 /scripts/validate_jpk_image_loading_audit.py
+/scripts/afm_a1r_segmentation_feasibility.py
 
 # Temporary cleanup/status files
 /cleanup_status_porcelain.txt
