@@ -5,7 +5,7 @@
 - Project: BARAKUDA
 - Checkpoint: CP01 — BARAKUDA v1 laboratory deployment and PhD Talent acceleration
 - Queue purpose: safe agent-assisted development preparation
-- Last updated: 2026-05-12
+- Last updated: 2026-07-03
 - Current phase: agent preparation and repository control
 
 ## Governance Note
@@ -25,6 +25,17 @@ The current goal is to make the repository understandable, controlled, installab
 3. timing audit
 4. batch summary hardening
 5. v1 laboratory deployment
+
+---
+
+## Current status after resume
+
+- CP01 Acquisition / Analysis split is completed.
+- The split was validated through Tasks 005–010 and merged via commit `d71138d`.
+- No CP01 implementation task is currently active.
+- Possible future CP01 follow-ups are timing audit, batch summary hardening, packaging/entry points, or deployment cleanup.
+- Current active work is controlled by `AGENT_BARAKUDA_WORKFLOW_NOTE.md`.
+- AFM-A1r belongs to the AFM hydrogel line, not CP01.
 
 ---
 
@@ -128,7 +139,7 @@ Acceptance checklist:
 
 ## Task 004 — Acquisition / Analysis split plan
 
-Status: not started
+Status: completed
 
 Dependency: Task 001, Task 002, and Task 003
 
@@ -136,19 +147,17 @@ Goal:
 
 Plan the minimal safe split into BARAKUDA Acquisition and BARAKUDA Analysis.
 
-Forbidden action:
-
-Do not implement yet.
-
 Expected output:
 
 docs/agent_tasks/ACQUISITION_ANALYSIS_SPLIT_PLAN.md
 
 Acceptance checklist:
-- [ ] Output file exists.
-- [ ] Task stayed within allowed scope.
-- [ ] No application code was changed.
-- [ ] Result is useful for the next CP01 step.
+- [x] Output file exists.
+- [x] Task stayed within allowed scope.
+- [x] No application code was changed.
+- [x] Result is useful for the next CP01 step.
+
+Note: This plan was created before Tasks 005–010 were implemented. The actual split was completed in Task 007 (launcher stubs) and Task 008 (app_mode device filtering), merged via commit `d71138d`.
 
 ---
 
@@ -394,6 +403,8 @@ Reason: the Acquisition / Analysis split is now functionally validated end-to-en
 
 ## Git Hygiene Checkpoint — 2026-05-12
 
+Historical note: this checkpoint described the repository state before the validated split work was committed; it is retained for audit history and is not the current task recommendation.
+
 ### Purpose
 
 Inspect repository state after the validated Acquisition / Analysis startup split (Tasks 005–010) and identify a clean commit boundary before the next CP01 branch begins.
@@ -558,5 +569,5 @@ Redundant one-off audit/environment documents were removed after their conclusio
 
 ## Next recommended task
 
-Perform Git hygiene / checkpoint review for the validated Acquisition / Analysis split work.
+Historical next recommendation at that time: Git hygiene / checkpoint review for the validated Acquisition / Analysis split work. This has since been resolved by later commits.
 

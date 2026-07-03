@@ -1,21 +1,21 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — NARROW SHELL STARTUP + OT TAB WIDTH STABILITY FIX
-- current task = narrow shell startup geometry fix + narrow OT tab-switch width stability fix
-- fix 1: startup window geometry must open fully visible on-screen (never partly above top edge)
-- fix 2: OT right pipeline panel width floor must stay stable across Run/Tracking/Postprocess/Settings tab switches
-- preserve functionality; no workflow changes
-- no feature development
-- no business-logic changes
-- no broad redesign
-- no cosmetic hacks
+## 0. CURRENT PHASE OVERRIDE — AFM HYDROGEL POROSITY PAUSE / STATUS SYNC
+- previous phase (narrow shell startup geometry + OT tab-switch width stability fix) is **completed**
+  - implemented in commit `72e83e9 fix(shell,ot-ui): clamp startup window geometry and stabilize OT tab width floor`
+  - files: `barakuda/shell/main_window.py` (`_clamp_window_to_visible_screen`), `barakuda/devices/optical_tweezers/ui/panel.py` (`_apply_stable_min_width_floor`)
+- current task = sync stale status documents after AFM-A1 loading validation handoff
+- no production code changes
+- no AFM analysis, segmentation, porosity, pore metrics, or roughness computation
+- do not start AFM-A1r segmentation feasibility without explicit user approval
+- next candidate work (requires explicit user approval):
+  1. AFM-A1r diagnostic segmentation feasibility on aligned central ROI copies, or
+  2. CP01 follow-up (timing audit / batch summary hardening / packaging)
 - one phase only (strict phase separation; do not do next-phase work early)
 - stop after report and wait for explicit approval before continuing
 - no proceeding without explicit approval
-- if uncertain whether a layout change is safe, do not change it in this phase
 - quality and trustworthiness have priority over speed
 - keep changes minimal, explicit, reviewable, and reversible
-- commit after this phase only if it includes concrete scoped layout changes
 
 ## 1. PROJECT MODE
 - BARAKUDA is deterministic scientific software

@@ -1777,3 +1777,5 @@ Do not proceed to production implementation until diagnostics are reviewed.
   - Use Page 4 measuredHeight nominal as control.
   - Optionally compare Page 2 adhesion and Page 3 slope as auxiliary overlays.
   - AFM-A1r must remain diagnostic-only and must not produce final scientific claims.
+
+Resume state verified before AFM-A1r; AFM-A1r still requires explicit user approval.
