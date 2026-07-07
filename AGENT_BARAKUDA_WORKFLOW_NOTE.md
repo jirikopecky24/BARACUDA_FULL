@@ -1,16 +1,22 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
-## 0. CURRENT PHASE OVERRIDE — AFM HYDROGEL POROSITY PAUSE / STATUS SYNC
-- previous phase (narrow shell startup geometry + OT tab-switch width stability fix) is **completed**
-  - implemented in commit `72e83e9 fix(shell,ot-ui): clamp startup window geometry and stabilize OT tab width floor`
-  - files: `barakuda/shell/main_window.py` (`_clamp_window_to_visible_screen`), `barakuda/devices/optical_tweezers/ui/panel.py` (`_apply_stable_min_width_floor`)
-- current task = sync stale status documents after AFM-A1 loading validation handoff
-- no production code changes
+## 0. CURRENT PHASE OVERRIDE — AFM HYDROGEL POROSITY / ROI EXPLORER
+- previous phase (AFM-A1t v0 ROI Explorer implementation + GUI QA) is **completed**
+  - implemented in commit `6473481 afm-ui: add ROI explorer QA viewer`
+  - files: `barakuda/devices/afm/ui/roi_explorer.py`, `barakuda/devices/afm/ui/__init__.py`, `scripts/dev_afm_roi_explorer.py`
+  - docs updated: `docs/agent_tasks/AFM_ROI_EXPLORER_DESIGN_NOTE.md`, `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`
+- current state: AFM ROI Explorer v0 is visualization/QA only
+  - loads validated `.npy` ROI arrays
+  - shows 2D image with draggable horizontal/vertical profile cut line
+  - profiles plotted in physical µm/nm units
+  - no segmentation, no porosity, no pore metrics, no roughness, no final channel selection
+- no production code changes unless explicitly requested
 - no AFM analysis, segmentation, porosity, pore metrics, or roughness computation
-- do not start AFM-A1r segmentation feasibility without explicit user approval
 - next candidate work (requires explicit user approval):
-  1. AFM-A1r diagnostic segmentation feasibility on aligned central ROI copies, or
-  2. CP01 follow-up (timing audit / batch summary hardening / packaging)
+  1. AFM-A1u: add exploratory mask overlay to the AFM ROI Explorer, still no final metrics, or
+  2. AFM-A1r diagnostic segmentation feasibility on aligned central ROI copies, or
+  3. CP01 follow-up (timing audit / batch summary hardening / packaging)
+- raw `.jpk-qi-data` loading remains future work
 - one phase only (strict phase separation; do not do next-phase work early)
 - stop after report and wait for explicit approval before continuing
 - no proceeding without explicit approval

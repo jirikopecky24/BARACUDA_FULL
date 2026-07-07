@@ -1779,3 +1779,26 @@ Do not proceed to production implementation until diagnostics are reviewed.
   - AFM-A1r must remain diagnostic-only and must not produce final scientific claims.
 
 Resume state verified before AFM-A1r; AFM-A1r still requires explicit user approval.
+
+## Update 2026-07-07 — AFM-A1t v0 ROI viewer implemented
+
+- **Decision:** The integrated BARAKUDA AFM ROI Explorer v0 has been implemented, GUI-tested by the user, committed, and pushed.
+- **Commit:** `6473481 afm-ui: add ROI explorer QA viewer`
+- **Files affected:**
+  - `barakuda/devices/afm/ui/roi_explorer.py`
+  - `barakuda/devices/afm/ui/__init__.py`
+  - `scripts/dev_afm_roi_explorer.py`
+  - `docs/agent_tasks/AFM_ROI_EXPLORER_DESIGN_NOTE.md`
+- **Scope reminder:** The v0 viewer is **visualization/QA only**.
+  - It loads validated `.npy` ROI arrays.
+  - It shows a 2D image with a draggable horizontal/vertical profile cut line.
+  - It plots profiles in physical µm/nm units.
+  - It does **not** segment, compute porosity, compute pore metrics, compute roughness, or select a final production channel.
+- **Validation:**
+  - `py_compile` passed.
+  - Import smoke test passed.
+  - User GUI QA passed: auto-load, draggable line, profile update, channel switching, resize/maximize.
+- **Next recommended step:**
+  - AFM-A1u: add exploratory mask overlay to the AFM ROI Explorer.
+  - Still no porosity/pore metrics/roughness.
+  - Raw `.jpk-qi-data` loading remains future work.

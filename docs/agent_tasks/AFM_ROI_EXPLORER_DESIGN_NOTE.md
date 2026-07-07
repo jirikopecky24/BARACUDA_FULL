@@ -184,7 +184,50 @@ Scope of that step:
 
 ---
 
-## I. Confirmations
+## I. Implementation status
+
+**Date:** 2026-07-07  
+**Commit:** `6473481 afm-ui: add ROI explorer QA viewer`  
+**Branch:** `feature/afm-hydrogel-porosity`
+
+AFM ROI Explorer v0 has been implemented, GUI-tested, committed, and pushed.
+
+### Implemented files
+
+- `barakuda/devices/afm/ui/roi_explorer.py` — main explorer widget
+- `barakuda/devices/afm/ui/__init__.py` — AFM UI package marker
+- `scripts/dev_afm_roi_explorer.py` — standalone development launcher
+
+### Current v0 capabilities
+
+- **Validated ROI .npy auto-load** — loads `page5_height_leveled_roi_nm.npy` and `page4_measuredHeight_leveled_roi_nm.npy` from the validated aligned ROI directory relative to repo root.
+- **Page 5 / Page 4 channel selector** — switch between calibrated height and nominal measuredHeight channels.
+- **2D image display** — pixel-coordinate pyqtgraph `ImageView` with viridis color scale and histogram.
+- **Draggable horizontal / vertical cut line** — `pyqtgraph.InfiniteLine` overlay; dragging updates the index spinbox and refreshes the profile.
+- **Profile plot in physical units** — distance in µm, height in nm.
+- **Warning: QA visualization only** — UI labels and module docstring explicitly state that this is a diagnostic viewer.
+
+### User GUI QA passed
+
+- "Load validated demo ROI" auto-loads both channels.
+- Horizontal row mode shows a red horizontal cut line.
+- Dragging the line updates the row index and profile plot.
+- Editing the index spinbox moves the line and updates the profile.
+- Vertical column mode switches the line orientation and updates the range correctly.
+- Page 5 / Page 4 channel switching works.
+- Window resize and maximize behave acceptably with splitter/stretch layout.
+
+### Current limitations
+
+- Raw `.jpk-qi-data` loading is not implemented.
+- Mask overlay is not implemented.
+- 3D integrated viewer is not implemented.
+- No porosity, pore metrics, or roughness are computed.
+- No final production channel is selected by the viewer.
+
+---
+
+## J. Confirmations
 
 - No production code was modified in this task.
 - No AFM analysis, segmentation, porosity, pore metrics, or roughness computation was run.
