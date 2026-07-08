@@ -87,6 +87,7 @@ class AfmRoiExplorer(QWidget):
         self._updating_profile_line: bool = False
         self._overlay_item: pg.ImageItem | None = None
         self._mask_array: np.ndarray | None = None
+        self._profile_mask_regions: list[pg.LinearRegionItem] = []
 
         self._build_ui()
 
@@ -245,6 +246,13 @@ class AfmRoiExplorer(QWidget):
         self._lbl_drag_hint.setStyleSheet("color: #666; font-size: 11px;")
         profile_form.addRow(self._lbl_drag_hint)
 
+        self._lbl_profile_mask_note = QLabel(
+            "Profile mask marks are QA-only visual intersections, not metrics."
+        )
+        self._lbl_profile_mask_note.setWordWrap(True)
+        self._lbl_profile_mask_note.setStyleSheet("color: #c60; font-size: 11px;")
+        profile_form.addRow(self._lbl_profile_mask_note)
+
         right_layout.addWidget(profile_group)
 
         # Metadata group
@@ -397,14 +405,6 @@ class AfmRoiExplorer(QWidget):
         # Profile plot distances stay in physical units (um).
         self._img_view.setImage(arr, axes={"x": 1, "y": 0})
 
-        rows, cols = arr.shape
-        self._shape = (rows, cols)
-        mode = self._cb_profile_mode.currentText()
-        if mode == "horizontal row":
-            self._spin_index.setRange(0, max(0, rows - 1))
-        else:
-            self._spin_index.setRange(0, max(0, cols - 1))
-
         self._refresh_profile()
 
     def _update_profile_line(self) -> None:
@@ -468,12 +468,41 @@ class AfmRoiExplorer(QWidget):
         self._spin_index.blockSignals(False)
         self._refresh_profile()
 
+    def _update_index_range(self) -> None:
+        """Set spinbox range from the active image shape and clamp the index.
+
+        Profile index limits are derived from the active image shape;
+        do not hard-code ROI dimensions.
+        """
+        if self._shape is None:
+            self._spin_index.setRange(0, 0)
+            return
+        mode = self._cb_profile_mode.currentText()
+        rows, cols = self._shape
+        if mode == "horizontal row":
+            max_index = max(0, rows - 1)
+        else:
+            max_index = max(0, cols - 1)
+
+        self._spin_index.blockSignals(True)
+        self._spin_index.setRange(0, max_index)
+        current = self._spin_index.value()
+        if current > max_index:
+            self._spin_index.setValue(max_index)
+        elif current < 0:
+            self._spin_index.setValue(0)
+        self._spin_index.blockSignals(False)
+
     def _refresh_profile(self) -> None:
         if not self._current_key:
             return
         arr = self._channels.get(self._current_key)
         if arr is None or self._shape is None:
             return
+
+        # Profile index limits are derived from the active image shape;
+        # do not hard-code ROI dimensions.
+        self._update_index_range()
 
         mode = self._cb_profile_mode.currentText()
         idx = self._spin_index.value()
@@ -494,6 +523,99 @@ class AfmRoiExplorer(QWidget):
 
         self._profile_curve.setData(distances, profile)
         self._update_profile_line()
+        self._update_profile_mask_marks()
+
+    def _clear_profile_mask_regions(self) -> None:
+        """Remove all QA mask intersection bands from the profile plot."""
+        for region in self._profile_mask_regions:
+            self._profile_plot.removeItem(region)
+        self._profile_mask_regions.clear()
+
+    def _find_true_intervals(self, mask_1d: np.ndarray) -> list[tuple[int, int]]:
+        """Return half-open [start, end) index intervals where mask_1d is True.
+
+        Merging consecutive True samples is visualization-only: it reduces the
+        number of drawn bands without changing which samples are highlighted.
+        No counts, lengths, fractions, or other metrics are computed or stored.
+        """
+        if not mask_1d.any():
+            return []
+        edges = np.where(np.diff(mask_1d.astype(np.int8)) != 0)[0]
+        intervals: list[tuple[int, int]] = []
+        if mask_1d[0]:
+            start = 0
+        else:
+            start = None
+        for edge in edges:
+            if mask_1d[edge] and not mask_1d[edge + 1]:
+                # True -> False: close interval at edge+1 (exclusive)
+                if start is not None:
+                    intervals.append((start, edge + 1))
+                    start = None
+            elif not mask_1d[edge] and mask_1d[edge + 1]:
+                # False -> True: open interval
+                start = edge + 1
+        if start is not None and mask_1d[-1]:
+            intervals.append((start, len(mask_1d)))
+        return intervals
+
+    def _update_profile_mask_marks(self) -> None:
+        """Show where the active exploratory mask intersects the current profile.
+
+        Uses the current mask array and the active profile row/column. Draws
+        semi-transparent background bands in the profile plot. No metrics are
+        computed or displayed.
+        """
+        self._clear_profile_mask_regions()
+
+        if self._mask_array is None or self._shape is None:
+            return
+
+        # Safety: the mask must match the active image shape.
+        if self._mask_array.shape != self._shape:
+            self._lbl_mask_status.setText(
+                "Mask/image shape mismatch — profile intersection not shown.\n"
+                "exploratory only"
+            )
+            return
+
+        mode = self._cb_profile_mode.currentText()
+        idx = self._spin_index.value()
+        rows, cols = self._shape
+
+        if mode == "horizontal row":
+            if not (0 <= idx < rows):
+                return
+            mask_1d = self._mask_array[idx, :]
+            n_samples = cols
+        else:
+            if not (0 <= idx < cols):
+                return
+            mask_1d = self._mask_array[:, idx]
+            n_samples = rows
+
+        # Only render if the 1D mask has any True samples.
+        if not mask_1d.any():
+            return
+
+        intervals = self._find_true_intervals(mask_1d)
+        if not intervals:
+            return
+
+        for start, end in intervals:
+            x0 = start * UM_PER_PX
+            x1 = end * UM_PER_PX
+            region = pg.LinearRegionItem(
+                values=(x0, x1),
+                orientation="vertical",
+                brush=pg.mkBrush(255, 0, 0, 60),
+                pen=pg.mkPen(None),
+                movable=False,
+            )
+            # Keep the band behind the profile curve.
+            region.setZValue(-100)
+            self._profile_plot.addItem(region)
+            self._profile_mask_regions.append(region)
 
     # ── Mask overlay (exploratory QA only) ────────────────────────────
 
@@ -503,6 +625,7 @@ class AfmRoiExplorer(QWidget):
         if not mask_name or mask_name == "None":
             self._mask_array = None
             self._clear_overlay()
+            self._clear_profile_mask_regions()
             self._lbl_mask_status.setText("No mask selected.")
             return
 
@@ -511,18 +634,21 @@ class AfmRoiExplorer(QWidget):
         if arr is None:
             self._mask_array = None
             self._clear_overlay()
+            self._clear_profile_mask_regions()
             self._lbl_mask_status.setText(f"Source channel {source_key!r} not loaded.")
             return
 
         mask, threshold = self._generate_mask(arr, method)
         self._mask_array = mask
         self._update_overlay_display()
+        self._update_profile_mask_marks()
 
         threshold_str = f"{threshold:.3f} nm" if threshold is not None else "N/A"
         self._lbl_mask_status.setText(
             f"Mask: {mask_name}\n"
             f"Source: {source_key}\n"
             f"Threshold: {threshold_str}\n"
+            f"Profile intersection shown visually only.\n"
             f"exploratory only"
         )
 
