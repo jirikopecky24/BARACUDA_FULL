@@ -243,6 +243,48 @@ Exploratory mask overlay controls were added to the v0 viewer.
 - Raw `.jpk-qi-data` loading is not implemented.
 - 3D integrated viewer is not implemented.
 
+### I.3 AFM-A1v profile/mask intersection QA
+
+**Date:** 2026-07-08  
+**Commit:** `d684a35 afm-ui: add profile mask intersection QA`  
+**Branch:** `feature/afm-hydrogel-porosity`
+
+Profile/mask intersection visualization and dynamic profile index ranges were added.
+
+#### Added features
+
+- **Visual profile/mask intersection bands** in the profile plot.
+  - Shows where the currently active exploratory mask intersects the active horizontal/vertical profile line.
+  - Rendered as semi-transparent red vertical bands behind the yellow profile curve.
+  - Bands are QA-only visual markers, not metrics.
+- **Dynamic profile index ranges** derived from the active image shape.
+  - Horizontal row mode uses `0..n_rows - 1`.
+  - Vertical column mode uses `0..n_cols - 1`.
+  - No hard-coded ROI dimensions.
+  - Index is clamped into the valid range when switching modes or channels.
+- **Mask/image shape mismatch safety check** displays a clear QA warning and hides intersection marks if shapes do not match.
+
+#### User GUI QA passed
+
+- Horizontal index full range works (0..299 for current demo ROI).
+- Vertical index full range works (0..471 for current demo ROI).
+- Draggable vertical line spans full image width.
+- Profile mask bands appear for active mask and update when the line is dragged.
+- Page 5 / Page 4 channel switching preserves correct index ranges.
+- Selecting "None" mask hides the profile mask bands.
+
+#### Current limitations
+
+- No saved masks.
+- No connected-component labeling.
+- No regionprops or object measurements.
+- No porosity, pore metrics, or roughness computed.
+- No numerical summaries from mask intersections.
+- No final production channel selected.
+- No final segmentation method selected.
+- Raw `.jpk-qi-data` loading is not implemented.
+- 3D integrated viewer is not implemented.
+
 ### Implemented files
 
 - `barakuda/devices/afm/ui/roi_explorer.py` — main explorer widget

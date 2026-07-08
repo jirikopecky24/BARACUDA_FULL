@@ -1,14 +1,16 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
 ## 0. CURRENT PHASE OVERRIDE — AFM HYDROGEL POROSITY / ROI EXPLORER
-- previous phase (AFM-A1u exploratory mask overlay QA) is **completed**
-  - implemented in commit `5debfd5 afm-ui: add exploratory mask overlay QA`
+- previous phase (AFM-A1v profile/mask intersection QA) is **completed**
+  - implemented in commit `d684a35 afm-ui: add profile mask intersection QA`
   - file: `barakuda/devices/afm/ui/roi_explorer.py`
-  - docs updated: `docs/agent_tasks/AFM_ROI_EXPLORER_DESIGN_NOTE.md`, `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`
+  - docs updated: `docs/agent_tasks/AFM_ROI_EXPLORER_DESIGN_NOTE.md`, `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`, `AGENT_BARAKUDA_WORKFLOW_NOTE.md`
 - current state: AFM ROI Explorer is visualization/QA only
   - loads validated `.npy` ROI arrays
   - shows 2D image with draggable horizontal/vertical profile cut line
   - displays exploratory in-memory depression mask overlay with opacity slider
+  - shows visual profile/mask intersection bands in the profile plot
+  - profile index ranges are derived from the active image shape; no hard-coded ROI dimensions
   - profiles plotted in physical µm/nm units
   - no segmentation, no porosity, no pore metrics, no roughness, no final channel selection, no final segmentation method
 - no production code changes unless explicitly requested
@@ -16,8 +18,8 @@
 - masks are generated in memory only; no masks are saved
 - no connected-component labeling or regionprops
 - next candidate work (requires explicit user approval):
-  1. AFM-A1v: add profile/mask intersection QA to the AFM ROI Explorer, still no final metrics, or
-  2. design candidate mask audit without final metrics, or
+  1. AFM-A1w: candidate mask audit design, still no final metrics, or
+  2. QA snapshot/export design for viewer state, still no scientific outputs, or
   3. raw `.jpk-qi-data` loading (future work), or
   4. CP01 follow-up (timing audit / batch summary hardening / packaging)
 - raw `.jpk-qi-data` loading remains future work

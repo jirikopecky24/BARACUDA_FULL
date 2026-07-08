@@ -1661,10 +1661,10 @@ The current active recommendation is the latest dated update at the bottom of th
 As of 2026-07-08, the next recommended task is:
 
 ```text
-AFM-A1v — profile/mask intersection QA or candidate mask audit design, still no final metrics
+AFM-A1w — candidate mask audit design or QA snapshot design, still no final metrics
 ```
 
-- Add light profile/mask intersection indication to the ROI Explorer, or design a candidate mask audit workflow.
+- Design a candidate mask audit workflow or a QA snapshot/export for the ROI Explorer.
 - Keep the viewer visualization/QA only.
 - Do not compute porosity, pore metrics, roughness, or select a final production channel.
 - Raw `.jpk-qi-data` loading remains future work.
@@ -1832,4 +1832,38 @@ Resume state verified before AFM-A1r; AFM-A1r still requires explicit user appro
   - Page 5 masks work, Page 4 masks work, Page 5 mask over Page 4 image works.
 - **Next recommended step:**
   - AFM-A1v — add profile/mask intersection QA or design candidate mask audit, still no final metrics.
+  - Alternatively: raw `.jpk-qi-data` loading remains future work.
+
+## Update 2026-07-08 — AFM-A1v profile/mask intersection QA implemented
+
+- **Decision:** Profile/mask intersection QA was added to the AFM ROI Explorer.
+- **Commit:** `d684a35 afm-ui: add profile mask intersection QA`
+- **Scope:** visualization/QA only.
+  - Improves visual inspection of where the selected exploratory mask intersects the active profile line.
+  - Must not be interpreted as final segmentation or porosity analysis.
+- **Files affected:**
+  - `barakuda/devices/afm/ui/roi_explorer.py`
+- **Added features:**
+  - Visual profile/mask intersection bands in the profile plot.
+  - Bands show where the active exploratory mask intersects the current horizontal/vertical profile.
+  - Bands are QA-only visual markers, not metrics.
+  - No numerical summaries are reported.
+  - Dynamic profile index limits derived from active image shape:
+    - horizontal row: `0..n_rows - 1`
+    - vertical column: `0..n_cols - 1`
+  - Mask/image shape mismatch safety warning.
+- **Important rules:**
+  - No metrics computed from mask intersections.
+  - No connected-component labeling.
+  - No regionprops or object measurements.
+  - No porosity, pore metrics, or roughness computed.
+  - No final production channel or final segmentation method selected.
+- **User GUI QA passed:**
+  - Horizontal and vertical index full ranges work.
+  - Draggable profile line spans full image dimension.
+  - Profile mask bands appear and update with line drag.
+  - Page 5 / Page 4 switching preserves correct ranges.
+  - None mask hides bands.
+- **Next recommended step:**
+  - AFM-A1w — candidate mask audit design or QA snapshot design, still no final metrics.
   - Alternatively: raw `.jpk-qi-data` loading remains future work.
