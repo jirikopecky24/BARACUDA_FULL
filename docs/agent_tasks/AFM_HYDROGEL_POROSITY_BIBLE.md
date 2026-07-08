@@ -1658,13 +1658,13 @@ Before writing production code, do this:
 
 The current active recommendation is the latest dated update at the bottom of this Bible.
 
-As of 2026-07-07, the next recommended task is:
+As of 2026-07-08, the next recommended task is:
 
 ```text
-AFM-A1u — exploratory mask overlay in AFM ROI Explorer, still no final metrics
+AFM-A1v — profile/mask intersection QA or candidate mask audit design, still no final metrics
 ```
 
-- Add mask overlay display to the v0 viewer (`barakuda/devices/afm/ui/roi_explorer.py`).
+- Add light profile/mask intersection indication to the ROI Explorer, or design a candidate mask audit workflow.
 - Keep the viewer visualization/QA only.
 - Do not compute porosity, pore metrics, roughness, or select a final production channel.
 - Raw `.jpk-qi-data` loading remains future work.
@@ -1802,3 +1802,34 @@ Resume state verified before AFM-A1r; AFM-A1r still requires explicit user appro
   - AFM-A1u: add exploratory mask overlay to the AFM ROI Explorer.
   - Still no porosity/pore metrics/roughness.
   - Raw `.jpk-qi-data` loading remains future work.
+
+## Update 2026-07-08 — AFM-A1u exploratory mask overlay QA implemented
+
+- **Decision:** Exploratory mask overlay was added to the AFM ROI Explorer.
+- **Commit:** `5debfd5 afm-ui: add exploratory mask overlay QA`
+- **Scope:** visualization/QA only.
+  - Helps compare candidate depression masks visually against Page 5 / Page 4 height maps and line profiles.
+  - Must not be interpreted as final segmentation or porosity analysis.
+- **Files affected:**
+  - `barakuda/devices/afm/ui/roi_explorer.py`
+- **Added controls:**
+  - Mask selector: None, Page 5 / Page 4 P20 depression, Page 5 / Page 4 Otsu depression, Page 5 / Page 4 P30 depression, Page 5 / Page 4 local/adaptive exploratory.
+  - Opacity slider 0–100 %, default ~40 %.
+  - Warning label: "Mask overlay is exploratory QA only — no porosity or pore metrics."
+  - Status label with selected mask, source channel, threshold value, and "exploratory only".
+- **Important rules:**
+  - Masks are generated in memory only from already loaded ROI arrays.
+  - No masks are saved.
+  - No connected-component labeling.
+  - No regionprops or object measurements.
+  - No porosity, pore metrics, or roughness computed.
+  - No final production channel or final segmentation method selected.
+- **User GUI QA passed:**
+  - Overlay displays.
+  - Opacity slider updates overlay immediately.
+  - Red draggable profile line remains visible above overlay.
+  - Horizontal/vertical profile dragging still works.
+  - Page 5 masks work, Page 4 masks work, Page 5 mask over Page 4 image works.
+- **Next recommended step:**
+  - AFM-A1v — add profile/mask intersection QA or design candidate mask audit, still no final metrics.
+  - Alternatively: raw `.jpk-qi-data` loading remains future work.

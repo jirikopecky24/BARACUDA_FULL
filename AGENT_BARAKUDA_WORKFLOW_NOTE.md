@@ -1,21 +1,25 @@
 # AGENT BARAKUDA WORKFLOW NOTE
 
 ## 0. CURRENT PHASE OVERRIDE — AFM HYDROGEL POROSITY / ROI EXPLORER
-- previous phase (AFM-A1t v0 ROI Explorer implementation + GUI QA) is **completed**
-  - implemented in commit `6473481 afm-ui: add ROI explorer QA viewer`
-  - files: `barakuda/devices/afm/ui/roi_explorer.py`, `barakuda/devices/afm/ui/__init__.py`, `scripts/dev_afm_roi_explorer.py`
+- previous phase (AFM-A1u exploratory mask overlay QA) is **completed**
+  - implemented in commit `5debfd5 afm-ui: add exploratory mask overlay QA`
+  - file: `barakuda/devices/afm/ui/roi_explorer.py`
   - docs updated: `docs/agent_tasks/AFM_ROI_EXPLORER_DESIGN_NOTE.md`, `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`
-- current state: AFM ROI Explorer v0 is visualization/QA only
+- current state: AFM ROI Explorer is visualization/QA only
   - loads validated `.npy` ROI arrays
   - shows 2D image with draggable horizontal/vertical profile cut line
+  - displays exploratory in-memory depression mask overlay with opacity slider
   - profiles plotted in physical µm/nm units
-  - no segmentation, no porosity, no pore metrics, no roughness, no final channel selection
+  - no segmentation, no porosity, no pore metrics, no roughness, no final channel selection, no final segmentation method
 - no production code changes unless explicitly requested
 - no AFM analysis, segmentation, porosity, pore metrics, or roughness computation
+- masks are generated in memory only; no masks are saved
+- no connected-component labeling or regionprops
 - next candidate work (requires explicit user approval):
-  1. AFM-A1u: add exploratory mask overlay to the AFM ROI Explorer, still no final metrics, or
-  2. AFM-A1r diagnostic segmentation feasibility on aligned central ROI copies, or
-  3. CP01 follow-up (timing audit / batch summary hardening / packaging)
+  1. AFM-A1v: add profile/mask intersection QA to the AFM ROI Explorer, still no final metrics, or
+  2. design candidate mask audit without final metrics, or
+  3. raw `.jpk-qi-data` loading (future work), or
+  4. CP01 follow-up (timing audit / batch summary hardening / packaging)
 - raw `.jpk-qi-data` loading remains future work
 - one phase only (strict phase separation; do not do next-phase work early)
 - stop after report and wait for explicit approval before continuing

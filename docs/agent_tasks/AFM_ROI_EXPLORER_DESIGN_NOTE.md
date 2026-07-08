@@ -186,11 +186,62 @@ Scope of that step:
 
 ## I. Implementation status
 
+### I.1 AFM-A1t v0 ROI viewer
+
 **Date:** 2026-07-07  
 **Commit:** `6473481 afm-ui: add ROI explorer QA viewer`  
 **Branch:** `feature/afm-hydrogel-porosity`
 
 AFM ROI Explorer v0 has been implemented, GUI-tested, committed, and pushed.
+
+### I.2 AFM-A1u exploratory mask overlay QA
+
+**Date:** 2026-07-08  
+**Commit:** `5debfd5 afm-ui: add exploratory mask overlay QA`  
+**Branch:** `feature/afm-hydrogel-porosity`
+
+Exploratory mask overlay controls were added to the v0 viewer.
+
+#### Added controls
+
+- **Mask selector combo box:**
+  - None
+  - Page 5 / Page 4 P20 depression
+  - Page 5 / Page 4 Otsu depression (requires scikit-image)
+  - Page 5 / Page 4 P30 depression
+  - Page 5 / Page 4 local/adaptive exploratory (requires scikit-image)
+- **Opacity slider:** 0–100 %, default 40 %.
+- **Warning label:** "Mask overlay is exploratory QA only — no porosity or pore metrics."
+- **Status label:** shows selected mask name, source channel, threshold value, and "exploratory only".
+
+#### Behavior
+
+- Masks are generated in memory only from already loaded ROI arrays.
+- No masks are saved.
+- Mask polarity is depression: `mask = Z <= threshold`.
+- Overlay is a transparent red layer aligned with the 2D image.
+- The red draggable profile line remains visible above the overlay.
+- Channel switching (Page 5 / Page 4) still works while a mask is displayed.
+
+#### User GUI QA passed
+
+- Overlay displays after selecting a mask.
+- Opacity slider updates the overlay immediately.
+- Draggable horizontal/vertical profile line remains visible and updates the profile plot.
+- Page 5 masks work.
+- Page 4 masks work.
+- Page 5 mask can be overlaid on the Page 4 image.
+
+#### Current limitations
+
+- No saved masks.
+- No connected-component labeling.
+- No regionprops or object measurements.
+- No porosity, pore metrics, or roughness computed.
+- No final production channel selected.
+- No final segmentation method selected.
+- Raw `.jpk-qi-data` loading is not implemented.
+- 3D integrated viewer is not implemented.
 
 ### Implemented files
 
@@ -205,6 +256,7 @@ AFM ROI Explorer v0 has been implemented, GUI-tested, committed, and pushed.
 - **2D image display** — pixel-coordinate pyqtgraph `ImageView` with viridis color scale and histogram.
 - **Draggable horizontal / vertical cut line** — `pyqtgraph.InfiniteLine` overlay; dragging updates the index spinbox and refreshes the profile.
 - **Profile plot in physical units** — distance in µm, height in nm.
+- **Exploratory mask overlay** — in-memory depression masks (P20, P30, Otsu, local/adaptive) with opacity slider and warning label.
 - **Warning: QA visualization only** — UI labels and module docstring explicitly state that this is a diagnostic viewer.
 
 ### User GUI QA passed
@@ -220,7 +272,6 @@ AFM ROI Explorer v0 has been implemented, GUI-tested, committed, and pushed.
 ### Current limitations
 
 - Raw `.jpk-qi-data` loading is not implemented.
-- Mask overlay is not implemented.
 - 3D integrated viewer is not implemented.
 - No porosity, pore metrics, or roughness are computed.
 - No final production channel is selected by the viewer.
