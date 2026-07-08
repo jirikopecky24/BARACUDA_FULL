@@ -1638,36 +1638,36 @@ Before writing production code, do this:
 
 ## 25\. Current immediate next task recommendation
 
-Recommended next task:
+> **Historical note:** This section was written before AFM-A1 loading validation and AFM-A1t ROI Explorer v0 were completed. It is preserved for context but is no longer the active recommendation.
+>
+> Historical recommendation:
+>
+> ```text
+> Task AFM-A1 — JPK/QI loader diagnostic audit
+> ```
+>
+> Goal at the time:
+> * inspect one `.jpk-qi-data` file,
+> * try `afmformats`,
+> * try internal `.jpk-qi-image` via AFMReader if appropriate,
+> * produce `jpk\_qi\_diagnostic.json`,
+> * report detected channels, scale, shape, units, and loading time,
+> * do not implement hydrogel segmentation yet.
+
+### Active recommendation
+
+The current active recommendation is the latest dated update at the bottom of this Bible.
+
+As of 2026-07-07, the next recommended task is:
 
 ```text
-Task AFM-A1 — JPK/QI loader diagnostic audit
+AFM-A1u — exploratory mask overlay in AFM ROI Explorer, still no final metrics
 ```
 
-Goal:
-
-* inspect one `.jpk-qi-data` file,
-* try `afmformats`,
-* try internal `.jpk-qi-image` via AFMReader if appropriate,
-* produce `jpk\_qi\_diagnostic.json`,
-* report detected channels, scale, shape, units, and loading time,
-* do not implement hydrogel segmentation yet.
-
-Expected changed files:
-
-```text
-0-2 files maximum
-```
-
-Suggested files:
-
-```text
-scripts/diagnose\_jpk\_qi.py
-or
-barakuda/devices/afm/io/jpk\_qi\_diagnostic.py
-```
-
-Do not proceed to production implementation until diagnostics are reviewed.
+- Add mask overlay display to the v0 viewer (`barakuda/devices/afm/ui/roi_explorer.py`).
+- Keep the viewer visualization/QA only.
+- Do not compute porosity, pore metrics, roughness, or select a final production channel.
+- Raw `.jpk-qi-data` loading remains future work.
 
 
 ---

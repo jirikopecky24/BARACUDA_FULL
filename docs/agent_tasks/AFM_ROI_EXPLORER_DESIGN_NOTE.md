@@ -229,7 +229,9 @@ AFM ROI Explorer v0 has been implemented, GUI-tested, committed, and pushed.
 
 ## J. Confirmations
 
-- No production code was modified in this task.
+- The original AFM-A1t step 0 task was design-only and created this note without implementation.
+- AFM-A1t step 1 later implemented the v0 UI viewer in commit `6473481 afm-ui: add ROI explorer QA viewer`.
+- The v0 implementation changed UI/QA code only (`barakuda/devices/afm/ui/roi_explorer.py`, `barakuda/devices/afm/ui/__init__.py`, `scripts/dev_afm_roi_explorer.py`).
+- No scientific metric computation was added or modified.
 - No AFM analysis, segmentation, porosity, pore metrics, or roughness computation was run.
 - No final production channel was selected.
-- Only this design note was created.
