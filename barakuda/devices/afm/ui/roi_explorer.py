@@ -31,7 +31,18 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QSplitter,
+    QSlider,
 )
+
+# Optional scikit-image imports: used for exploratory QA masks only.
+try:
+    from skimage.filters import threshold_otsu, threshold_local
+
+    _SKIMAGE_AVAILABLE = True
+except Exception:  # pragma: no cover
+    threshold_otsu = None  # type: ignore[assignment]
+    threshold_local = None  # type: ignore[assignment]
+    _SKIMAGE_AVAILABLE = False
 
 
 def _repo_root() -> Path:
@@ -74,6 +85,8 @@ class AfmRoiExplorer(QWidget):
         self._shape: tuple[int, int] | None = None
         self._profile_line: pg.InfiniteLine | None = None
         self._updating_profile_line: bool = False
+        self._overlay_item: pg.ImageItem | None = None
+        self._mask_array: np.ndarray | None = None
 
         self._build_ui()
 
@@ -153,6 +166,58 @@ class AfmRoiExplorer(QWidget):
         channel_layout.addWidget(self._cb_channel)
 
         right_layout.addWidget(channel_group)
+
+        # Mask overlay group (exploratory QA only)
+        mask_group = QGroupBox("Mask overlay (exploratory QA)")
+        mask_layout = QVBoxLayout(mask_group)
+        mask_layout.setSpacing(6)
+
+        self._cb_mask = QComboBox()
+        self._cb_mask.setToolTip(
+            "Select an in-memory exploratory mask. No mask is saved or used for final metrics."
+        )
+        self._cb_mask.addItem("None")
+        self._cb_mask.addItem("Page 5 P20 depression")
+        if _SKIMAGE_AVAILABLE:
+            self._cb_mask.addItem("Page 5 Otsu depression")
+        self._cb_mask.addItem("Page 5 P30 depression")
+        if _SKIMAGE_AVAILABLE:
+            self._cb_mask.addItem("Page 5 local/adaptive exploratory")
+        self._cb_mask.addItem("Page 4 P20 depression")
+        if _SKIMAGE_AVAILABLE:
+            self._cb_mask.addItem("Page 4 Otsu depression")
+        self._cb_mask.addItem("Page 4 P30 depression")
+        if _SKIMAGE_AVAILABLE:
+            self._cb_mask.addItem("Page 4 local/adaptive exploratory")
+        self._cb_mask.setEnabled(False)
+        self._cb_mask.currentTextChanged.connect(self._on_mask_changed)
+        mask_layout.addWidget(self._cb_mask)
+
+        opacity_layout = QHBoxLayout()
+        opacity_layout.addWidget(QLabel("Opacity:"))
+        self._slider_opacity = QSlider(Qt.Orientation.Horizontal)
+        self._slider_opacity.setRange(0, 100)
+        self._slider_opacity.setValue(40)
+        self._slider_opacity.setEnabled(False)
+        self._slider_opacity.valueChanged.connect(self._update_overlay_opacity)
+        opacity_layout.addWidget(self._slider_opacity)
+        self._lbl_opacity_value = QLabel("40%")
+        opacity_layout.addWidget(self._lbl_opacity_value)
+        mask_layout.addLayout(opacity_layout)
+
+        self._lbl_mask_warning = QLabel(
+            "Mask overlay is exploratory QA only — no porosity or pore metrics."
+        )
+        self._lbl_mask_warning.setWordWrap(True)
+        self._lbl_mask_warning.setStyleSheet("color: #c60; font-size: 11px;")
+        mask_layout.addWidget(self._lbl_mask_warning)
+
+        self._lbl_mask_status = QLabel("No mask selected.")
+        self._lbl_mask_status.setWordWrap(True)
+        self._lbl_mask_status.setStyleSheet("color: #666; font-size: 11px;")
+        mask_layout.addWidget(self._lbl_mask_status)
+
+        right_layout.addWidget(mask_group)
 
         # Profile group
         profile_group = QGroupBox("Profile")
@@ -315,6 +380,8 @@ class AfmRoiExplorer(QWidget):
         self._cb_profile_mode.setEnabled(True)
         self._spin_index.setEnabled(True)
         self._btn_refresh.setEnabled(True)
+        self._cb_mask.setEnabled(True)
+        self._slider_opacity.setEnabled(True)
         self._on_channel_changed()
 
     def _on_channel_changed(self) -> None:
@@ -427,6 +494,129 @@ class AfmRoiExplorer(QWidget):
 
         self._profile_curve.setData(distances, profile)
         self._update_profile_line()
+
+    # ── Mask overlay (exploratory QA only) ────────────────────────────
+
+    def _on_mask_changed(self) -> None:
+        """Regenerate and display the selected exploratory mask overlay."""
+        mask_name = self._cb_mask.currentText()
+        if not mask_name or mask_name == "None":
+            self._mask_array = None
+            self._clear_overlay()
+            self._lbl_mask_status.setText("No mask selected.")
+            return
+
+        source_key, method = self._parse_mask_name(mask_name)
+        arr = self._channels.get(source_key)
+        if arr is None:
+            self._mask_array = None
+            self._clear_overlay()
+            self._lbl_mask_status.setText(f"Source channel {source_key!r} not loaded.")
+            return
+
+        mask, threshold = self._generate_mask(arr, method)
+        self._mask_array = mask
+        self._update_overlay_display()
+
+        threshold_str = f"{threshold:.3f} nm" if threshold is not None else "N/A"
+        self._lbl_mask_status.setText(
+            f"Mask: {mask_name}\n"
+            f"Source: {source_key}\n"
+            f"Threshold: {threshold_str}\n"
+            f"exploratory only"
+        )
+
+    def _parse_mask_name(self, name: str) -> tuple[str, str]:
+        """Return (source channel label, method token) from mask selector text."""
+        if name.startswith("Page 5"):
+            source = "Page 5 height calibrated"
+            method = name[len("Page 5 "):].strip()
+        elif name.startswith("Page 4"):
+            source = "Page 4 measuredHeight nominal"
+            method = name[len("Page 4 "):].strip()
+        else:
+            source = self._current_key or ""
+            method = name
+        return source, method
+
+    def _generate_mask(self, arr: np.ndarray, method: str) -> tuple[np.ndarray, float | None]:
+        """Create a boolean depression mask in memory. No labels, no metrics.
+
+        Polarity is always depression: mask = Z <= threshold.
+        """
+        z = arr.astype(np.float64, copy=False)
+        if method == "P20 depression":
+            threshold = float(np.nanpercentile(z, 20))
+            mask = z <= threshold
+        elif method == "P30 depression":
+            threshold = float(np.nanpercentile(z, 30))
+            mask = z <= threshold
+        elif method == "Otsu depression":
+            finite = z[np.isfinite(z)]
+            if _SKIMAGE_AVAILABLE and threshold_otsu is not None and finite.size > 0:
+                threshold = float(threshold_otsu(finite))
+            else:
+                threshold = float(np.nanmedian(z))
+            mask = z <= threshold
+        elif method == "local/adaptive exploratory":
+            finite = z[np.isfinite(z)]
+            if _SKIMAGE_AVAILABLE and threshold_local is not None and finite.size > 0:
+                # Conservative default: block size ~1/8 of smaller ROI dimension,
+                # rounded to an odd integer >= 3.
+                block = max(3, min(z.shape) // 8)
+                if block % 2 == 0:
+                    block += 1
+                # Replace NaNs temporarily with median so threshold_local can run.
+                med = float(np.nanmedian(z))
+                z_filled = np.where(np.isfinite(z), z, med)
+                threshold = threshold_local(z_filled, block_size=block, method="gaussian")
+                mask = z <= threshold
+                threshold = float(np.mean(threshold))
+            else:
+                threshold = float(np.nanpercentile(z, 25))
+                mask = z <= threshold
+        else:
+            threshold = None
+            mask = np.zeros_like(z, dtype=bool)
+
+        mask = np.asarray(mask, dtype=bool)
+        # Ensure NaN source pixels are not counted as mask pixels.
+        mask &= np.isfinite(z)
+        return mask, threshold
+
+    def _update_overlay_opacity(self) -> None:
+        """Refresh overlay when the opacity slider moves."""
+        opacity = self._slider_opacity.value()
+        self._lbl_opacity_value.setText(f"{opacity}%")
+        self._update_overlay_display()
+
+    def _update_overlay_display(self) -> None:
+        """Render the current mask array as a transparent red overlay."""
+        if self._mask_array is None or self._shape is None:
+            self._clear_overlay()
+            return
+
+        opacity = self._slider_opacity.value() / 100.0
+        rows, cols = self._shape
+        # RGBA overlay: red where mask is True, transparent elsewhere.
+        overlay = np.zeros((rows, cols, 4), dtype=np.uint8)
+        overlay[self._mask_array] = [255, 0, 0, int(255 * opacity)]
+
+        if self._overlay_item is None:
+            self._overlay_item = pg.ImageItem(overlay, axisOrder="row-major")
+            self._img_view.getView().addItem(self._overlay_item)
+        else:
+            self._overlay_item.setImage(overlay)
+
+        # Keep profile line on top of overlay.
+        if self._profile_line is not None:
+            self._profile_line.setZValue(1000)
+
+    def _clear_overlay(self) -> None:
+        """Remove the mask overlay from the view."""
+        if self._overlay_item is not None:
+            self._img_view.getView().removeItem(self._overlay_item)
+            self._overlay_item = None
 
 
 def launch_afm_roi_explorer() -> AfmRoiExplorer:
