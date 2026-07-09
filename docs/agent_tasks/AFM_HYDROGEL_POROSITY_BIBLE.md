@@ -1873,7 +1873,7 @@ Resume state verified before AFM-A1r; AFM-A1r still requires explicit user appro
 ## Update 2026-07-08 — AFM-A1w candidate mask QA audit designed
 
 - **Decision:** Candidate mask QA audit was designed, not implemented.
-- **Commit:** `807a6b3 docs: design AFM candidate mask QA audit`
+- **Commit:** `9851a7f docs: design AFM candidate mask QA audit`
 - **Scope:** documentation/spec only.
   - Future QA audit may record viewer state and threshold method/value.
   - Future QA audit must not record mask-derived metrics.
