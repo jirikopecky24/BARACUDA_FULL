@@ -5,10 +5,14 @@
   - implemented in commit `d684a35 afm-ui: add profile mask intersection QA`
   - file: `barakuda/devices/afm/ui/roi_explorer.py`
   - docs updated: `docs/agent_tasks/AFM_ROI_EXPLORER_DESIGN_NOTE.md`, `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`, `AGENT_BARAKUDA_WORKFLOW_NOTE.md`
-- current phase (AFM-A1w candidate mask QA audit design) is **completed**
+- previous phase (AFM-A1w candidate mask QA audit design) is **completed**
   - design document: `docs/agent_tasks/AFM_CANDIDATE_MASK_QA_AUDIT_DESIGN.md`
   - docs updated: `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`, `AGENT_BARAKUDA_WORKFLOW_NOTE.md`
-  - no implementation, no UI buttons, no JSON outputs, no metrics
+- current phase (AFM-A1x QA audit JSON save) is **completed**
+  - implemented in `barakuda/devices/afm/ui/roi_explorer.py`
+  - adds `Save QA audit...` button that writes viewer-state JSON
+  - docs updated: `docs/agent_tasks/AFM_CANDIDATE_MASK_QA_AUDIT_DESIGN.md`
+  - still no metrics, no mask arrays, no scientific outputs
 - current state: AFM ROI Explorer is visualization/QA only
   - loads validated `.npy` ROI arrays
   - shows 2D image with draggable horizontal/vertical profile cut line
@@ -22,10 +26,9 @@
 - masks are generated in memory only; no masks are saved
 - no connected-component labeling or regionprops
 - current next candidate work requires explicit user approval:
-  1. AFM-A1x: implement QA audit JSON save for viewer state only, still no metrics, or
-  2. QA snapshot/export design, still no scientific outputs, or
-  3. raw `.jpk-qi-data` loading future work, or
-  4. CP01 follow-up (timing audit / batch summary hardening / packaging)
+  1. QA snapshot/export design, still no scientific outputs, or
+  2. raw `.jpk-qi-data` loading future work, or
+  3. CP01 follow-up (timing audit / batch summary hardening / packaging)
 - raw `.jpk-qi-data` loading remains future work
 - one phase only (strict phase separation; do not do next-phase work early)
 - stop after report and wait for explicit approval before continuing

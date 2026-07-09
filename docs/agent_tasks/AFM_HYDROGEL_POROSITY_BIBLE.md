@@ -177,8 +177,6 @@ Recommended format:
 - Validation:
 ```
 
-\---
-
 ## 3\. Existing libraries/tools to use before writing custom code
 
 BARAKUDA should integrate proven libraries instead of reimplementing them unless there is a measured reason not to.
@@ -1894,5 +1892,36 @@ Resume state verified before AFM-A1r; AFM-A1r still requires explicit user appro
   - Save viewer-state JSON only; do not save masks.
   - Optional future screenshot action must be separate and labeled as visual QA snapshot.
 - **Next recommended step:**
-  - AFM-A1x — implement QA audit JSON save for viewer state only, still no metrics, or
-  - QA snapshot/export design, still no scientific outputs.
+  - QA snapshot/export design, still no scientific outputs, or
+  - raw `.jpk-qi-data` loading future work.
+
+---
+
+## Update 2026-07-09 — AFM-A1x QA audit JSON save implemented
+
+- **Decision:** The `Save QA audit...` action was implemented in the AFM ROI Explorer.
+- **Commit:** *(pending — to be filled at commit time)*
+- **Scope:** visualization/QA only.
+  - Records viewer state and threshold parameters in a JSON file.
+  - Does not record mask arrays, raw image arrays, segmentation labels, or any scientific metrics.
+- **Files affected:**
+  - `barakuda/devices/afm/ui/roi_explorer.py`
+  - `docs/agent_tasks/AFM_CANDIDATE_MASK_QA_AUDIT_DESIGN.md`
+  - `AGENT_BARAKUDA_WORKFLOW_NOTE.md`
+- **Added features:**
+  - `Save QA audit...` button in the mask overlay group, enabled after loading at least one ROI channel.
+  - `_build_qa_audit_payload()` returns a JSON-serializable dict with schema, scope, source mode, loaded channel file names, viewer state, profile state, mask overlay state, last user action, and explicit warnings.
+  - `_save_qa_audit()` opens a `QFileDialog`, enforces `.json` extension, writes the payload, and shows confirmation/error dialogs.
+  - State is tracked for `source_mode`, `loaded_paths`, active channel, profile mode/index, mask selection/method/threshold, opacity, and last user action.
+- **Important rules:**
+  - No mask arrays, raw images, or labels are written.
+  - No porosity, pore metrics, roughness, connected-component labeling, or `regionprops`.
+  - No final production channel or final segmentation method selected.
+  - Files are written only when the user explicitly clicks `Save QA audit...` and confirms the path.
+- **Validation:**
+  - `py_compile` of `roi_explorer.py` passed.
+  - Headless smoke test instantiates the widget, builds a payload, asserts absence of forbidden metric/array keys, and writes a valid JSON file.
+  - Manual GUI QA pending: user should load demo ROIs, change channel/mask/profile/opacity, click `Save QA audit...`, and inspect the JSON.
+- **Next recommended step:**
+  - QA snapshot/export design, still no scientific outputs, or
+  - raw `.jpk-qi-data` loading future work.

@@ -3,9 +3,28 @@
 **Task:** AFM-A1w — Design candidate mask QA audit for the BARAKUDA AFM ROI Explorer  
 **Date:** 2026-07-08  
 **Branch:** `feature/afm-hydrogel-porosity`  
-**Status:** design/specification only — no implementation, no production code changes, no UI buttons, no JSON output, no metrics  
+**Status:** implemented in `barakuda/devices/afm/ui/roi_explorer.py` (AFM-A1x) — `Save QA audit...` button writes viewer-state JSON; still no metrics, no mask arrays, no scientific outputs
 
-**WARNING:** This document describes a future *exploratory QA audit* for the AFM ROI Explorer. It is not a scientific result, not a final segmentation, and not a porosity or pore-metric analysis. The audit may record viewer state and threshold parameters; it must not record mask-derived metrics.
+**WARNING:** This document describes an *exploratory QA audit* for the AFM ROI Explorer. It is not a scientific result, not a final segmentation, and not a porosity or pore-metric analysis. The audit records viewer state and threshold parameters; it must not record mask-derived metrics.
+
+---
+
+## Update 2026-07-09 — QA audit JSON save implemented
+
+The AFM-A1x implementation added a `Save QA audit...` button to the ROI Explorer mask overlay group. It is gated on having at least one ROI channel loaded.
+
+What was implemented:
+- `_build_qa_audit_payload()` returns a JSON-serializable dict containing only viewer state, provenance, and threshold parameters.
+- `_save_qa_audit()` opens a `QFileDialog`, enforces a `.json` extension, writes the payload, and shows confirmation or error dialogs.
+- State is tracked for `source_mode`, `loaded_paths`, active channel, profile mode/index, mask selection/method/threshold, opacity, and last user action.
+
+What remains forbidden:
+- No mask arrays, no raw image arrays, no segmentation labels.
+- No porosity, pore count, area fraction, pore density, roughness, or any object metrics.
+- No connected-component labeling, `regionprops`, or equivalent measurement code.
+- No automatic saving; files are written only when the user clicks `Save QA audit...` and confirms the path.
+
+The actual schema produced by the code uses the field names in the implementation (`schema`, `scope`, `source_mode`, `loaded_channel_file_names`, `viewer_state`, `profile_state`, `mask_overlay_state`, `last_user_action`, `warnings`). The conceptual design in the older sections below still describes the same intent.
 
 ---
 
@@ -242,13 +261,13 @@ Either next step requires explicit user approval.
 
 ## Confirmations
 
-- AFM-A1w is design/specification only.
-- No production code was changed.
-- No UI buttons were added.
-- No JSON outputs were written.
-- No metrics were computed.
-- No porosity, pore metrics, or roughness were computed.
+- AFM-A1w was a design/specification note.
+- AFM-A1x implemented the `Save QA audit...` action in `barakuda/devices/afm/ui/roi_explorer.py`.
+- The QA audit JSON contains only viewer state, provenance, and threshold parameters.
+- No mask arrays, raw image arrays, or segmentation labels are written.
+- No metrics were computed (no pore count, area fraction, porosity, roughness, etc.).
 - No connected-component labeling or `regionprops` was used.
 - No final production channel or final segmentation method was selected.
-- The audit may record viewer state and threshold method/value.
+- Files are written only when the user explicitly clicks `Save QA audit...` and confirms the path.
+- The audit records viewer state and threshold method/value.
 - The audit must not record mask-derived metrics.

@@ -10,6 +10,8 @@ script without touching the main AFM panel or shell main window.
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -29,6 +31,7 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QPushButton,
     QFileDialog,
+    QMessageBox,
     QGroupBox,
     QSplitter,
     QSlider,
@@ -88,6 +91,15 @@ class AfmRoiExplorer(QWidget):
         self._overlay_item: pg.ImageItem | None = None
         self._mask_array: np.ndarray | None = None
         self._profile_mask_regions: list[pg.LinearRegionItem] = []
+        self._profile_intersection_enabled: bool = False
+
+        # QA audit state (no mask-derived metrics, no arrays)
+        self._source_mode: str = "unknown"
+        self._loaded_paths: list[str] = []
+        self._mask_source_key: str = ""
+        self._mask_method_text: str = ""
+        self._mask_threshold_value: float | None = None
+        self._last_user_action: str | None = None
 
         self._build_ui()
 
@@ -218,6 +230,14 @@ class AfmRoiExplorer(QWidget):
         self._lbl_mask_status.setStyleSheet("color: #666; font-size: 11px;")
         mask_layout.addWidget(self._lbl_mask_status)
 
+        self._btn_save_audit = QPushButton("Save QA audit...")
+        self._btn_save_audit.setToolTip(
+            "Save a JSON file with viewer state only. No masks, no metrics, no scientific results."
+        )
+        self._btn_save_audit.setEnabled(False)
+        self._btn_save_audit.clicked.connect(self._save_qa_audit)
+        mask_layout.addWidget(self._btn_save_audit)
+
         right_layout.addWidget(mask_group)
 
         # Profile group
@@ -340,6 +360,9 @@ class AfmRoiExplorer(QWidget):
         self._lbl_loaded.setText(
             f"Loaded {len(loaded)} demo ROI arrays:\n" + "\n".join(loaded)
         )
+        self._source_mode = "validated_demo_roi"
+        self._loaded_paths = sorted(loaded)
+        self._last_user_action = "loaded_validated_demo_roi"
         self._populate_channel_selector()
 
     def _load_channel(self, label: str, button: QPushButton, *, path: Path | None = None) -> None:
@@ -367,6 +390,10 @@ class AfmRoiExplorer(QWidget):
         self._channels[label] = arr
         self._shape = arr.shape
         button.setText(f"Loaded {path.name}")
+        if path.name not in self._loaded_paths:
+            self._loaded_paths.append(path.name)
+        self._source_mode = "manual_roi_arrays"
+        self._last_user_action = "loaded_manual_roi_array"
         self._populate_channel_selector()
         self._lbl_loaded.setText(
             f"Loaded {label}: {arr.shape} px\n"
@@ -390,6 +417,7 @@ class AfmRoiExplorer(QWidget):
         self._btn_refresh.setEnabled(True)
         self._cb_mask.setEnabled(True)
         self._slider_opacity.setEnabled(True)
+        self._btn_save_audit.setEnabled(True)
         self._on_channel_changed()
 
     def _on_channel_changed(self) -> None:
@@ -397,6 +425,7 @@ class AfmRoiExplorer(QWidget):
         if not key or key not in self._channels:
             return
         self._current_key = key
+        self._last_user_action = "channel_changed"
         arr = self._channels[key]
         if arr is None:
             return
@@ -622,8 +651,13 @@ class AfmRoiExplorer(QWidget):
     def _on_mask_changed(self) -> None:
         """Regenerate and display the selected exploratory mask overlay."""
         mask_name = self._cb_mask.currentText()
+        self._last_user_action = "mask_selection_changed"
+
         if not mask_name or mask_name == "None":
             self._mask_array = None
+            self._mask_source_key = ""
+            self._mask_method_text = ""
+            self._mask_threshold_value = None
             self._clear_overlay()
             self._clear_profile_mask_regions()
             self._lbl_mask_status.setText("No mask selected.")
@@ -633,6 +667,9 @@ class AfmRoiExplorer(QWidget):
         arr = self._channels.get(source_key)
         if arr is None:
             self._mask_array = None
+            self._mask_source_key = source_key
+            self._mask_method_text = method
+            self._mask_threshold_value = None
             self._clear_overlay()
             self._clear_profile_mask_regions()
             self._lbl_mask_status.setText(f"Source channel {source_key!r} not loaded.")
@@ -640,6 +677,9 @@ class AfmRoiExplorer(QWidget):
 
         mask, threshold = self._generate_mask(arr, method)
         self._mask_array = mask
+        self._mask_source_key = source_key
+        self._mask_method_text = method
+        self._mask_threshold_value = threshold
         self._update_overlay_display()
         self._update_profile_mask_marks()
 
@@ -743,6 +783,102 @@ class AfmRoiExplorer(QWidget):
         if self._overlay_item is not None:
             self._img_view.getView().removeItem(self._overlay_item)
             self._overlay_item = None
+
+    # ── QA audit export (viewer state only) ───────────────────────────
+
+    def _build_qa_audit_payload(self) -> dict:
+        """Return a JSON-serializable dict of viewer QA state.
+
+        Explicitly excludes:
+        - mask arrays (boolean or labelled)
+        - raw/source image arrays
+        - any derived pore/metrics/porosity/roughness numbers
+        - segmentation results
+        """
+        shape = self._shape
+        rows, cols = (int(shape[0]), int(shape[1])) if shape is not None else (None, None)
+
+        payload: dict = {
+            "schema": "barakuda.afm.roi_explorer.qa_audit.v1",
+            "scope": "visualization_qa_only",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "source_mode": self._source_mode,
+            "loaded_channel_file_names": sorted(self._loaded_paths),
+            "viewer_state": {
+                "active_channel": self._current_key,
+                "image_shape_px": [rows, cols],
+                "physical_size_um": {
+                    "width": round(cols * UM_PER_PX, 6) if cols is not None else None,
+                    "height": round(rows * UM_PER_PX, 6) if rows is not None else None,
+                },
+                "pixel_size_um_per_px": UM_PER_PX,
+            },
+            "profile_state": {
+                "mode": self._cb_profile_mode.currentText() or None,
+                "index": self._spin_index.value(),
+            },
+            "mask_overlay_state": {
+                "selected_mask_text": self._cb_mask.currentText() or None,
+                "source_channel": self._mask_source_key or None,
+                "method": self._mask_method_text or None,
+                "threshold_nm": self._mask_threshold_value,
+                "opacity_percent": self._slider_opacity.value(),
+            },
+            "last_user_action": self._last_user_action,
+            "warnings": [
+                "This file records viewer state only.",
+                "No segmentation, porosity, pore metrics, or roughness results are included.",
+                "Mask overlays are exploratory QA and are not saved.",
+            ],
+        }
+        return payload
+
+    def _save_qa_audit(self) -> None:
+        """Prompt user for a JSON file path and write the QA audit payload."""
+        if not self._channels:
+            QMessageBox.warning(
+                self,
+                "QA audit — nothing to save",
+                "Load at least one ROI channel before saving a QA audit.",
+            )
+            return
+
+        default_name = (
+            f"afm_roi_explorer_qa_audit_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.json"
+        )
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save AFM ROI Explorer QA audit",
+            str(Path.home() / default_name),
+            "JSON (*.json)",
+        )
+        if not path_str:
+            return
+
+        path = Path(path_str)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+
+        payload = self._build_qa_audit_payload()
+        try:
+            path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # pragma: no cover
+            QMessageBox.critical(
+                self,
+                "QA audit — save failed",
+                f"Failed to write audit file:\n{exc}",
+            )
+            return
+
+        self._last_user_action = "saved_qa_audit"
+        QMessageBox.information(
+            self,
+            "QA audit saved",
+            f"Viewer state audit saved to:\n{path}",
+        )
 
 
 def launch_afm_roi_explorer() -> AfmRoiExplorer:
