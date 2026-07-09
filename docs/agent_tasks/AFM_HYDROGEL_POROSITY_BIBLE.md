@@ -1867,3 +1867,32 @@ Resume state verified before AFM-A1r; AFM-A1r still requires explicit user appro
 - **Next recommended step:**
   - AFM-A1w — candidate mask audit design or QA snapshot design, still no final metrics.
   - Alternatively: raw `.jpk-qi-data` loading remains future work.
+
+---
+
+## Update 2026-07-08 — AFM-A1w candidate mask QA audit designed
+
+- **Decision:** Candidate mask QA audit was designed, not implemented.
+- **Commit:** `807a6b3 docs: design AFM candidate mask QA audit`
+- **Scope:** documentation/spec only.
+  - Future QA audit may record viewer state and threshold method/value.
+  - Future QA audit must not record mask-derived metrics.
+  - No AFM analysis, segmentation outputs, porosity, pore metrics, roughness, connected components, or `regionprops`.
+- **Files affected:**
+  - `docs/agent_tasks/AFM_CANDIDATE_MASK_QA_AUDIT_DESIGN.md` (new)
+  - `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`
+  - `AGENT_BARAKUDA_WORKFLOW_NOTE.md`
+- **Allowed audit fields (examples):**
+  - timestamp, BARAKUDA version/git commit, source mode, displayed channel, array shape, pixel size.
+  - profile mode, profile index, selected mask name/source channel, threshold method, threshold value and unit, mask opacity.
+  - warnings shown in UI, `scientific_status: "exploratory_visual_QA_only"`.
+- **Forbidden mask-derived metrics (examples):**
+  - number of True pixels, mask fraction, total masked area, interval count/lengths, pore count, component count, object table, region properties, accepted/rejected objects.
+- **Proposed future UI behavior:**
+  - Possible button name `Save QA audit...`.
+  - Require user-chosen output location; no automatic writing.
+  - Save viewer-state JSON only; do not save masks.
+  - Optional future screenshot action must be separate and labeled as visual QA snapshot.
+- **Next recommended step:**
+  - AFM-A1x — implement QA audit JSON save for viewer state only, still no metrics, or
+  - QA snapshot/export design, still no scientific outputs.

@@ -5,6 +5,10 @@
   - implemented in commit `d684a35 afm-ui: add profile mask intersection QA`
   - file: `barakuda/devices/afm/ui/roi_explorer.py`
   - docs updated: `docs/agent_tasks/AFM_ROI_EXPLORER_DESIGN_NOTE.md`, `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`, `AGENT_BARAKUDA_WORKFLOW_NOTE.md`
+- current phase (AFM-A1w candidate mask QA audit design) is **completed**
+  - design document: `docs/agent_tasks/AFM_CANDIDATE_MASK_QA_AUDIT_DESIGN.md`
+  - docs updated: `docs/agent_tasks/AFM_HYDROGEL_POROSITY_BIBLE.md`, `AGENT_BARAKUDA_WORKFLOW_NOTE.md`
+  - no implementation, no UI buttons, no JSON outputs, no metrics
 - current state: AFM ROI Explorer is visualization/QA only
   - loads validated `.npy` ROI arrays
   - shows 2D image with draggable horizontal/vertical profile cut line
@@ -17,10 +21,10 @@
 - no AFM analysis, segmentation, porosity, pore metrics, or roughness computation
 - masks are generated in memory only; no masks are saved
 - no connected-component labeling or regionprops
-- next candidate work (requires explicit user approval):
-  1. AFM-A1w: candidate mask audit design, still no final metrics, or
-  2. QA snapshot/export design for viewer state, still no scientific outputs, or
-  3. raw `.jpk-qi-data` loading (future work), or
+- current next candidate work requires explicit user approval:
+  1. AFM-A1x: implement QA audit JSON save for viewer state only, still no metrics, or
+  2. QA snapshot/export design, still no scientific outputs, or
+  3. raw `.jpk-qi-data` loading future work, or
   4. CP01 follow-up (timing audit / batch summary hardening / packaging)
 - raw `.jpk-qi-data` loading remains future work
 - one phase only (strict phase separation; do not do next-phase work early)
