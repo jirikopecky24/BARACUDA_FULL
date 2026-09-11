@@ -229,14 +229,6 @@ def run_record_and_motion(
         MotionRunError on any fatal error.
     """
 
-    # #region agent log — freeze tracer
-    import json as _json, pathlib as _pl, time as _time
-    def _tr(step, data=None):
-        e = _json.dumps({"sessionId":"a34608","ts":_time.perf_counter(),"step":step,"data":data or {}})
-        _pl.Path("debug-a34608.log").open("a").write(e+"\n")
-    _tr("run_record_and_motion ENTER")
-    # #endregion
-
     def _log(msg: str) -> None:
         if log_fn is not None:
             try:
@@ -272,7 +264,6 @@ def run_record_and_motion(
     # Step 3: start recording in background thread
     # ------------------------------------------------------------------
     def _recording_thread() -> None:
-        _tr("record_raw ENTER")  # #region agent log  #endregion
         try:
             result = camera.record_raw(
                 output_dir=output_dir,
@@ -285,16 +276,12 @@ def run_record_and_motion(
                 pixel_format=pixel_format,
                 progress_callback=progress_callback,
             )
-            _tr("record_raw DONE", {"ok": True})  # #region agent log  #endregion
             record_result_holder[0] = result
         except Exception as exc:
-            _tr("record_raw EXCEPTION", {"err": str(exc)})  # #region agent log  #endregion
             record_error_holder[0] = str(exc)
 
     rec_thread = threading.Thread(target=_recording_thread, daemon=True, name="motion-rec")
-    _tr("recording thread starting")  # #region agent log
     rec_thread.start()
-    _tr("recording thread started")   # #endregion
 
     # Give camera a moment to start grabbing, then capture run_t0-relative start time.
     # We wait up to 2 s for the camera to produce at least one frame (or fail fast).
@@ -316,8 +303,6 @@ def run_record_and_motion(
         rec_thread.join(timeout=5.0)
         raise MotionRunError(f"Recording failed: {record_error_holder[0]}")
 
-    _tr("camera settled, recording_start")  # #region agent log  #endregion
-
     # ------------------------------------------------------------------
     # Step 4: log recording_start
     # ------------------------------------------------------------------
@@ -330,9 +315,7 @@ def run_record_and_motion(
     try:
         trace.log("pre_hold_start")
         _log(f"pre_hold: waiting {recipe.pre_delay_s:.2f} s")
-        _tr("pre_hold sleep START")  # #region agent log  #endregion
         time.sleep(recipe.pre_delay_s)
-        _tr("pre_hold sleep DONE")   # #region agent log  #endregion
         trace.log("pre_hold_end")
     except Exception as exc:
         _abort_recording(camera, stop_event, rec_thread, trace, _log)
@@ -395,7 +378,6 @@ def run_record_and_motion(
             f"accel_reg={int(round(float(backend_cmd.accel_reg)))}  "
             f"decel_reg={int(round(float(backend_cmd.decel_reg)))}"
         )
-        _tr("move_constant_velocity CALL")  # #region agent log  #endregion
         motion_result = stage.move_constant_velocity(
             direction=int(backend_cmd.direction),
             travel=float(backend_cmd.travel_user),
@@ -462,11 +444,9 @@ def run_record_and_motion(
     _log("[MOTION-LIFECYCLE] finalize_recording: stop_record begin")
     camera.stop_record()
     _log("[MOTION-LIFECYCLE] finalize_recording: stop_record done")
-    _tr("stop_record called")  # #region agent log  #endregion
     _log("[MOTION-LIFECYCLE] finalize_recording: join begin")
     rec_thread.join(timeout=max(10.0, duration_s + 5.0))
     _log("[MOTION-LIFECYCLE] finalize_recording: join done")
-    _tr("rec_thread joined")  # #region agent log  #endregion
     trace.log("recording_stop")
     _log("recording_stop logged")
 
@@ -488,7 +468,6 @@ def run_record_and_motion(
     stage_trace_path = output_path / f"{basename}_stage_trace.csv"
     stage_json_path = output_path / f"{basename}_stage.json"
 
-    _tr("writing trace CSV")  # #region agent log  #endregion
     try:
         _log("[MOTION-LIFECYCLE] artifact_write: stage_trace begin")
         trace.write_csv(stage_trace_path)
@@ -496,7 +475,6 @@ def run_record_and_motion(
         _log(f"Stage trace written: {stage_trace_path}")
     except Exception as exc:
         raise MotionRunError(f"Failed to write stage trace CSV: {exc}") from exc
-    _tr("trace CSV written")  # #region agent log  #endregion
 
     # Validate that motion_start is present (mandatory for DRAG loader)
     motion_start_s = trace.get_event_time("motion_start")
@@ -736,7 +714,6 @@ def run_record_and_motion(
     stage_meta["stage_trace_position_sample_count"] = pos_samples
     stage_meta["stage_trace_usable_for_windowing"] = bool(vel_samples >= 5 or pos_samples >= 6)
 
-    _tr("writing stage JSON")  # #region agent log  #endregion
     try:
         _log("[MOTION-LIFECYCLE] artifact_write: stage_json begin")
         stage_json_path.write_text(
@@ -747,9 +724,7 @@ def run_record_and_motion(
         _log(f"Stage meta written: {stage_json_path}")
     except Exception as exc:
         raise MotionRunError(f"Failed to write stage JSON: {exc}") from exc
-    _tr("stage JSON written")  # #region agent log  #endregion
 
-    _tr("returning MotionRunResult")  # #region agent log  #endregion
     return MotionRunResult(
         record_result=record_result,
         stage_json_path=stage_json_path,
