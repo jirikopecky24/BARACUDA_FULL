@@ -223,8 +223,9 @@ barakuda_crash.log
 *_drag_diagnostic.png
 *_tracking_preview.png
 
-# Ad-hoc pyqtgraph ROI inspect dump (see test_roi2.py)
-roi_shape_source.txt
+# Ad-hoc pyqtgraph ROI outline/hit-testing manual GUI check (not a pytest
+# test despite the filename; opens a live window for a few seconds)
+/scripts/test_roi.py
 
 # OS / editor noise (repo hygiene; does not hide source)
 Thumbs.db
