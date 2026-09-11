@@ -231,3 +231,30 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 *.stackdump
+
+# ----------------------------------------------------------------------
+# BARAKUDA local AFM/JPK diagnostic artifacts
+# Generated during exploratory AFM hydrogel/JPK-QI investigations.
+# These are local results, previews, arrays, reports, and scratch scripts.
+# They are intentionally not part of the open-source production codebase.
+# ----------------------------------------------------------------------
+
+/diagnostics/
+
+# One-off local AFM/JPK diagnostic scripts
+/scripts/build_jpk_channel_descriptors.py
+/scripts/inspect_official_afm_export.py
+/scripts/list_jpk_archive_entries.py
+/scripts/render_all_jpk_channels_gallery.py
+/scripts/render_jpk_height_candidates.py
+/scripts/render_jpk_height_leveled.py
+/scripts/render_topography_roi_diagnostic.py
+/scripts/export_provisional_topography_roi_candidates.py
+/scripts/export_aligned_roi_all_channels.py
+/scripts/export_provisional_topography_roi.py
+/scripts/validate_jpk_image_loading_audit.py
+/scripts/afm_a1r_segmentation_feasibility.py
+/scripts/afm_a1s_interactive_3d_visualization.py
+
+# Temporary cleanup/status files
+/cleanup_status_porcelain.txt
