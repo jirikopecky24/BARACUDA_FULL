@@ -8,7 +8,7 @@ matplotlib==3.10.8
 numpy==2.2.6
 opencv-python==4.13.0.92
 openpyxl==3.1.5
-packaging @ file:///C:/miniconda3/conda-bld/packaging_1761049101700/work
+packaging==26.0
 pandas==2.3.3
 pillow==12.1.1
 pyparsing==3.3.2
@@ -18,11 +18,10 @@ PyQt6_sip==13.11.0
 pyqtgraph==0.14.0
 python-dateutil==2.9.0.post0
 pytz==2025.2
-scikit-image>=0.21.0
+scikit-image==0.25.2
 scipy==1.15.3
 six==1.17.0
 tzdata==2025.3
-AFMReader
-matplotlib-scalebar
-uncertainties
+AFMReader==0.0.7
+matplotlib-scalebar==0.9.0
 # cellpose  # optional: deep-learning segmentation backend for AFM
