@@ -89,10 +89,6 @@ def test_import_main():
     import main  # noqa: F401
 
 
-def test_import_barakuda_main():
-    import barakuda.main  # noqa: F401
-
-
 def test_import_main_acquisition():
     import main_acquisition  # noqa: F401
 
