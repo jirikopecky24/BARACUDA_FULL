@@ -18,10 +18,17 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Minimal Qt stubs so we can import non-GUI modules without a display
 # ---------------------------------------------------------------------------
-if "PyQt6" not in sys.modules:
+# Installed per-test via the monkeypatch fixture (auto-reverts after each
+# test) rather than a raw sys.modules[...] assignment, so the fake PyQt6
+# never leaks into other test files collected/run in the same process.
+def _install_pyqt6_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    if "PyQt6" in sys.modules:
+        return
     _qtcore = types.ModuleType("PyQt6.QtCore")
     _qtcore.pyqtSignal = lambda *args, **kwargs: None  # type: ignore[assignment]
     _qtcore.Qt = types.SimpleNamespace()
@@ -32,9 +39,9 @@ if "PyQt6" not in sys.modules:
     _pyqt6 = types.ModuleType("PyQt6")
     _pyqt6.QtCore = _qtcore  # type: ignore[assignment]
     _pyqt6.QtWidgets = _qtwidgets  # type: ignore[assignment]
-    sys.modules["PyQt6"] = _pyqt6
-    sys.modules["PyQt6.QtCore"] = _qtcore
-    sys.modules["PyQt6.QtWidgets"] = _qtwidgets
+    monkeypatch.setitem(sys.modules, "PyQt6", _pyqt6)
+    monkeypatch.setitem(sys.modules, "PyQt6.QtCore", _qtcore)
+    monkeypatch.setitem(sys.modules, "PyQt6.QtWidgets", _qtwidgets)
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +104,7 @@ def test_run_batch_stores_pending_pdf_summary_instead_of_calling_export(
     After run_batch(), _pending_ot_batch_pdf_summary must be populated.
     export_ot_batch_pdf must NOT be called inline (it is deferred).
     """
+    _install_pyqt6_stub(monkeypatch)
     import barakuda.shell.batch_controller as bc_module
     from barakuda.shell.batch_controller import BatchController, PreviewResult
 
@@ -152,6 +160,7 @@ def test_run_batch_pending_summary_has_expected_keys(
     When run_batch() has at least one report item, _pending_ot_batch_pdf_summary
     must contain the keys needed by OTPdfWorker.
     """
+    _install_pyqt6_stub(monkeypatch)
     import barakuda.shell.batch_controller as bc_module
     from barakuda.shell.batch_controller import BatchController, PreviewResult
 
@@ -209,6 +218,7 @@ def test_ot_pdf_worker_calls_export_with_correct_args(
     """OTPdfWorker.run() must call export_ot_batch_pdf with the right path and summary."""
     # The worker module imports PyQt6 at class definition time, so we need
     # to import it after the stub is installed.
+    _install_pyqt6_stub(monkeypatch)
     import importlib
     import barakuda.shell.workers.ot_pdf_worker as worker_mod
 

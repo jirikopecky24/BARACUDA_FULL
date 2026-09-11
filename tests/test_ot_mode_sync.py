@@ -3,6 +3,14 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
+# Module-scope stub: the imports below need *something* importable at PyQt6,
+# so we use pytest.MonkeyPatch directly (its public, fixture-free API — the
+# per-test monkeypatch fixture isn't available yet at collection time) and
+# undo it right after the import, before pytest collects the next test file,
+# so the fake never leaks past this module.
+_mp = pytest.MonkeyPatch()
 if "PyQt6" not in sys.modules:
     _qtwidgets = types.ModuleType("PyQt6.QtWidgets")
     _qtwidgets.QApplication = object
@@ -40,13 +48,15 @@ if "PyQt6" not in sys.modules:
     _pyqt6.QtWidgets = _qtwidgets
     _pyqt6.QtCore = _qtcore
     _pyqt6.QtGui = _qtgui
-    sys.modules["PyQt6"] = _pyqt6
-    sys.modules["PyQt6.QtWidgets"] = _qtwidgets
-    sys.modules["PyQt6.QtCore"] = _qtcore
-    sys.modules["PyQt6.QtGui"] = _qtgui
+    _mp.setitem(sys.modules, "PyQt6", _pyqt6)
+    _mp.setitem(sys.modules, "PyQt6.QtWidgets", _qtwidgets)
+    _mp.setitem(sys.modules, "PyQt6.QtCore", _qtcore)
+    _mp.setitem(sys.modules, "PyQt6.QtGui", _qtgui)
 
 from barakuda.shell.batch_controller import BatchController
 from barakuda.shell.workers.ot_run_worker import MockPanel
+
+_mp.undo()
 
 
 def test_resolve_calibration_mode_runtime_maps_drag_to_dragging() -> None:

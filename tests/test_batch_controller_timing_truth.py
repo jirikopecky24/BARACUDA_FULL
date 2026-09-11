@@ -4,16 +4,26 @@ from pathlib import Path
 import sys
 import types
 
+import pytest
+
+# Module-scope stub: the barakuda.shell.batch_controller import below needs
+# *something* importable at PyQt6, so we use pytest.MonkeyPatch directly (its
+# public, fixture-free API — the per-test monkeypatch fixture isn't available
+# yet at collection time) and undo it right after the import, before pytest
+# collects the next test file, so the fake never leaks past this module.
+_mp = pytest.MonkeyPatch()
 if "PyQt6" not in sys.modules:
     _qtwidgets = types.ModuleType("PyQt6.QtWidgets")
     _qtwidgets.QApplication = object
     _pyqt6 = types.ModuleType("PyQt6")
     _pyqt6.QtWidgets = _qtwidgets
-    sys.modules["PyQt6"] = _pyqt6
-    sys.modules["PyQt6.QtWidgets"] = _qtwidgets
+    _mp.setitem(sys.modules, "PyQt6", _pyqt6)
+    _mp.setitem(sys.modules, "PyQt6.QtWidgets", _qtwidgets)
 
 from barakuda.shell import batch_controller as bc_module
 from barakuda.shell.batch_controller import BatchController, PreviewResult
+
+_mp.undo()
 
 
 class _MetaFull:

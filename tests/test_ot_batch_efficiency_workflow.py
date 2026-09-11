@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 import types
 
+import pytest
+
 from barakuda.devices.optical_tweezers.ui.batch_tools import (
     MODE_STRATEGIES,
     PairingCandidate,
@@ -298,7 +300,7 @@ def test_drag_batch_guard_blocks_missing_and_invalid() -> None:
     assert "c.raw" not in issues
 
 
-def test_recursive_import_multi_folder_and_no_duplicates(tmp_path: Path) -> None:
+def test_recursive_import_multi_folder_and_no_duplicates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     if "PyQt6" not in sys.modules:
         qtcore = types.ModuleType("PyQt6.QtCore")
         qtcore.pyqtSignal = lambda *args, **kwargs: None
@@ -334,10 +336,10 @@ def test_recursive_import_multi_folder_and_no_duplicates(tmp_path: Path) -> None
         pyqt6.QtCore = qtcore
         pyqt6.QtGui = qtgui
         pyqt6.QtWidgets = qtwidgets
-        sys.modules["PyQt6"] = pyqt6
-        sys.modules["PyQt6.QtCore"] = qtcore
-        sys.modules["PyQt6.QtGui"] = qtgui
-        sys.modules["PyQt6.QtWidgets"] = qtwidgets
+        monkeypatch.setitem(sys.modules, "PyQt6", pyqt6)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtCore", qtcore)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtGui", qtgui)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtWidgets", qtwidgets)
 
     from barakuda.shell.widgets.dataset_panel import (
         discover_importable_paths_from_roots,
@@ -420,7 +422,7 @@ def test_remove_checked_state_keeps_current_when_survives() -> None:
     assert current == "c"
 
 
-def test_parent_selection_ignores_empty_subfolder(tmp_path: Path) -> None:
+def test_parent_selection_ignores_empty_subfolder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     if "PyQt6" not in sys.modules:
         qtcore = types.ModuleType("PyQt6.QtCore")
         qtcore.pyqtSignal = lambda *args, **kwargs: None
@@ -441,10 +443,10 @@ def test_parent_selection_ignores_empty_subfolder(tmp_path: Path) -> None:
         pyqt6.QtCore = qtcore
         pyqt6.QtGui = qtgui
         pyqt6.QtWidgets = qtwidgets
-        sys.modules["PyQt6"] = pyqt6
-        sys.modules["PyQt6.QtCore"] = qtcore
-        sys.modules["PyQt6.QtGui"] = qtgui
-        sys.modules["PyQt6.QtWidgets"] = qtwidgets
+        monkeypatch.setitem(sys.modules, "PyQt6", pyqt6)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtCore", qtcore)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtGui", qtgui)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtWidgets", qtwidgets)
 
     from barakuda.shell.widgets.dataset_panel import discover_from_parent_selected_subfolders
 
@@ -463,7 +465,7 @@ def test_parent_selection_ignores_empty_subfolder(tmp_path: Path) -> None:
     assert len(lowered) == 1
 
 
-def test_parent_import_attaches_sidecars_not_as_rows(tmp_path: Path) -> None:
+def test_parent_import_attaches_sidecars_not_as_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     if "PyQt6" not in sys.modules:
         qtcore = types.ModuleType("PyQt6.QtCore")
         qtcore.pyqtSignal = lambda *args, **kwargs: None
@@ -484,10 +486,10 @@ def test_parent_import_attaches_sidecars_not_as_rows(tmp_path: Path) -> None:
         pyqt6.QtCore = qtcore
         pyqt6.QtGui = qtgui
         pyqt6.QtWidgets = qtwidgets
-        sys.modules["PyQt6"] = pyqt6
-        sys.modules["PyQt6.QtCore"] = qtcore
-        sys.modules["PyQt6.QtGui"] = qtgui
-        sys.modules["PyQt6.QtWidgets"] = qtwidgets
+        monkeypatch.setitem(sys.modules, "PyQt6", pyqt6)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtCore", qtcore)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtGui", qtgui)
+        monkeypatch.setitem(sys.modules, "PyQt6.QtWidgets", qtwidgets)
 
     from barakuda.shell.widgets.dataset_panel import (
         discover_from_parent_selected_subfolders,
